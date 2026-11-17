@@ -189,6 +189,25 @@ def default_checkpointer() -> Optional["JsonlCheckpointSaver"]:
 # ---------------------------------------------------------------------------
 
 
+def _encode_json_blob(obj: Any) -> str:
+    """Serialize *obj* to base64 UTF-8 JSON with secret redaction; raise if non-JSON-safe."""
+    sanitized = _sanitize_value(obj)
+    try:
+        from src.core.security.redaction import redact_data
+
+        sanitized = redact_data(sanitized)
+    except Exception:
+        pass
+    return _b64(json.dumps(sanitized, ensure_ascii=False).encode("utf-8"))
+
+
+def _decode_json_blob(blob: str) -> Any:
+    """Deserialize base64 UTF-8 JSON produced by _encode_json_blob."""
+    if not isinstance(blob, str):
+        raise ValueError("checkpoint blob must be a string")
+    return json.loads(_unb64(blob).decode("utf-8"))
+
+
 def _sanitize_value(v: Any, _depth: int = 0) -> Any:
     """Reduce *v* to JSON-encodable form; raise for unsupported types."""
     if _depth > 10:
@@ -282,10 +301,27 @@ def rehydrate_initial_state(
     initial_state: Dict[str, Any],
     prior: Dict[str, Any],
 ) -> Dict[str, Any]:
-    """Merge a persisted snapshot over a freshly built initial state."""
+    """Merge a persisted snapshot over a freshly built initial state.
+
+    Never rehydrates stale ``cancelled``/``failed`` checkpoints or snapshots
+    whose ``task`` does not match the current prompt, and never overwrites the
+    fresh ``task`` or ``cancel_event``.
+    """
     merged = dict(initial_state)
-    for k, v in (prior or {}).items():
-        if k in LIVE_CHANNELS:
+    if not isinstance(prior, dict) or not prior:
+        return merged
+
+    prior_run = prior.get("run")
+    if isinstance(prior_run, dict) and prior_run.get("status") in ("cancelled", "failed"):
+        return merged
+
+    fresh_task = merged.get("task")
+    prior_task = prior.get("task")
+    if fresh_task and prior_task and fresh_task != prior_task:
+        return merged
+
+    for k, v in prior.items():
+        if k in LIVE_CHANNELS or k == "task":
             continue
         if v is not None:
             merged[k] = v
@@ -416,12 +452,12 @@ class JsonlCheckpointSaver(BaseCheckpointSaver):
                 if k in LIVE_CHANNELS:
                     continue
                 try:
-                    values_payload[k] = _b64(pickle.dumps(v))
+                    values_payload[k] = _encode_json_blob(v)
                 except Exception:
-                    guilogger.debug("checkpoint: dropping unpicklable channel %r", k)
+                    guilogger.debug("checkpoint: dropping unserializable channel %r", k)
 
-            core = _b64(pickle.dumps(c))
-            md = _b64(json.dumps(get_checkpoint_metadata(config, metadata)).encode("utf-8"))
+            core = _encode_json_blob(c)
+            md = _encode_json_blob(get_checkpoint_metadata(config, metadata))
             files = self._thread_files(config)
             if files is not None:
                 self._write_record(
@@ -471,7 +507,7 @@ class JsonlCheckpointSaver(BaseCheckpointSaver):
                     continue
                 existing.add(key)
                 try:
-                    value = _b64(pickle.dumps(val))
+                    value = _encode_json_blob(val)
                 except Exception:
                     continue
                 self._write_record(
@@ -499,16 +535,22 @@ class JsonlCheckpointSaver(BaseCheckpointSaver):
             return None
         rec = recs[-1]
         try:
-            core = pickle.loads(_unb64(rec["checkpoint"]))
+            if not isinstance(rec, dict) or rec.get("kind") != "checkpoint":
+                return None
+            core = _decode_json_blob(rec["checkpoint"])
+            if not isinstance(core, dict):
+                return None
             values: Dict[str, Any] = {}
             for k, blob in (rec.get("values") or {}).items():
                 try:
-                    values[k] = pickle.loads(_unb64(blob))
+                    values[k] = _decode_json_blob(blob)
                 except Exception:
                     pass
             core["channel_values"] = values
             try:
-                metadata = json.loads(_unb64(rec["metadata"]))
+                metadata = _decode_json_blob(rec["metadata"])
+                if not isinstance(metadata, dict):
+                    metadata = {}
             except Exception:
                 metadata = {}
         except Exception as _ld_err:
@@ -530,11 +572,13 @@ class JsonlCheckpointSaver(BaseCheckpointSaver):
             rec = loaded["record"]
             writes: List[tuple] = []
             for r in self._read_records(files[1], kind="writes"):
+                if not isinstance(r, dict) or r.get("kind") != "writes":
+                    continue
                 if r.get("id") != rec.get("id"):
                     continue
                 try:
                     writes.append(
-                        (r.get("task_id"), r.get("channel"), pickle.loads(_unb64(r["value"])))
+                        (r.get("task_id"), r.get("channel"), _decode_json_blob(r["value"]))
                     )
                 except Exception:
                     continue

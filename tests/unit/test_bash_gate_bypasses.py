@@ -145,7 +145,8 @@ class TestBackgroundTaskOriginCheck:
         assert res["status"] == "error"
         assert "Unknown or untracked background task ID" in res["error"]
 
-    def test_spawned_pid_allowed(self, tmp_path: Path):
+    def test_spawned_pid_allowed(self, tmp_path: Path, monkeypatch):
+        monkeypatch.setenv("CODINGAGENT_SANDBOX_ALLOW_UNENFORCED", "1")
         script = tmp_path / "spin.py"
         script.write_text("import time; time.sleep(2)\n", encoding="utf-8")
 

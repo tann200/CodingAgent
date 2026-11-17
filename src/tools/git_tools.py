@@ -200,7 +200,7 @@ def git_restore(
     args = ["restore"]
     if staged:
         args.append("--staged")
-    args.append(path)
+    args.extend(["--", path])
     result = _run_git(args, workdir)
     if result["status"] == "ok":
         return {"status": "ok", "path": path, "output": result.get("output", "")}

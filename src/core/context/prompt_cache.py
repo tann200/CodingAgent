@@ -1,6 +1,10 @@
 from __future__ import annotations
 
+import hashlib
+import json
 from typing import Dict, List, Mapping, MutableMapping, Optional, Sequence, Tuple
+
+_MAX_STATIC_PROMPT_CACHE_ENTRIES = 64
 
 
 def _normalize_model_cache_value(value: object) -> str:
@@ -26,14 +30,10 @@ def compute_static_prompt_cache_key(
     working_dir: str,
 ) -> Tuple:
     try:
-        tools_key = hash(
-            tuple(
-                (tool.get("name", ""), (tool.get("description") or "")[:50])
-                for tool in tools
-            )
-        )
+        serialized = json.dumps(tools, sort_keys=True, default=str)
+        tools_key = hashlib.sha256(serialized.encode("utf-8")).hexdigest()[:16]
     except Exception:
-        tools_key = 0
+        tools_key = "0"
 
     caps = provider_capabilities or {}
     provider_family = str(caps.get("provider_family", ""))
@@ -68,4 +68,10 @@ def store_static_prompt_cache_entry(
     cache_key: Tuple,
     value: str,
 ) -> None:
+    if len(cache) >= _MAX_STATIC_PROMPT_CACHE_ENTRIES and cache_key not in cache:
+        try:
+            oldest_key = next(iter(cache))
+            cache.pop(oldest_key, None)
+        except Exception:
+            pass
     cache[cache_key] = value

@@ -10,9 +10,11 @@ from rich.markup import escape
 from src.core.messaging.event_types import ModelRouting
 from pathlib import Path
 
+from textual import on
 from textual.containers import Horizontal
 from textual.widgets import Button, Label, Static
 
+from .events import SlashCommand
 from .logging import get_logger
 
 from ._app_protocol import AgentAppProtocol
@@ -85,6 +87,7 @@ class AppSlashCommandsMixin(AgentAppProtocol):
 
     # ── Slash command dispatcher (§11) ────────────────────────────────────
 
+    @on(SlashCommand)
     async def handle_slash_command(self: AgentAppProtocol, event) -> None:
         cmd = event.command.lower()
         args = event.args.strip()
@@ -103,6 +106,14 @@ class AppSlashCommandsMixin(AgentAppProtocol):
             self._bridge.clear_history()
             self._clear_chat_panel()
             self._reset_sidebar()
+            self._session_custom_title = None
+            try:
+                import uuid as _uuid
+
+                self._session_id = str(_uuid.uuid4())[:8]
+                self.sub_title = ""
+            except Exception:
+                pass
             self._bridge.start_new_session()
             self.notify("New session started")
 
@@ -333,8 +344,10 @@ class AppSlashCommandsMixin(AgentAppProtocol):
             w = Static(markup_text, classes="system_msg doctor_report", markup=True)
             await self._mount_chat_widget(w)
         except Exception as exc:
+            from rich.markup import escape as _escape
+
             logger.exception("Failed to run doctor in TUI: %s", exc)
-            err_w = Static(f"[bold red]Doctor audit failed:[/] {exc}", classes="system_msg", markup=True)
+            err_w = Static(f"[bold red]Doctor audit failed:[/] {_escape(str(exc))}", classes="system_msg", markup=True)
             await self._mount_chat_widget(err_w)
 
     async def _slash_skills(self: AgentAppProtocol, args: str) -> None:
@@ -766,7 +779,11 @@ class AppSlashCommandsMixin(AgentAppProtocol):
         try:
             orch = self._bridge._orchestrator
             store = getattr(orch, "session_store", None) if orch else None
-            current_id: str = getattr(orch, "_current_task_id", "") or ""
+            current_id: str = (
+                getattr(orch, "_current_task_id", None)
+                or getattr(self, "_session_id", "")
+                or ""
+            )
 
             if store is None or not current_id:
                 self.notify("No active session to fork", severity="warning")
@@ -775,8 +792,8 @@ class AppSlashCommandsMixin(AgentAppProtocol):
             fork_id = store.fork_session(current_id)
             w = Static(
                 f"[bold]Session forked[/]\n"
-                f"  Source:  {current_id}\n"
-                f"  Fork ID: {fork_id}\n\n"
+                f"  Source:  {escape(str(current_id))}\n"
+                f"  Fork ID: {escape(str(fork_id))}\n\n"
                 f"The forked session is an independent copy.  Switch to it with "
                 f"[bold]/sessions[/] → select the fork.",
                 classes="system_msg",
@@ -880,20 +897,26 @@ class AppSlashCommandsMixin(AgentAppProtocol):
                         except Exception:
                             pass
                 except Exception as exc:
+                    from rich.markup import escape as _escape
+
                     w = Static(
-                        f"[bold #ff5555]✗ Export failed:[/] {exc}",
+                        f"[bold #ff5555]✗ Export failed:[/] {_escape(str(exc))}",
                         classes="system_msg",
                         markup=True,
                     )
                 else:
+                    from rich.markup import escape as _escape
+
                     w = Static(
-                        f"[bold]✓ Exported[/] {len(history)} messages\n  → {export_path}",
+                        f"[bold]✓ Exported[/] {len(history)} messages\n  → {_escape(str(export_path))}",
                         classes="system_msg",
                         markup=True,
                     )
             except Exception as exc:
+                from rich.markup import escape as _escape
+
                 w = Static(
-                    f"[bold #ff5555]✗ Export failed:[/] {exc}",
+                    f"[bold #ff5555]✗ Export failed:[/] {_escape(str(exc))}",
                     classes="system_msg",
                     markup=True,
                 )
@@ -916,7 +939,11 @@ class AppSlashCommandsMixin(AgentAppProtocol):
         try:
             orch = self._bridge._orchestrator
             store = getattr(orch, "session_store", None) if orch else None
-            current_id: str = getattr(orch, "_current_task_id", "") or ""
+            current_id: str = (
+                getattr(orch, "_current_task_id", None)
+                or getattr(self, "_session_id", "")
+                or ""
+            )
             if store is not None and current_id:
                 if hasattr(store, "rename_session"):
                     store.rename_session(current_id, new_name)

@@ -55,9 +55,17 @@ _current_session_id: ContextVar[Optional[str]] = ContextVar(
 )
 
 
-def set_session_id(session_id: Optional[str]) -> None:
-    """Set the session ID for the current async/thread context."""
-    _current_session_id.set(session_id)
+def set_session_id(session_id: Optional[str]) -> Any:
+    """Set the session ID for the current async/thread context and return reset token."""
+    return _current_session_id.set(session_id)
+
+
+def reset_session_id(token: Any) -> None:
+    """Reset the session ID contextvar to its prior value using *token*."""
+    try:
+        _current_session_id.reset(token)
+    except Exception:
+        _current_session_id.set(None)
 
 
 def get_session_id() -> Optional[str]:
@@ -218,6 +226,7 @@ _EVENT_IMPORT_PATHS: Dict[str, Tuple[str, str, Optional[Dict[str, str]]]] = {
     "tool.permission_denied": ("src.core.messaging.event_types", "ToolPermissionDenied", None),
     "tool.doom_loop_detected": ("src.core.messaging.event_types", "ToolDoomLoopDetected", None),
     "spawn.permission_required": ("src.core.messaging.event_types", "SpawnPermissionRequired", None),
+    "bash.approval_required": ("src.core.messaging.event_types", "BashApprovalRequired", None),
     "bash.approval_granted": ("src.core.messaging.event_types", "BashApprovalGranted", None),
     "bash.approval_denied": ("src.core.messaging.event_types", "BashApprovalDenied", None),
     "preview.pending": ("src.core.messaging.event_types", "PreviewPending", None),
@@ -405,6 +414,10 @@ def _build_typed_event(event_name: str, payload: Optional[Any]) -> Optional[Even
     else:
         mapped = {k: v for k, v in payload.items() if k not in _INHERITED_EVENT_FIELDS}
 
+    dc_fields = getattr(cls, "__dataclass_fields__", None)
+    if dc_fields is not None and "session_id" in mapped and "session_id" not in dc_fields:
+        mapped.pop("session_id", None)
+
     try:
         return cls(**mapped)
     except Exception as exc:
@@ -425,9 +438,9 @@ def get_typed_bus() -> "MessageBus":
     from src.core.messaging.bus import MessageBus
 
     global _typed_bus
-    if _typed_bus is None:
+    if _typed_bus is None or getattr(getattr(_typed_bus, "_shutdown_flag", None), "is_set", lambda: False)():
         with _typed_bus_lock:
-            if _typed_bus is None:
+            if _typed_bus is None or getattr(getattr(_typed_bus, "_shutdown_flag", None), "is_set", lambda: False)():
                 _typed_bus = MessageBus(max_queue_size=512, worker_threads=4)
     return _typed_bus
 

@@ -235,6 +235,7 @@ class ScenarioEvaluator:
         """Run a single scenario."""
         start_time = datetime.now()
         scenario_dir = None
+        agent = None
 
         try:
             # Setup
@@ -248,6 +249,15 @@ class ScenarioEvaluator:
             except Exception as agent_err:
                 logger.warning(
                     f"ScenarioEvaluator: agent raised during scenario '{scenario.name}': {agent_err}"
+                )
+                end_time = datetime.now()
+                return ScenarioResult(
+                    scenario_name=scenario.name,
+                    status="error",
+                    start_time=start_time,
+                    end_time=end_time,
+                    duration_seconds=(end_time - start_time).total_seconds(),
+                    error=str(agent_err),
                 )
 
             # Verify
@@ -276,6 +286,13 @@ class ScenarioEvaluator:
                 error=str(e),
             )
         finally:
+            if agent is not None:
+                close_fn = getattr(agent, "close", None)
+                if callable(close_fn):
+                    try:
+                        close_fn()
+                    except Exception as close_err:
+                        logger.debug(f"ScenarioEvaluator: agent.close() failed: {close_err}")
             # Cleanup
             if scenario_dir and scenario.cleanup_command:
                 try:
@@ -412,6 +429,7 @@ def get_default_scenarios() -> List[Scenario]:
             description="Create a simple unit test",
             task="Create a test file test_math.py with a test for a math function",
             expected_files={"test_math.py": "import pytest"},
+            test_command="python -m pytest -q test_math.py",
             difficulty="easy",
             category="single_file_edit",
         ),
@@ -428,6 +446,11 @@ def get_default_scenarios() -> List[Scenario]:
                 ),
             },
             expected_files={"utils.py": "def calculate_total"},
+            test_command=(
+                "python -c \""
+                "import utils; "
+                "assert not hasattr(utils, 'compute_total') and utils.calculate_total([1, 2, 3]) == 6\""
+            ),
             difficulty="easy",
             category="single_file_edit",
             tags=["rename"],
@@ -444,6 +467,13 @@ def get_default_scenarios() -> List[Scenario]:
                 ),
             },
             expected_files={"config.py": '"""'},
+            test_command=(
+                "python -c \""
+                "import ast; "
+                "tree = ast.parse(open('config.py').read()); "
+                "fn = next(n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == 'parse_config'); "
+                "assert ast.get_docstring(fn)\""
+            ),
             difficulty="easy",
             category="single_file_edit",
             tags=["docstring"],
@@ -485,6 +515,14 @@ def get_default_scenarios() -> List[Scenario]:
                 ),
             },
             expected_files={"merge.py": "-> dict"},
+            test_command=(
+                "python -c \""
+                "import inspect, merge; "
+                "sig = inspect.signature(merge.merge_dicts); "
+                "assert all(p.annotation is not inspect.Parameter.empty for p in sig.parameters.values()); "
+                "assert sig.return_annotation is not inspect.Parameter.empty; "
+                "assert merge.merge_dicts({'a': 1}, {'b': 2}) == {'a': 1, 'b': 2}\""
+            ),
             difficulty="easy",
             category="single_file_edit",
             tags=["type_hints"],
@@ -506,6 +544,17 @@ def get_default_scenarios() -> List[Scenario]:
                 ),
             },
             expected_files={"file_reader.py": "ValueError"},
+            test_command=(
+                "python -c \""
+                "from file_reader import read_json_file; "
+                "open('bad.json', 'w').write('{bad'); "
+                "open('good.json', 'w').write('{\\\"ok\\\": true}'); "
+                "assert read_json_file('good.json') == {'ok': True}; "
+                "errs = 0\n"
+                "try:\n read_json_file('missing.json')\nexcept ValueError:\n errs += 1\n"
+                "try:\n read_json_file('bad.json')\nexcept ValueError:\n errs += 1\n"
+                "assert errs == 2\""
+            ),
             difficulty="medium",
             category="single_file_edit",
             tags=["error_handling"],
@@ -537,6 +586,12 @@ def get_default_scenarios() -> List[Scenario]:
                 "user_validator.py": "class UserValidator",
                 "app.py": "from user_validator import UserValidator",
             },
+            test_command=(
+                "python -c \""
+                "from user_validator import UserValidator; "
+                "from app import process; "
+                "assert process({'name': 'A'}) is True and process({}) is False\""
+            ),
             difficulty="medium",
             category="multi_file",
             tags=["refactor", "move_class"],
@@ -562,6 +617,12 @@ def get_default_scenarios() -> List[Scenario]:
                 "math_utils.py": "def add",
                 "string_utils.py": "def upper_case",
             },
+            test_command=(
+                "python -c \""
+                "from math_utils import add, multiply; "
+                "from string_utils import upper_case, reverse_string; "
+                "assert add(2, 3) == 5 and multiply(2, 4) == 8 and upper_case('hi') == 'HI' and reverse_string('abc') == 'cba'\""
+            ),
             difficulty="medium",
             category="multi_file",
             tags=["refactor", "split"],
@@ -583,6 +644,11 @@ def get_default_scenarios() -> List[Scenario]:
                 "geometry.py": "from constants import",
                 "physics.py": "from constants import",
             },
+            test_command=(
+                "python -c \""
+                "import constants, geometry, physics; "
+                "assert abs(geometry.circle_area(1) - 3.14159) < 1e-4 and abs(physics.weight(2) - 19.62) < 1e-4\""
+            ),
             difficulty="medium",
             category="multi_file",
             tags=["refactor", "constants"],
@@ -628,6 +694,12 @@ def get_default_scenarios() -> List[Scenario]:
                 ),
             },
             expected_files={"logger.py": "with open"},
+            test_command=(
+                "python -c \""
+                "src = open('logger.py').read(); assert 'with ' in src; "
+                "import logger; logger.append_log('out.log', 'hello'); "
+                "assert 'hello' in open('out.log').read()\""
+            ),
             difficulty="easy",
             category="bug_fix",
             tags=["resource_leak"],
@@ -695,6 +767,11 @@ def get_default_scenarios() -> List[Scenario]:
                 ),
             },
             expected_files={"validator.py": "get("},
+            test_command=(
+                "python -c \""
+                "from pipeline import run_pipeline; "
+                "assert run_pipeline([{'name': 'a'}]) == [{'name': 'a'}]\""
+            ),
             difficulty="hard",
             category="context_boundary",
             tags=["multi_file_read", "call_chain"],
@@ -716,6 +793,11 @@ def get_default_scenarios() -> List[Scenario]:
                 "fetcher.py": "from session import open_session\ndef fetch_data(url): return open_session(url)\n",
             },
             expected_files={"config.py": "DEFAULT_TIMEOUT"},
+            test_command=(
+                "python -c \""
+                "import inspect, config, fetcher; "
+                "assert config.DEFAULT_TIMEOUT == 30 and inspect.signature(fetcher.fetch_data).parameters['timeout'].default == 30\""
+            ),
             difficulty="hard",
             category="context_boundary",
             tags=["parameter_propagation"],
@@ -807,6 +889,11 @@ def get_default_scenarios() -> List[Scenario]:
                 ),
             },
             expected_files={"records.py": "{'a': 1, 'name': 'Alice', 'z': 3}"},
+            test_command=(
+                "python -c \""
+                "import records; "
+                "assert len(records.records) == 2 and all(list(r.keys()) == sorted(r.keys()) for r in records.records)\""
+            ),
             difficulty="medium",
             category="disambiguation",
             tags=["formatting"],
@@ -834,6 +921,7 @@ def get_default_scenarios() -> List[Scenario]:
                 ),
             },
             expected_files={"test_math_ops.py": "def test_"},
+            test_command="python -m pytest -q test_math_ops.py",
             difficulty="medium",
             category="delegation",
             tags=["subagent", "test_generation"],
@@ -855,9 +943,35 @@ def get_default_scenarios() -> List[Scenario]:
                 ),
             },
             expected_files={"README.md": "# "},
+            test_command=(
+                "python -c \""
+                "txt = open('README.md').read().lower(); "
+                "assert '#' in txt and 'install' in txt and ('usage' in txt or 'example' in txt)\""
+            ),
             difficulty="easy",
             category="delegation",
             tags=["subagent", "documentation"],
+        ),
+        Scenario(
+            name="circular_import_fix",
+            description="Resolve a circular import between two modules",
+            task=(
+                "Fix the circular import between mod_a.py and mod_b.py while "
+                "keeping both `get_a()` and `get_b()` working."
+            ),
+            setup_files={
+                "mod_a.py": "from mod_b import VALUE_B\nVALUE_A = 1\ndef get_a(): return VALUE_A + VALUE_B\n",
+                "mod_b.py": "from mod_a import VALUE_A\nVALUE_B = 2\ndef get_b(): return VALUE_A + VALUE_B\n",
+            },
+            expected_files={"mod_a.py": "def get_a", "mod_b.py": "def get_b"},
+            test_command=(
+                "python -c \""
+                "from mod_a import get_a; from mod_b import get_b; "
+                "assert get_a() == 3 and get_b() == 3\""
+            ),
+            difficulty="medium",
+            category="bug_fix",
+            tags=["circular_import"],
         ),
     ]
 
@@ -950,22 +1064,29 @@ def run_pass_at_k(
     if k > n:
         raise ValueError(f"k ({k}) must be <= n ({n})")
 
+    import shutil
+
+    created_temp = workdir is None
     base = Path(workdir) if workdir else Path(tempfile.mkdtemp())
     results: List["ScenarioResult"] = []
 
-    for attempt in range(n):
-        attempt_dir = base / f"{scenario.name}_attempt_{attempt}"
-        attempt_dir.mkdir(parents=True, exist_ok=True)
-        evaluator = ScenarioEvaluator(workdir=str(attempt_dir))
-        result = evaluator.run_scenario(scenario, agent_factory)
-        results.append(result)
+    try:
+        for attempt in range(n):
+            attempt_dir = base / f"{scenario.name}_attempt_{attempt}"
+            attempt_dir.mkdir(parents=True, exist_ok=True)
+            evaluator = ScenarioEvaluator(workdir=str(attempt_dir))
+            result = evaluator.run_scenario(scenario, agent_factory)
+            results.append(result)
 
-    c = sum(1 for r in results if r.status == "pass")
-    return {
-        "scenario": scenario.name,
-        "n": n,
-        "c": c,
-        "k": k,
-        "pass_at_k": pass_at_k(n, c, k),
-        "results": results,
-    }
+        c = sum(1 for r in results if r.status == "pass")
+        return {
+            "scenario": scenario.name,
+            "n": n,
+            "c": c,
+            "k": k,
+            "pass_at_k": pass_at_k(n, c, k),
+            "results": results,
+        }
+    finally:
+        if created_temp:
+            shutil.rmtree(base, ignore_errors=True)

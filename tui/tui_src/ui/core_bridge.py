@@ -157,6 +157,7 @@ def _make_orchestrator(
             message_max_tokens=None,
             trusted=trusted,
             plugin_dir=plugin_dir,
+            defer_provider_probe=True,
         )
     except Exception as exc:
         logger.debug(f"_make_orchestrator: could not create Orchestrator: {exc}")
@@ -422,6 +423,8 @@ class AgentBridge(
         self._bus.publish(event, payload or {})
 
     def publish_typed(self, event: "Event") -> None:
-        """Publish a typed event on the MessageBus (if available)."""
-        if self._typed_bus is not None:
+        """Publish a typed event through EventBus so both MessageBus and core subscribers receive it."""
+        if hasattr(self._bus, "publish_typed"):
+            self._bus.publish_typed(event)
+        elif self._typed_bus is not None:
             self._typed_bus.publish(event)

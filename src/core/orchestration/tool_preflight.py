@@ -177,4 +177,6 @@ def preflight_check_impl(orch: Any, tool_call: Dict[str, Any]) -> Dict[str, Any]
                 "details": _arg_errors,
             }
 
+    if name != name_raw:
+        return {"ok": True, "corrected_name": name}
     return {"ok": True}

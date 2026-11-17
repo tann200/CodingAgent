@@ -70,7 +70,8 @@ def test_bash_readonly_blocks_secret_arg(tmp_path: Path):
     assert "secret/protected" in res["error"].lower()
 
 
-def test_bash_readonly_redacts_stdout(tmp_path: Path):
+def test_bash_readonly_redacts_stdout(tmp_path: Path, monkeypatch):
+    monkeypatch.setenv("CODINGAGENT_SANDBOX_ALLOW_UNENFORCED", "1")
     res = bash_readonly("echo sk-proj-12345678901234567890123456789012", workdir=tmp_path)
     assert res["status"] == "ok"
     assert "sk-proj-" not in res["stdout"]

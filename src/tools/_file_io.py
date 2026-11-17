@@ -94,7 +94,7 @@ def _check_project_deny_write(abs_path: Path, workdir: Path) -> None:
         if not patterns:
             return
         try:
-            rel = abs_path.relative_to(workdir)
+            rel = abs_path.resolve().relative_to(workdir.resolve())
         except ValueError:
             rel = abs_path  # can't relativise — compare against full path
         rel_str = str(rel).replace("\\", "/")
@@ -108,6 +108,61 @@ def _check_project_deny_write(abs_path: Path, workdir: Path) -> None:
         raise
     except Exception:
         pass  # non-fatal — don't let config errors prevent writes
+
+
+def _is_binary_file(p: Path) -> bool:
+    """Return True if *p* exists as a file and contains NUL bytes in its header."""
+    try:
+        if not p.is_file():
+            return False
+        with p.open("rb") as fh:
+            return b"\x00" in fh.read(8192)
+    except OSError:
+        return False
+
+
+def _pre_write_check(
+    path: str,
+    workdir: Path,
+    *,
+    operation: str = "write_file",
+    user_approved: bool = False,
+    check_binary: bool = True,
+    check_read: bool = True,
+) -> tuple[Path | None, Dict[str, Any] | None]:
+    """Unified pre-write guardrail sequence: safe_resolve -> WorkspaceGuard -> deny_write -> read-before-write -> binary check."""
+    guard = WorkspaceGuard(workspace_root=workdir.resolve())
+    guard_result = guard.guard_operation(operation, path, user_approved)
+    if guard_result.get("status") == "error":
+        return None, {"path": path, "status": "error", "error": guard_result.get("error")}
+
+    try:
+        p = _safe_resolve(path, workdir)
+    except ValueError as exc:
+        return None, {"path": path, "status": "error", "error": str(exc)}
+
+    guard_res_resolved = guard.guard_operation(operation, str(p), user_approved)
+    if guard_res_resolved.get("status") == "error":
+        return None, {"path": str(p), "status": "error", "error": guard_res_resolved.get("error")}
+
+    try:
+        _check_project_deny_write(p, workdir)
+    except PermissionError as _pe:
+        return None, {"path": path, "status": "error", "error": str(_pe)}
+
+    if check_read:
+        rbw = _check_read_before_write(str(p))
+        if rbw:
+            return None, {"path": str(p), "status": "error", **rbw}
+
+    if check_binary and _is_binary_file(p):
+        return None, {
+            "path": str(p),
+            "status": "error",
+            "error": f"Cannot perform text operation on binary file: {path}",
+        }
+
+    return p, None
 
 
 _OS_JUNK = frozenset(
@@ -177,31 +232,11 @@ def write_file(
     """Write content to a file. Returns diff in result for TUI display."""
     if workdir is None:
         workdir = Path.cwd()
-    # Phase 4.3: WorkspaceGuard integration - check protected files
-    guard = WorkspaceGuard(workspace_root=workdir)
-    guard_result = guard.guard_operation("write_file", path, user_approved)
-    if guard_result.get("status") == "error":
-        return {"path": path, "status": "error", "error": guard_result.get("error")}
-
-    p = _safe_resolve(path, workdir)
-
-    guard_res_resolved = guard.guard_operation("write_file", str(p), user_approved)
-    if guard_res_resolved.get("status") == "error":
-        return {"path": str(p), "status": "error", "error": guard_res_resolved.get("error")}
-
-    # GAP-S1: Read-before-write guardrail (check after resolve so path is absolute)
-    try:
-        rbw = _check_read_before_write(str(p))
-        if rbw:
-            return {"path": str(p), "status": "error", **rbw}
-    except Exception:
-        pass
-
-    # OP-5: Apply project-level deny_write patterns from .codingAgent/config.json.
-    try:
-        _check_project_deny_write(p, workdir)
-    except PermissionError as _pe:
-        return {"path": path, "status": "error", "error": str(_pe)}
+    p, pre_err = _pre_write_check(
+        path, workdir, operation="write_file", user_approved=user_approved
+    )
+    if pre_err is not None or p is None:
+        return pre_err or {"path": path, "status": "error", "error": "Pre-write check failed"}
 
     p.parent.mkdir(parents=True, exist_ok=True)
 
@@ -519,10 +554,17 @@ def list_dir(path: str = ".", workdir: Path | None = None) -> Dict[str, Any]:
     if workdir is None:
         workdir = Path.cwd()
     p = _safe_resolve(path, workdir)
+    if not p.exists():
+        return {"path": str(p), "status": "error", "error": f"Path not found: {path}"}
+    if not p.is_dir():
+        return {"path": str(p), "status": "error", "error": f"Not a directory: {path}"}
     items = []
     for child in sorted(p.iterdir(), key=lambda c: (not c.is_dir(), c.name.lower())):
         if child.name in _OS_JUNK:
             continue
+        if _is_secret_path(child):
+            continue
+        items.append({"name": child.name, "is_dir": child.is_dir()})
     try:
         _mark_file_read(str(p.resolve()))
     except Exception:
@@ -938,10 +980,14 @@ def create_directory(path: str, workdir: Path | None = None) -> Dict[str, Any]:
         p = _safe_resolve(path, workdir)
     except (PermissionError, ValueError) as exc:
         return {"path": path, "status": "error", "error": str(exc)}
-    guard = WorkspaceGuard()
+    guard = WorkspaceGuard(workspace_root=workdir.resolve())
     guard_result = guard.guard_operation("create_directory", str(p))
     if guard_result.get("status") == "error":
         return {"path": str(p), "status": "error", "error": guard_result.get("error")}
+    try:
+        _check_project_deny_write(p, workdir)
+    except PermissionError as _pe:
+        return {"path": str(p), "status": "error", "error": str(_pe)}
     try:
         from src.core.orchestration.tool_execution_pipeline import is_current_tool_cancelled
 

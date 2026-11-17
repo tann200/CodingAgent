@@ -19,6 +19,7 @@ Design notes:
 
 from __future__ import annotations
 
+import json
 import re
 import logging
 from dataclasses import dataclass
@@ -117,9 +118,9 @@ class CompactResult:
 def estimate_message_tokens(message: dict) -> int:
     """Char-based token estimate for a single message dict.
 
-    Matches the Rust formula: ``len / 4 + 1`` per content block.
-    A Python message dict has a single ``"content"`` string so we treat that
-    as one block.
+    Matches the Rust formula: ``len / 4 + 1`` per content block, plus any
+    serialized ``tool_calls`` / ``function_call`` payloads so tool-heavy turns
+    are accurately budgeted.
     """
     content = message.get("content") or ""
     if isinstance(content, list):
@@ -131,8 +132,32 @@ def estimate_message_tokens(message: dict) -> int:
                 total += len(str(text)) // 4 + 1
             else:
                 total += len(str(block)) // 4 + 1
-        return total
-    return len(str(content)) // 4 + 1
+    else:
+        total = len(str(content)) // 4 + 1
+
+    tool_calls = message.get("tool_calls")
+    if isinstance(tool_calls, list) and tool_calls:
+        for tc in tool_calls:
+            if isinstance(tc, dict):
+                fn = tc.get("function") or {}
+                if isinstance(fn, dict):
+                    name = str(fn.get("name") or "")
+                    args = fn.get("arguments")
+                    args_str = args if isinstance(args, str) else json.dumps(args or {}, default=str)
+                    total += (len(name) + len(args_str)) // 4 + 1
+                else:
+                    total += len(str(tc)) // 4 + 1
+            else:
+                total += len(str(tc)) // 4 + 1
+
+    fn_call = message.get("function_call")
+    if isinstance(fn_call, dict) and fn_call:
+        name = str(fn_call.get("name") or "")
+        args = fn_call.get("arguments")
+        args_str = args if isinstance(args, str) else json.dumps(args or {}, default=str)
+        total += (len(name) + len(args_str)) // 4 + 1
+
+    return total
 
 
 def estimate_messages_tokens(messages: list[dict]) -> int:
@@ -501,18 +526,41 @@ def _extract_summary_timeline(summary: str) -> list[str]:
     return lines
 
 
+_MAX_SUMMARY_HIGHLIGHTS = 12
+_MAX_TIMELINE_ITEMS = 12
+_MAX_SUMMARY_CHARS = 6000
+
+
+def _dedupe_capped(lines: list[str], limit: int) -> list[str]:
+    seen: set[str] = set()
+    out: list[str] = []
+    for line in lines:
+        key = line.strip()
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        out.append(line)
+    return out[-limit:] if len(out) > limit else out
+
+
 def _merge_compact_summaries(existing_summary: Optional[str], new_summary: str) -> str:
-    """Merge an existing compact summary with a newly produced one.
+    """Merge an existing compact summary with a newly produced one cleanly with bounded size.
 
     Mirrors ``merge_compact_summaries`` in compact.rs.
     """
     if existing_summary is None:
         return new_summary
 
-    previous_highlights = _extract_summary_highlights(existing_summary)
+    previous_highlights = _dedupe_capped(
+        _extract_summary_highlights(existing_summary), _MAX_SUMMARY_HIGHLIGHTS
+    )
     new_formatted = format_compact_summary(new_summary)
-    new_highlights = _extract_summary_highlights(new_formatted)
-    new_timeline = _extract_summary_timeline(new_formatted)
+    new_highlights = _dedupe_capped(
+        _extract_summary_highlights(new_formatted), _MAX_SUMMARY_HIGHLIGHTS
+    )
+    new_timeline = _dedupe_capped(
+        _extract_summary_timeline(new_formatted), _MAX_TIMELINE_ITEMS
+    )
 
     lines = ["<summary>", "Conversation summary:"]
 
@@ -529,7 +577,14 @@ def _merge_compact_summaries(existing_summary: Optional[str], new_summary: str) 
         lines.extend(f"  {t}" for t in new_timeline)
 
     lines.append("</summary>")
-    return "\n".join(lines)
+    merged = "\n".join(lines)
+    if len(merged) > _MAX_SUMMARY_CHARS:
+        merged = (
+            "<summary>\nConversation summary:\n"
+            + merged[len("<summary>\nConversation summary:\n"):][: _MAX_SUMMARY_CHARS - 80].rstrip()
+            + "\n</summary>"
+        )
+    return merged
 
 
 # ---------------------------------------------------------------------------
@@ -560,6 +615,26 @@ def get_compact_continuation_message(
 # ---------------------------------------------------------------------------
 
 
+def _group_atomic_turns(messages: list[dict]) -> list[list[dict]]:
+    """Group messages into atomic units so [assistant(tool_calls), role='tool'...] never splits."""
+    groups: list[list[dict]] = []
+    i = 0
+    n = len(messages)
+    while i < n:
+        msg = messages[i]
+        group = [msg]
+        # Attach any trailing role="tool" responses to their preceding assistant(tool_calls)
+        # (or to a standalone message if stray) so slicing never starts on a tool message.
+        has_tool_calls = msg.get("role") == "assistant" and bool(msg.get("tool_calls"))
+        j = i + 1
+        while j < n and messages[j].get("role") == "tool" and (has_tool_calls or j == i + 1):
+            group.append(messages[j])
+            j += 1
+        groups.append(group)
+        i = j
+    return groups
+
+
 def compact_messages(
     messages: list[dict],
     config: Optional[AutoCompactConfig] = None,
@@ -587,9 +662,33 @@ def compact_messages(
     if prefix_len > 0:
         existing_summary = _extract_existing_compacted_summary(messages[0])
 
-    keep_from = max(0, len(messages) - config.preserve_recent)
-    removed = messages[prefix_len:keep_from]
-    preserved = messages[keep_from:]
+    tail = messages[prefix_len:]
+    groups = _group_atomic_turns(tail)
+
+    preserved_groups: list[list[dict]] = []
+    preserved_count = 0
+    split_idx = len(groups)
+    for idx in range(len(groups) - 1, -1, -1):
+        if preserved_count >= config.preserve_recent:
+            break
+        preserved_groups.append(groups[idx])
+        preserved_count += len(groups[idx])
+        split_idx = idx
+    preserved_groups.reverse()
+
+    removed = [m for grp in groups[:split_idx] for m in grp]
+    preserved = [m for grp in preserved_groups for m in grp]
+    # Drop any leading orphan tool messages if history was already malformed at prefix_len
+    while preserved and preserved[0].get("role") == "tool":
+        removed.append(preserved.pop(0))
+
+    if not removed:
+        return CompactResult(
+            summary="",
+            formatted_summary="",
+            compacted_messages=list(messages),
+            removed_message_count=0,
+        )
 
     new_raw_summary = _summarize_messages(removed)
     merged_summary = _merge_compact_summaries(existing_summary, new_raw_summary)

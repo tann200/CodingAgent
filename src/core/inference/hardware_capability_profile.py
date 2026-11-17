@@ -200,7 +200,7 @@ def _detect_vram_windows() -> float:
 
 
 def _detect_vram_metal() -> float:
-    """Estimate VRAM on macOS (unified memory)."""
+    """Estimate usable Metal GPU memory on macOS (75% of unified RAM, reserving ~25% for macOS wired/OS)."""
     try:
         result = subprocess.run(
             ["sysctl", "-n", "hw.memsize"],
@@ -210,7 +210,7 @@ def _detect_vram_metal() -> float:
         )
         if result.returncode == 0 and result.stdout.strip():
             ram_bytes = int(result.stdout.strip())
-            return ram_bytes / (1024**3)
+            return round((ram_bytes / (1024**3)) * 0.75, 2)
     except (subprocess.TimeoutExpired, FileNotFoundError, ValueError) as e:
         logger.debug(f"sysctl detection failed: {e}")
     return 0

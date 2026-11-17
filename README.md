@@ -40,7 +40,7 @@ codingagent init --dir /path/to/repository
 
 `init` creates `.codingAgent/` with agent configuration, hooks, and a project instruction file. Use `codingagent --help` for the complete command surface. Key commands include `init`, `system-prompt`, `session`, `status`, `doctor`, `skill`, `mcp`, and `diff`.
 
-Diagnose local model engines (Ollama, LM Studio, vLLM) and validate native tool schemas:
+Diagnose local model engines (Ollama, LM Studio, MLX, llama-server, vLLM, LiteLLM) and validate native tool schemas:
 
 ```bash
 codingagent doctor
@@ -80,11 +80,12 @@ Shell containment fails closed by default when an enforcing sandbox backend is u
 ```bash
 python -m pytest tests/unit -q -p no:logging
 python -m pytest tests/integration -q -p no:logging -m "not real_llm and not lmstudio and not ollama"
+python -m pytest tests/acceptance -q -p no:logging
 python -m ruff check src tests tui --select=E,F,W --ignore=E501
-python -m mypy src/server src/core/inference/provider_utils.py src/core/orchestration/tool_contracts.py src/core/orchestration/tool_parser.py --ignore-missing-imports --follow-imports=silent --disable-error-code=import-untyped --no-error-summary
+python -m mypy src/server src/core/evaluation src/core/telemetry src/core/observability src/core/security src/core/scheduler src/core/plugin src/cli src/core/inference/provider_utils.py src/core/orchestration/tool_contracts.py src/core/orchestration/tool_parser.py --ignore-missing-imports --follow-imports=silent --disable-error-code=import-untyped --no-error-summary
 ```
 
-The CI workflow defines the maintained quality (including TUI single-source tree enforcement), mock integration, mock E2E, platform smoke, benchmark, and optional live-provider jobs. Full test collection requires the `server` extras because server tests import FastAPI and Uvicorn.
+The CI workflow defines the maintained quality (including TUI single-source tree enforcement), mock integration, mock E2E, acceptance, platform smoke, benchmark, and optional live-provider jobs. Full test collection requires the `server` extras because server tests import FastAPI and Uvicorn.
 
 ## Repository Layout
 

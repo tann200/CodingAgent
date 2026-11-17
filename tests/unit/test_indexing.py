@@ -97,5 +97,6 @@ class TestSymbolGraphHashBug:
         sg.update_file(str(py_file))
 
         expected = hashlib.sha256(py_file.read_bytes()).hexdigest()
-        assert sg.file_hashes[str(py_file)] == expected
-        assert len(sg.file_hashes[str(py_file)]) == 64
+        rel_key = "module.py"
+        assert sg.file_hashes[rel_key] == expected
+        assert len(sg.file_hashes[rel_key]) == 64

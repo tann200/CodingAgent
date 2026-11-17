@@ -28,6 +28,7 @@ from __future__ import annotations
 import atexit
 import concurrent.futures as _cf
 import threading as _threading
+import weakref
 from pathlib import Path
 from typing import Any, Optional, TYPE_CHECKING, cast
 
@@ -51,16 +52,22 @@ from src.core.orchestration.message_manager import MessageManager
 
 def _init_infrastructure(orch: Any, message_max_tokens: Optional[int]) -> None:
     """Wire MessageManager, thread pools, working directory, and all managers."""
-    # Register executor shutdown for cleanup. Must happen before executor creation
-    # so the cleanup handler is wired first.
+    # Register executor shutdown for cleanup via weakref so short-lived
+    # orchestrators (e.g. per-request /task runs) are not pinned by atexit.
+    orch_ref = weakref.ref(orch)
+
     def _shutdown_executors() -> None:
-        _tool_exe = getattr(orch, "_tool_executor", None)
+        inst = orch_ref()
+        if inst is None:
+            return
+        _tool_exe = getattr(inst, "_tool_executor", None)
         if _tool_exe is not None:
             _tool_exe.shutdown(wait=False)
-        _graph_exe = getattr(orch, "_graph_executor", None)
+        _graph_exe = getattr(inst, "_graph_executor", None)
         if _graph_exe is not None:
             _graph_exe.shutdown(wait=False)
 
+    orch._atexit_shutdown_fn = _shutdown_executors
     atexit.register(_shutdown_executors)
 
     # Wire the MessageManager with compaction support so dropped messages

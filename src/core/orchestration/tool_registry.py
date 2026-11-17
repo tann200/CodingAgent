@@ -71,9 +71,10 @@ class ToolRegistry:
     """
 
     def __init__(self) -> None:
-        # name -> metadata dict (fn, side_effects, description)
+        # name -> metadata dict (fn, side_effects, description, tags, origin, schema_visibility, __tool_meta__)
         self.tools: Dict[str, Dict[str, Any]] = {}
         self._orchestrator: Optional[Any] = None
+        self._explicit_filter: bool = False
 
     def set_orchestrator(self, orchestrator: Any) -> None:
         """Bind an active orchestrator to this registry for guarded tool execution."""
@@ -97,13 +98,27 @@ class ToolRegistry:
         side_effects: Optional[List[str]] = None,
         description: str = "",
         origin: str = "builtin",
+        tags: Optional[List[str]] = None,
+        schema_visibility: str = "primary",
+        tool_meta: Optional[Any] = None,
+        permission_kind: Optional[Any] = None,
     ) -> None:
-        self.tools[name] = {
+        meta_obj = tool_meta if tool_meta is not None else getattr(fn, "__tool_meta__", None)
+        entry: Dict[str, Any] = {
             "fn": fn,
-            "side_effects": side_effects or [],
-            "description": description,
+            "side_effects": list(side_effects if side_effects is not None else (getattr(meta_obj, "side_effects", None) or [])),
+            "description": description or getattr(meta_obj, "description", "") or (fn.__doc__ or "").strip().split("\n")[0],
             "origin": origin,
+            "tags": list(tags if tags is not None else (getattr(meta_obj, "tags", None) or [])),
+            "schema_visibility": schema_visibility or getattr(meta_obj, "schema_visibility", "primary"),
         }
+        if meta_obj is not None:
+            entry["__tool_meta__"] = meta_obj
+        if permission_kind is not None:
+            entry["permission_kind"] = permission_kind
+        elif meta_obj is not None and getattr(meta_obj, "permission_kind", None) is not None:
+            entry["permission_kind"] = meta_obj.permission_kind
+        self.tools[name] = entry
 
     def get(self, name: str) -> Optional[Dict[str, Any]]:
         return self.tools.get(name)
@@ -130,9 +145,44 @@ class ToolRegistry:
                 meta = getattr(obj, "__tool_meta__")
                 name = getattr(meta, "name", None) or getattr(obj, "__name__", "")
                 desc = getattr(meta, "description", "") or (obj.__doc__ or "")
-                self.register(name, obj, description=desc, origin=origin)
+                self.register(
+                    name,
+                    obj,
+                    side_effects=getattr(meta, "side_effects", None),
+                    description=desc,
+                    origin=origin,
+                    tags=getattr(meta, "tags", None),
+                    schema_visibility=getattr(meta, "schema_visibility", "primary"),
+                    tool_meta=meta,
+                    permission_kind=getattr(meta, "permission_kind", None),
+                )
                 count += 1
         return count
+
+    def get_permission_kind(self, name: str) -> Any:
+        """Return PermissionKind for *name*, defaulting to PermissionKind.NONE."""
+        from src.tools._tool import PermissionKind, TOOL_ATTR
+
+        entry = self.get(name)
+        if entry is None:
+            return PermissionKind.NONE
+        raw = entry.get("permission_kind")
+        if isinstance(raw, PermissionKind):
+            return raw
+        if raw:
+            try:
+                return PermissionKind(raw)
+            except ValueError:
+                pass
+        meta_obj = entry.get("__tool_meta__")
+        if meta_obj is not None and getattr(meta_obj, "permission_kind", None) is not None:
+            return meta_obj.permission_kind
+        fn = entry.get("fn")
+        if fn is not None:
+            defn = getattr(fn, TOOL_ATTR, None)
+            if defn is not None and getattr(defn, "permission_kind", None) is not None:
+                return defn.permission_kind
+        return PermissionKind.NONE
 
     def list(self) -> List[str]:
         return list(self.tools.keys())
@@ -141,6 +191,7 @@ class ToolRegistry:
         """Return a new ToolRegistry containing only tools whose names are in *names*."""
         filtered = ToolRegistry()
         filtered._orchestrator = getattr(self, "_orchestrator", None)
+        filtered._explicit_filter = True
         for name in names:
             meta = self.tools.get(name)
             if meta:
@@ -161,18 +212,17 @@ class ToolRegistry:
                 wd = kwargs.get("workdir")
                 orch = Orchestrator(adapter=None, tool_registry=self, working_dir=str(wd) if wd else None, allow_external_working_dir=True)
                 self.set_orchestrator(orch)
-            except Exception:
-                pass
+            except Exception as exc:
+                raise RuntimeError(
+                    f"Refusing unguarded tool call {name!r}: orchestrator initialization failed: {exc}"
+                ) from exc
 
-        if orch is not None:
-            out = orch.execute_tool({"name": name, "arguments": kwargs})
-            if isinstance(out, dict) and "result" in out and out.get("ok") is True:
-                return out["result"]
-            return out
+        out = orch.execute_tool({"name": name, "arguments": kwargs})
+        if isinstance(out, dict) and "result" in out and out.get("ok") is True:
+            return out["result"]
+        return out
 
-        return entry["fn"](**kwargs)
-
-    def get_openai_functions(self) -> List[Dict[str, Any]]:
+    def get_openai_functions(self, include_aliases: bool = False) -> List[Dict[str, Any]]:
         """Convert registered tools to OpenAI function-calling format.
 
         Delegates to the authoritative schema generation in
@@ -183,6 +233,7 @@ class ToolRegistry:
             from src.tools._registry import ToolRegistry as _TR
 
             bridge = _TR()
+            bridge._explicit_filter = self._explicit_filter
             for name, meta in self.tools.items():
                 fn = meta.get("fn")
                 if fn:
@@ -191,7 +242,10 @@ class ToolRegistry:
                         fn=fn,
                         description=meta.get("description", ""),
                         side_effects=meta.get("side_effects", []),
+                        tags=meta.get("tags", []),
+                        origin=meta.get("origin", "builtin"),
+                        schema_visibility=meta.get("schema_visibility", "primary"),
                     )
-            return bridge.get_openai_functions()
+            return bridge.get_openai_functions(include_aliases=include_aliases)
         except Exception:
             return []

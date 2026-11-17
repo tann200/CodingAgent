@@ -364,6 +364,14 @@ def run_agent_once_impl(
             cancel_event=cancel_event,
         )
         if loop_exit_response is not None:
+            try:
+                from src.core.orchestration.graph.checkpoint_saver import (
+                    purge_thread_checkpoint,
+                )
+
+                purge_thread_checkpoint(orch)
+            except Exception:
+                pass
             return loop_exit_response
 
         # CP-3.4: task completed cleanly — the durable checkpoint is no longer

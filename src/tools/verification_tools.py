@@ -45,17 +45,14 @@ def _safe_resolve_workdir(workdir: str) -> str:
 
 
 def _run_subprocess(cmd: list[str], cwd: Union[str, Path], **kwargs) -> subprocess.CompletedProcess:
-    try:
-        from src.tools.sandbox import run_sandboxed
+    from src.tools.sandbox import run_sandboxed
 
-        return run_sandboxed(
-            cmd,
-            cwd=Path(cwd),
-            network=False,
-            **kwargs,
-        )
-    except Exception:
-        return subprocess.run(cmd, cwd=str(cwd), **kwargs)
+    return run_sandboxed(
+        cmd,
+        cwd=Path(cwd),
+        network=False,
+        **kwargs,
+    )
 
 
 @tool(

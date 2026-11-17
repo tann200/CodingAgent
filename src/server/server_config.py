@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import base64
+import hmac
 import ipaddress
 import os
+from urllib.parse import urlparse
 from typing import Mapping, Optional, Tuple
 
 
@@ -75,4 +77,30 @@ def metrics_basic_auth_valid(
         decoded = base64.b64decode(b64).decode("utf-8")
     except Exception:
         return False
-    return decoded == expected_credentials
+    return hmac.compare_digest(decoded, expected_credentials)
+
+
+def validate_websocket_origin(
+    headers: Mapping[str, str],
+    allowed_origins_env: Optional[str] = None,
+) -> bool:
+    """Validate WebSocket Origin header against loopback or configured allowlist."""
+    origin = headers.get("origin") or headers.get("Origin")
+    if not origin:
+        # Non-browser CLI/SDK WebSocket clients omit Origin.
+        return True
+    try:
+        parsed = urlparse(origin.strip())
+    except Exception:
+        return False
+    if parsed.scheme not in ("http", "https") or not parsed.hostname:
+        return False
+    if is_loopback_bind(parsed.hostname):
+        return True
+    raw_allowed = allowed_origins_env if allowed_origins_env is not None else (
+        os.environ.get("CODINGAGENT_ALLOWED_ORIGINS")
+        or os.environ.get("CODING_AGENT_ALLOWED_ORIGINS")
+        or ""
+    )
+    allowed = {o.strip().rstrip("/") for o in raw_allowed.split(",") if o.strip()}
+    return origin.strip().rstrip("/") in allowed

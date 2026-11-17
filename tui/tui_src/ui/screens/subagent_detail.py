@@ -20,6 +20,7 @@ from textual.containers import Container, VerticalScroll
 from textual.screen import ModalScreen
 from textual.widgets import Label, Static
 from textual.events import Key
+from rich.markup import escape
 
 _log = logging.getLogger(__name__)
 
@@ -104,7 +105,7 @@ class SubagentDetailScreen(ModalScreen[None]):
     def compose(self) -> ComposeResult:
         self._session_data = self._load_session()
         with Container(id="detail_dialog"):
-            yield Label(f"Subagent: {self._role}", id="detail_title")
+            yield Label(f"Subagent: {self._role}", id="detail_title", markup=False)
             # Meta line
             if self._session_data:
                 ts = self._session_data.get("timestamp", 0)
@@ -120,12 +121,12 @@ class SubagentDetailScreen(ModalScreen[None]):
                 n_msgs = self._session_data.get("message_count", 0)
                 meta = (
                     f"{date_str}  ·  {status}  ·  {n_msgs} messages\n"
-                    f"[dim]Task:[/dim] {self._task[:72]}"
+                    f"[dim]Task:[/dim] {escape(self._task[:72])}"
                 )
                 yield Static(meta, id="detail_meta", markup=True)
             else:
                 yield Static(
-                    f"[dim]Task:[/dim] {self._task[:72]}\n"
+                    f"[dim]Task:[/dim] {escape(self._task[:72])}\n"
                     f"[dim]Session file not yet available (still running or not saved)[/dim]",
                     id="detail_meta",
                     markup=True,
@@ -150,7 +151,7 @@ class SubagentDetailScreen(ModalScreen[None]):
                         if len(content) > 300:
                             preview += " …"
                         yield Static(
-                            f"[bold {color}]{role.upper()}[/] {preview}",
+                            f"[bold {color}]{escape(str(role).upper())}[/] {escape(preview)}",
                             classes="msg_row",
                             markup=True,
                         )

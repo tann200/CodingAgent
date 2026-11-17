@@ -18,8 +18,12 @@ def test_context_builder_uses_summary_cache(tmp_path):
     skills = []
     task = "Do task"
     tools = []
-    # retrieved snippet provides a different snippet; builder should prefer cache
-    retrieved = [{"file_path": "src/main.py", "snippet": "RAW LONG FILE CONTENT"}]
+    # retrieved snippet provides a targeted snippet -> preserved instead of summary stub;
+    # files without targeted snippet fall back to summary_cache
+    retrieved = [
+        {"file_path": "src/main.py", "snippet": "TARGETED MATCH LINE"},
+        {"file_path": "src/other.py"},
+    ]
 
     msgs = builder.build_prompt(
         role_name=role,
@@ -30,7 +34,8 @@ def test_context_builder_uses_summary_cache(tmp_path):
         retrieved_snippets=retrieved,
     )
     system = msgs[0]["content"]
-    assert "SHORT SUMMARY FROM CACHE" in system
+    assert "TARGETED MATCH LINE" in system
+    assert "SHORT SUMMARY FROM CACHE" not in system or "src/other.py" in system
     assert "RAW LONG FILE CONTENT" not in system
 
 

@@ -13,7 +13,7 @@ from enum import Enum
 from typing import Any, Callable, Dict, List, Optional
 from pathlib import Path
 
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, Field, field_validator
 
 from src.core.messaging.event_types import AgentEnd, AgentStart, SessionCreated
@@ -31,10 +31,31 @@ _TASK_REGISTRY_TTL_SECONDS: float = float(
 )
 
 # Bounded thread pool for task execution — prevents unbounded thread creation.
+_TASK_EXECUTOR_LOCK = threading.Lock()
 _TASK_EXECUTOR = ThreadPoolExecutor(
     max_workers=int(os.environ.get("CODING_AGENT_TASK_MAX_WORKERS", "10")),
     thread_name_prefix="task",
 )
+
+
+def _get_task_executor() -> ThreadPoolExecutor:
+    global _TASK_EXECUTOR
+    with _TASK_EXECUTOR_LOCK:
+        if getattr(_TASK_EXECUTOR, "_shutdown", False):
+            _TASK_EXECUTOR = ThreadPoolExecutor(
+                max_workers=int(os.environ.get("CODING_AGENT_TASK_MAX_WORKERS", "10")),
+                thread_name_prefix="task",
+            )
+        return _TASK_EXECUTOR
+
+
+def shutdown_task_executor(wait: bool = False) -> None:
+    """Shut down the background task executor (called from FastAPI lifespan exit)."""
+    with _TASK_EXECUTOR_LOCK:
+        try:
+            _TASK_EXECUTOR.shutdown(wait=wait)
+        except Exception:
+            pass
 
 # Bounded queue limit for admitted tasks waiting to execute.
 _TASK_MAX_QUEUE: int = int(
@@ -268,12 +289,14 @@ def _run_task_thread(
         rec["status"] = TaskStatus.RUNNING
         rec["started_at"] = time.time()
 
-    from src.core.orchestration.event_bus import set_session_id
-    set_session_id(session_id)
+    from src.core.orchestration.event_bus import reset_session_id, set_session_id
+    from src.core.orchestration.orchestrator_scheduler import suppress_scheduler_init
+
+    sess_token = set_session_id(session_id)
 
     if bus:
         try:
-            bus.publish_typed(AgentStart(task_id=task_id, session_id=session_id, task=redact_secrets(task[:200])))
+            bus.publish_typed(AgentStart(task_id=task_id, session_id=session_id, task=redact_secrets(task)[:200]))
         except Exception:
             pass
 
@@ -285,13 +308,15 @@ def _run_task_thread(
             raise RuntimeError("Task was cancelled before start")
 
         from src.server.app import _get_or_create_orchestrator as orchestrator_factory
-        try:
-            orch = orchestrator_factory(working_dir, model, event_bus=bus)
-        except TypeError:
-            orch = orchestrator_factory(working_dir, model)
+        with suppress_scheduler_init():
+            try:
+                orch = orchestrator_factory(working_dir, model, event_bus=bus)
+            except TypeError:
+                orch = orchestrator_factory(working_dir, model)
 
         # Propagate task_id and session_id into orchestrator state so session stores,
         # message history, and checkpoints are tied to the client session.
+        orch._skip_scheduler = True
         orch._current_task_id = session_id
         orch.session_id = session_id
         orch.task_id = task_id
@@ -313,12 +338,27 @@ def _run_task_thread(
                 raw_msgs = orch.session_store.get_messages(session_id)
                 for m in raw_msgs:
                     if isinstance(m, dict) and "role" in m and "content" in m:
-                        prior_messages.append({"role": m["role"], "content": m["content"]})
+                        entry = {"role": m["role"], "content": m["content"]}
+                        for extra_k in ("tool_calls", "tool_call_id", "name"):
+                            if extra_k in m:
+                                entry[extra_k] = m[extra_k]
+                        prior_messages.append(entry)
             except Exception:
                 pass
         elif hasattr(orch, "msg_mgr") and orch.msg_mgr:
             try:
                 prior_messages = list(orch.msg_mgr.get_messages())
+            except Exception:
+                pass
+
+        if prior_messages and hasattr(orch, "msg_mgr") and orch.msg_mgr is not None:
+            try:
+                msg_lock = getattr(orch.msg_mgr, "_lock", None)
+                if msg_lock is not None:
+                    with msg_lock:
+                        orch.msg_mgr.messages = list(prior_messages)
+                else:
+                    orch.msg_mgr.messages = list(prior_messages)
             except Exception:
                 pass
 
@@ -347,6 +387,7 @@ def _run_task_thread(
         error_text = str(exc)
         log.exception("Task %s failed: %s", task_id, exc)
     finally:
+        reset_session_id(sess_token)
         if orch is not None:
             try:
                 if hasattr(orch, "close") and callable(orch.close):
@@ -383,10 +424,20 @@ def _run_task_thread(
             pass
 
 
+def _require_admin_auth_dep(request: Request) -> None:
+    if _deps.require_admin_auth is not None:
+        _deps.require_admin_auth(request)
+
+
 task_router = APIRouter(tags=["tasks"])
 
 
-@task_router.post("/task", response_model=TaskStatusResponse, status_code=202)
+@task_router.post(
+    "/task",
+    response_model=TaskStatusResponse,
+    status_code=202,
+    dependencies=[Depends(_require_admin_auth_dep)],
+)
 async def submit_task(request_body: TaskCreateRequest, request: Request):
     if _deps.require_admin_auth is not None:
         _deps.require_admin_auth(request)
@@ -441,7 +492,7 @@ async def submit_task(request_body: TaskCreateRequest, request: Request):
         except Exception:
             pass
 
-    _TASK_EXECUTOR.submit(
+    _get_task_executor().submit(
         _run_task_thread,
         task_id,
         session_id,
@@ -458,7 +509,11 @@ async def submit_task(request_body: TaskCreateRequest, request: Request):
     )
 
 
-@task_router.get("/task/{task_id}", response_model=TaskStatusResponse)
+@task_router.get(
+    "/task/{task_id}",
+    response_model=TaskStatusResponse,
+    dependencies=[Depends(_require_admin_auth_dep)],
+)
 async def get_task_status(task_id: str, request: Request):
     if _deps.require_admin_auth is not None:
         _deps.require_admin_auth(request)
@@ -477,7 +532,11 @@ async def get_task_status(task_id: str, request: Request):
     )
 
 
-@task_router.post("/task/{task_id}/cancel", response_model=TaskStatusResponse)
+@task_router.post(
+    "/task/{task_id}/cancel",
+    response_model=TaskStatusResponse,
+    dependencies=[Depends(_require_admin_auth_dep)],
+)
 async def cancel_task(task_id: str, request: Request):
     if _deps.require_admin_auth is not None:
         _deps.require_admin_auth(request)
@@ -503,7 +562,11 @@ async def cancel_task(task_id: str, request: Request):
     )
 
 
-@task_router.get("/tasks", response_model=List[TaskStatusResponse])
+@task_router.get(
+    "/tasks",
+    response_model=List[TaskStatusResponse],
+    dependencies=[Depends(_require_admin_auth_dep)],
+)
 async def list_tasks(request: Request, limit: int = 50):
     if _deps.require_admin_auth is not None:
         _deps.require_admin_auth(request)

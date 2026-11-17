@@ -97,10 +97,22 @@ class KVCacheGovernor:
         warning_threshold: float = 0.70,
         compact_threshold: float = 0.85,
         cpu_token_budget: int = 8192,
+        kv_cache_quant: bool | str = False,
+        is_moe: bool = False,
     ):
         self.max_vram_gb = max(0.0, float(max_vram_gb))
         self.model_weights_gb = float(model_weights_gb)
-        self.kv_per_token_mb = float(kv_per_token_mb)
+        q_scale = 1.0
+        if isinstance(kv_cache_quant, str):
+            ql = kv_cache_quant.strip().lower()
+            if ql in ("q4", "q4_0", "4bit"):
+                q_scale = 0.25
+            elif ql in ("q8", "q8_0", "8bit", "true", "1"):
+                q_scale = 0.5
+        elif kv_cache_quant:
+            q_scale = 0.5
+        moe_scale = 0.35 if is_moe else 1.0
+        self.kv_per_token_mb = float(kv_per_token_mb) * q_scale * moe_scale
         self.overhead_gb = float(overhead_gb)
 
         if self.max_vram_gb == 0.0:
@@ -214,14 +226,60 @@ def create_governor_for_model(
         hardware = runtime.hardware
 
         # Skip if VRAM is 0 or model weights are 0 (cloud fallback)
-        if hardware.vram_gb <= 0 or model.compute_weights_gb() <= 0:
+        weights_gb = model.compute_weights_gb()
+        if hardware.vram_gb <= 0 or weights_gb <= 0:
+            return None
+        # If local weights exceed available VRAM (inference server is partial CPU offloading),
+        # do not instantiate a 0-budget governor that falsely overflows on turn 1.
+        if (hardware.vram_gb - weights_gb - 0.5) <= 0:
             return None
 
+        arch_val = getattr(getattr(model, "architecture", None), "value", getattr(model, "architecture", ""))
         return KVCacheGovernor(
             max_vram_gb=hardware.vram_gb,
-            model_weights_gb=model.compute_weights_gb(),
+            model_weights_gb=weights_gb,
             kv_per_token_mb=model.kv_per_token_mb,
+            kv_cache_quant=runtime.kv_cache_quant,
+            is_moe=str(arch_val).lower() == "moe",
         )
     except Exception as e:
         logger.debug(f"KVCacheGovernor: failed to create for {model_name}: {e}")
         return None
+
+
+def get_or_create_governor_for_orchestrator(
+    orchestrator: object,
+    model_name: Optional[str],
+    state: Optional[dict] = None,
+) -> Optional[KVCacheGovernor]:
+    """Return a cached KVCacheGovernor on *orchestrator*, resetting post-compaction."""
+    if not model_name:
+        return None
+    gov = getattr(orchestrator, "_kv_governor", None) if orchestrator is not None else None
+    cached_model = getattr(orchestrator, "_kv_governor_model", None) if orchestrator is not None else None
+    if gov is None or cached_model != model_name:
+        gov = create_governor_for_model(model_name)
+        if orchestrator is not None:
+            try:
+                setattr(orchestrator, "_kv_governor", gov)
+                setattr(orchestrator, "_kv_governor_model", model_name)
+                setattr(orchestrator, "_kv_governor_compactions", 0)
+            except Exception:
+                pass
+    if gov is not None and state is not None and orchestrator is not None:
+        comp_cnt = int((state.get("run") or {}).get("compactions") or 0)
+        seen_cnt = int(getattr(orchestrator, "_kv_governor_compactions", 0) or 0)
+        if comp_cnt > seen_cnt:
+            gov.reset()
+            try:
+                setattr(orchestrator, "_kv_governor_compactions", comp_cnt)
+            except Exception:
+                pass
+    return gov
+
+
+def reset_governor_for_orchestrator(orchestrator: Optional[object]) -> None:
+    """Reset the active KVCacheGovernor attached to *orchestrator* after compaction."""
+    gov = getattr(orchestrator, "_kv_governor", None) if orchestrator is not None else None
+    if isinstance(gov, KVCacheGovernor):
+        gov.reset()

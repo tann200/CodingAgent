@@ -134,11 +134,23 @@ class AgentApp(
     is_streaming = reactive(False)
     agent_running = reactive(False)
 
-    def __init__(self) -> None:
+    def __init__(
+        self,
+        working_dir: Optional[Path] = None,
+        trusted: Optional[bool] = None,
+        plugin_dir: Optional[str] = None,
+    ) -> None:
         super().__init__()
         import uuid as _uuid
 
         from .core_bridge import AgentBridge
+
+        if working_dir is not None:
+            self._initial_working_dir = working_dir
+        if trusted is not None:
+            self._initial_trusted = trusted
+        if plugin_dir is not None:
+            self._initial_plugin_dir = plugin_dir
 
         _init_wd: Optional[Path] = getattr(self, "_initial_working_dir", None)
         self._bridge = AgentBridge(self, working_dir=_init_wd)
@@ -428,6 +440,15 @@ class AgentApp(
 
             logger.info(f"_activate_provider: persisted active={norm_id} to providers.json")
 
+            try:
+                from src.core.user_prefs import UserPrefs
+
+                prefs = UserPrefs.load()
+                prefs.selected_model_provider = norm_id
+                prefs.save()
+            except Exception:
+                pass
+
             adapter = pm.get_provider(norm_id)
             orch = getattr(self._bridge, "_orchestrator", None)
             if orch is not None:
@@ -622,8 +643,9 @@ class AgentApp(
 
         enterprise_url = getattr(event, "enterprise_url", None)
 
+        import asyncio
         try:
-            flow = start_device_flow(enterprise_url=enterprise_url)
+            flow = await asyncio.to_thread(start_device_flow, enterprise_url=enterprise_url)
         except Exception as exc:
             logger.error(f"start_device_flow failed: {exc}")
             self.notify(f"Failed to start GitHub login: {exc}", severity="error")
@@ -829,3 +851,40 @@ class AgentApp(
         self._clear_chat_panel()
         self._reset_sidebar()
         self.notify("Session cleared")
+
+    def __init_subclass__(cls, **kwargs: object) -> None:
+        super().__init_subclass__(**kwargs)
+        _register_mixin_decorated_handlers(cls)
+
+
+def _register_mixin_decorated_handlers(app_cls: type) -> None:
+    """Populate ``app_cls._decorated_handlers`` with ``@on(...)`` methods from plain mixins.
+
+    Textual's ``_MessagePumpMeta.__new__`` scans only ``class_dict`` of the
+    MessagePump class itself, so ``@on(...)`` decorators on mixins inheriting
+    from ``AgentAppProtocol`` (plain ``type``) are otherwise ignored at runtime.
+    """
+    handlers = app_cls.__dict__.get("_decorated_handlers")
+    if handlers is None:
+        handlers = {}
+        app_cls._decorated_handlers = handlers  # type: ignore[attr-defined]
+
+    seen_names: set[str] = set()
+    for base in app_cls.__mro__:
+        if base is object:
+            continue
+        is_message_pump_base = base is not app_cls and "_decorated_handlers" in base.__dict__
+        for attr_name, value in base.__dict__.items():
+            if attr_name in seen_names:
+                continue
+            seen_names.add(attr_name)
+            if is_message_pump_base:
+                continue
+            if callable(value) and hasattr(value, "_textual_on"):
+                for message_type, selectors in getattr(value, "_textual_on"):
+                    bucket = handlers.setdefault(message_type, [])
+                    if not any(m is value for m, _ in bucket):
+                        bucket.append((value, selectors))
+
+
+_register_mixin_decorated_handlers(AgentApp)

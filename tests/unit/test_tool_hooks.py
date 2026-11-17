@@ -44,7 +44,7 @@ def _write(path: Path, data: dict) -> None:
 def _runner(working_dir: Path):
     from src.core.orchestration.tool_hooks import ToolHookRunner
 
-    return ToolHookRunner(working_dir=working_dir)
+    return ToolHookRunner(working_dir=working_dir, trusted=True)
 
 
 # ---------------------------------------------------------------------------
@@ -259,7 +259,7 @@ def test_global_hooks_merged(tmp_path, monkeypatch):
     )
 
     monkeypatch.setattr(tool_hooks, "_GLOBAL_HOOKS_PATH", global_hooks)
-    r = tool_hooks.ToolHookRunner(working_dir=tmp_path)
+    r = tool_hooks.ToolHookRunner(working_dir=tmp_path, trusted=True)
     # bash is blocked by global hook; write_file is not
     assert r.run_pre("bash", {}).allowed is False
     assert r.run_pre("write_file", {}).allowed is True
@@ -298,7 +298,7 @@ def test_workspace_hooks_also_active(tmp_path, monkeypatch):
     )
 
     monkeypatch.setattr(tool_hooks, "_GLOBAL_HOOKS_PATH", global_hooks)
-    r = tool_hooks.ToolHookRunner(working_dir=tmp_path)
+    r = tool_hooks.ToolHookRunner(working_dir=tmp_path, trusted=True)
     assert r.run_pre("bash", {}).allowed is False
     assert r.run_pre("write_file", {}).allowed is False
     assert r.run_pre("read_file", {}).allowed is True
@@ -366,7 +366,7 @@ def test_pre_tool_sh_stub_auto_wired(tmp_path):
 
     from src.core.orchestration.tool_hooks import ToolHookRunner
 
-    r = ToolHookRunner(working_dir=tmp_path)
+    r = ToolHookRunner(working_dir=tmp_path, trusted=True)
     result = r.run_pre("bash", {})
     assert result.allowed is False
 
@@ -386,7 +386,7 @@ def test_post_tool_sh_stub_fire_and_forget(tmp_path):
 
     from src.core.orchestration.tool_hooks import ToolHookRunner
 
-    r = ToolHookRunner(working_dir=tmp_path)
+    r = ToolHookRunner(working_dir=tmp_path, trusted=True)
     # Must not raise
     r.run_post("write_file", {"path": "a.py"}, {"ok": True})
 
@@ -426,7 +426,7 @@ def test_stub_not_wired_when_hooks_json_exists(tmp_path):
 
     from src.core.orchestration.tool_hooks import _load_hook_config
 
-    cfg = _load_hook_config(tmp_path)
+    cfg = _load_hook_config(tmp_path, trusted=True)
     # Only the hooks.json entry should be present (1 entry, exit 0, not the stub)
     assert len(cfg.pre_tool) == 1
     assert "bash" in cfg.pre_tool[0].get("match", "")

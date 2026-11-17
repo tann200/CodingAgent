@@ -192,6 +192,12 @@ def refresh_index_after_write(tool_name: str, tool_args: Any, working_dir: str) 
             return
         for path in paths:
             refresh_file_in_index(path, working_dir)
+            try:
+                from src.core.indexing.lsp_manager import notify_active_lsp_file_changed
+
+                notify_active_lsp_file_changed(path, working_dir)
+            except Exception:
+                pass
         logger.debug("repo_context: refreshed %d file(s) after %s", len(paths), tool_name)
     except Exception as exc:
         logger.debug("repo_context: index refresh skipped (non-critical): %s", exc)
@@ -297,6 +303,17 @@ async def _retrieve_context(
                         )
                         if tests and isinstance(tests, list):
                             results.extend(tests[:2])
+                    # Include top PageRank central file overview when symbol graph is populated
+                    if getattr(symbol_graph, "nodes", None):
+                        graph_map = symbol_graph.get_call_graph_context(top_n=5)
+                        if graph_map:
+                            retrieved_snippets.append(
+                                {
+                                    "file_path": "repo_map",
+                                    "snippet": graph_map,
+                                    "relevance": 0.4,
+                                }
+                            )
                 except Exception:
                     pass
                 return results

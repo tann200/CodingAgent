@@ -20,6 +20,8 @@ def memory_search(query: str, workdir: str = ".") -> Dict[str, Any]:
 
     out: Dict[str, Any] = {"query": query, "results": []}
     try:
+        from src.core.security.redaction import redact_data, redact_secrets
+
         task_state = agent_ctx / "TASK_STATE.md"
         if task_state.exists():
             text = task_state.read_text(encoding="utf-8")
@@ -28,7 +30,7 @@ def memory_search(query: str, workdir: str = ".") -> Dict[str, Any]:
             for i, line in enumerate(lines):
                 if query.lower() in line.lower():
                     matches.append(
-                        {"source": "TASK_STATE.md", "line": line, "line_no": i + 1}
+                        {"source": "TASK_STATE.md", "line": redact_secrets(line), "line_no": i + 1}
                     )
             if matches:
                 out["results"].extend(matches)
@@ -38,7 +40,7 @@ def memory_search(query: str, workdir: str = ".") -> Dict[str, Any]:
             rev = list(reversed(trace))
             for entry in rev:
                 if query.lower() in json.dumps(entry).lower():
-                    out["results"].append({"source": "execution_trace", "entry": entry})
+                    out["results"].append({"source": "execution_trace", "entry": redact_data(entry)})
         out["status"] = "ok"
         return out
     except Exception as e:

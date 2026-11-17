@@ -87,10 +87,13 @@ def build_repository_intelligence_block(
     repo_entries: List[str] = []
     for snippet in retrieved_snippets[:10]:
         file_path = snippet.get("file_path")
-        if file_path and file_path in summary_cache:
+        targeted = snippet.get("snippet") or snippet.get("content") or ""
+        if targeted:
+            entry_text = targeted
+        elif file_path and file_path in summary_cache:
             entry_text = summary_cache.get(file_path)
         else:
-            entry_text = snippet.get("snippet") or snippet.get("content") or ""
+            entry_text = ""
         repo_entries.append(
             f"File: {file_path or 'unknown'}\n{sanitize_text(str(entry_text))}\n---\n"
         )

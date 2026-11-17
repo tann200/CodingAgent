@@ -124,6 +124,12 @@ class ToolDefinition:
         has_var_keyword = False
 
         try:
+            import typing as _typing
+
+            try:
+                resolved_hints = _typing.get_type_hints(self.fn)
+            except Exception:
+                resolved_hints = {}
             sig = inspect.signature(self.fn)
             for pname, param in sig.parameters.items():
                 if param.kind == inspect.Parameter.VAR_KEYWORD:
@@ -135,18 +141,36 @@ class ToolDefinition:
                 if pname in ("self", "cls", "workdir", "working_dir"):
                     continue
                 ptype = "string"
-                if param.annotation != inspect.Parameter.empty:
-                    ann = str(param.annotation).lower()
-                    if "int" in ann:
-                        ptype = "integer"
-                    elif "float" in ann or "double" in ann:
-                        ptype = "number"
-                    elif "bool" in ann:
+                ann_obj = resolved_hints.get(pname, param.annotation)
+                if ann_obj != inspect.Parameter.empty:
+                    origin = _typing.get_origin(ann_obj)
+                    if origin is _typing.Union or str(type(ann_obj).__name__) == "UnionType":
+                        non_none = [a for a in _typing.get_args(ann_obj) if a is not type(None)]
+                        if non_none:
+                            ann_obj = non_none[0]
+                            origin = _typing.get_origin(ann_obj)
+                    if ann_obj is bool:
                         ptype = "boolean"
-                    elif "list" in ann or "array" in ann:
+                    elif ann_obj is int:
+                        ptype = "integer"
+                    elif ann_obj is float:
+                        ptype = "number"
+                    elif ann_obj is list or origin in (list, tuple, set, frozenset):
                         ptype = "array"
-                    elif "dict" in ann or "mapping" in ann:
+                    elif ann_obj is dict or origin in (dict,):
                         ptype = "object"
+                    else:
+                        ann = str(ann_obj).lower()
+                        if "bool" in ann:
+                            ptype = "boolean"
+                        elif "int" in ann:
+                            ptype = "integer"
+                        elif "float" in ann or "double" in ann:
+                            ptype = "number"
+                        elif "list" in ann or "array" in ann or "sequence" in ann:
+                            ptype = "array"
+                        elif "dict" in ann or "mapping" in ann:
+                            ptype = "object"
                 prop: dict = {"type": ptype}
                 # Pull per-param description from docstring
                 doc = self.fn.__doc__ or ""

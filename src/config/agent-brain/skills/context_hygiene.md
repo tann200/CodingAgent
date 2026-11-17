@@ -7,7 +7,7 @@ This skill should be applied when dealing with long sessions, potential token ex
 The core strategy involves proactive management of the agent's context to prevent "context rot" and ensure efficient token usage. This means prioritizing critical information, externalizing persistent memory, and using search tools judiciously to fetch only necessary context.
 
 ## Execution Steps
-1.  **Forced Amnesia Acknowledgment:** Understand that conversational history is volatile. Any crucial architectural decisions or context must be explicitly written to persistent memory files (e.g., `.agent-context/memory.md` or `.agent-context/DECISIONS.md`).
+1.  **Forced Amnesia Acknowledgment:** Understand that conversational history is volatile. Any crucial architectural decisions or context must be explicitly written to persistent memory files (e.g., `.codingAgent/memory.md` or `.codingAgent/DECISIONS.md`).
 2.  **Search-First Mandate:**
     *   **Avoid guessing file paths:** Always use directory listing tools (e.g., `list_files`) to ascertain file locations.
     *   **Targeted Reads:** Never read files blindly. Utilize structural search tools (e.g., `grep`) to pinpoint exact symbols or line numbers before reading a file to avoid dumping large, irrelevant content into the context.

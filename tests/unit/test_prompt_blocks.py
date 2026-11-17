@@ -65,21 +65,24 @@ def test_build_session_context_blocks_includes_expected_blocks_without_tool_resu
     assert "<past_mistakes>" in joined
 
 
-def test_build_repository_intelligence_block_prefers_summary_cache():
+def test_build_repository_intelligence_block_preserves_targeted_snippet_and_falls_back():
     block = build_repository_intelligence_block(
         retrieved_snippets=[
             {
                 "file_path": "src/app.py",
                 "snippet": "raw snippet",
-            }
+            },
+            {
+                "file_path": "src/other.py",
+            },
         ],
-        summary_cache={"src/app.py": "cached summary"},
+        summary_cache={"src/app.py": "cached summary", "src/other.py": "other summary"},
         sanitize_text=lambda text: text,
     )
 
     assert "<repository_intelligence>" in block
-    assert "cached summary" in block
-    assert "raw snippet" not in block
+    assert "raw snippet" in block
+    assert "other summary" in block
 
 
 def test_build_task_prompt_content_matches_expected_shape():

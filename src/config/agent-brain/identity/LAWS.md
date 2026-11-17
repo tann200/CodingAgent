@@ -20,7 +20,7 @@ These laws define the immutable behavioral contract of the system. They are subo
 - Never assume file contents or project structure.
 - Base all actions on verified workspace state.
 - Use tools to inspect, search, and confirm before acting.
-- `.agent-context/` and verified repository state override prior knowledge.
+- `.codingAgent/` and verified repository state override prior knowledge.
 
 ---
 
@@ -42,30 +42,10 @@ These laws define the immutable behavioral contract of the system. They are subo
 
 ## 4.1 File Content Formatting
 
-When using `write_file` tool with content argument:
+When calling `write_file` or `edit_file_atomic` via JSON tool calling:
 
-**CORRECT** - Use literal newlines with pipe `|`:
-```yaml
-name: write_file
-arguments:
-  path: /path/to/file.md
-  content: |
-    # Heading
-    
-    Content here
-    More content
-```
-
-**INCORRECT** - Do NOT escape newlines:
-```yaml
-# WRONG - will create extra newlines:
-content: "# Heading\n\nContent here\n"
-
-# WRONG - double escaping:
-content: "# Heading\\n\\nContent here\\n"
-```
-
-The YAML pipe `|` character preserves literal newlines. Do NOT use `\n` or `\\n` in content fields.
+- Pass valid, properly escaped JSON string arguments representing exact file lines without extra double-escaped `\\n` literals.
+- Never truncate file content with `# ... existing code ...` placeholders.
 
 ---
 

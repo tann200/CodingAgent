@@ -13,10 +13,31 @@ class PlanMode:
 
     BLOCKED_TOOLS = {
         "edit_file",
-        "write_file",
-        "delete_file",
+        "edit_file_atomic",
         "edit_by_line_range",
+        "multiedit",
+        "write_file",
+        "create_file",
+        "delete_file",
+        "rename_file",
+        "move_file",
         "apply_patch",
+        "ast_rename",
+        "lsp_rename",
+        "format_file",
+        "create_directory",
+        "mkdir",
+        "bash",
+        "run_bash",
+        "git_commit",
+        "git_add",
+        "git_restore",
+        "git_stash",
+        "files_write",
+        "files_edit",
+        "files_delete",
+        "files_move",
+        "files_patch",
     }
 
     def __init__(self, orchestrator=None):

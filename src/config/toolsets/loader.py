@@ -179,12 +179,16 @@ def get_toolset_for_role(role: str) -> str:
         # debugger
         "debug": "debugger",
         "debugger": "debugger",
-        # analyst
+        # analyst / read-only exploration (fail-closed default)
         "analysis": "analyst",
         "analyst": "analyst",
+        "scout": "analyst",
+        "explore": "analyst",
+        "researcher": "analyst",
+        "research": "analyst",
     }
 
-    canonical = synonym_to_canonical.get(role_in, "operational")
+    canonical = synonym_to_canonical.get(role_in, "analyst")
 
     # map canonical role -> toolset name
     canonical_to_toolset = {
@@ -195,7 +199,7 @@ def get_toolset_for_role(role: str) -> str:
         "analyst": "analysis",
     }
 
-    return canonical_to_toolset.get(canonical, "coding")
+    return canonical_to_toolset.get(canonical, "analysis")
 
 
 def get_tools_for_role(role: str) -> List[str]:

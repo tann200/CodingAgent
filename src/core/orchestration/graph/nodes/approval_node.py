@@ -50,15 +50,15 @@ async def _approval_node_impl(state: StateLike, config: RunnableConfig) -> Dict[
             "plan_mode_approved": False,
         }
 
-    # Validate action digest integrity if pending_action is present
+    # Validate action digest integrity if pending_action is present (fail closed if missing or mismatched)
     if isinstance(pending_action, Mapping):
         act_name = str(pending_action.get("name") or "")
         act_args = dict(pending_action.get("arguments") or {})
         act_digest = str(pending_action.get("digest") or "")
         computed = compute_action_digest(act_name, act_args)
-        if act_digest and computed != act_digest:
+        if not act_digest or computed != act_digest:
             logger.warning(
-                "approval_node: action arguments changed after display (digest mismatch: %s vs %s)",
+                "approval_node: missing or mismatched action digest (%s vs %s)",
                 act_digest,
                 computed,
             )
@@ -66,7 +66,11 @@ async def _approval_node_impl(state: StateLike, config: RunnableConfig) -> Dict[
             run_state["outcome"] = "cancelled"
             return {
                 "run": run_state,
-                "errors": ["Action arguments changed after display — approval revoked"],
+                "errors": [
+                    "Missing action digest — approval denied"
+                    if not act_digest
+                    else "Action arguments changed after display — approval revoked"
+                ],
                 "awaiting_plan_approval": False,
                 "awaiting_user_input": False,
                 "plan_mode_approved": False,
@@ -76,7 +80,15 @@ async def _approval_node_impl(state: StateLike, config: RunnableConfig) -> Dict[
     base_result = await wait_for_user_node(state, config)
     res = dict(base_result)
 
-    approved = res.get("plan_mode_approved") or state.get("plan_mode_approved") or res.get("preview_confirmed")
+    # Determine approval strictly from the interactive result returned by
+    # wait_for_user_node — never let an earlier plan_mode_approved=True
+    # auto-approve a subsequent diff preview or pending action.
+    if state.get("pending_preview_id") or "preview_confirmed" in res:
+        approved = bool(res.get("preview_confirmed"))
+    elif state.get("awaiting_plan_approval") or "plan_mode_approved" in res:
+        approved = bool(res.get("plan_mode_approved"))
+    else:
+        approved = False
     orchestrator = _resolve_orchestrator(state, config)
     if approved:
         if orchestrator is not None:

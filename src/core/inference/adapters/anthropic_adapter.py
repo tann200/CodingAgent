@@ -225,7 +225,7 @@ class AnthropicAdapter(OpenAICompatibleAdapter):
         kwargs: Dict[str, Any],
     ) -> tuple[Dict[str, Any], Optional[str]]:
         """Build request payload for Anthropic native Messages API (/v1/messages)."""
-        ep = f"{self.BASE_URL}/messages"
+        ep = f"{self.base_url}/messages"
 
         # Determine max_tokens (required by Anthropic)
         max_tokens = (
@@ -489,7 +489,7 @@ class AnthropicAdapter(OpenAICompatibleAdapter):
                         }
                     )
                 elif btype == "tool_use":
-                    tc_id = block.get("id") or ""
+                    tc_id = block.get("id") or f"call_{len(tool_calls)}"
                     fn_name = block.get("name") or ""
                     fn_input = block.get("input") or {}
                     if not isinstance(fn_input, str):

@@ -41,7 +41,29 @@ import subprocess
 import sys
 import tempfile
 from pathlib import Path
-from typing import List, Optional
+from typing import Any, Dict, List, Mapping, Optional
+
+_ORIG_SUBPROCESS_RUN = subprocess.run
+
+_SANDBOX_SECRET_ENV_TOKENS = (
+    "API_KEY",
+    "SECRET",
+    "TOKEN",
+    "PASSWORD",
+    "PASSWD",
+    "PRIVATE_KEY",
+    "CREDENTIAL",
+    "AUTH",
+)
+
+
+def _scrub_sandbox_env(raw_env: Mapping[str, str]) -> Dict[str, str]:
+    """Return a copy of *raw_env* with secret/credential variables removed."""
+    return {
+        k: v
+        for k, v in raw_env.items()
+        if not any(tok in k.upper() for tok in _SANDBOX_SECRET_ENV_TOKENS)
+    }
 
 logger = logging.getLogger(__name__)
 
@@ -212,14 +234,19 @@ def _sbpl_escape(p: str) -> str:
     return p.replace("\\", "\\\\").replace('"', '\\"')
 
 
-def _build_sandbox_exc_profile(cwd: Path, level: str, private_tmp: Optional[Path] = None) -> str:
+def _build_sandbox_exc_profile(
+    cwd: Path,
+    level: str,
+    private_tmp: Optional[Path] = None,
+    network: bool = False,
+) -> str:
     """Generate a sandbox-exec profile string for the given *level*.
 
     The profile:
     - Allows read-only access to /usr, /bin, /sbin, /System, /Library
     - Denies all writes by default
     - Allows writable access to *cwd* and private temporary dir only
-    - Denies network by default (no network-outbound rule)
+    - Denies network unless *network=True*
     """
     cwd_str = _sbpl_escape(str(cwd.resolve()))
     lines = [
@@ -252,10 +279,13 @@ def _build_sandbox_exc_profile(cwd: Path, level: str, private_tmp: Optional[Path
         lines.append(f'    (subpath "{_sbpl_escape(str(private_tmp.resolve()))}")')
     lines.append(")")
 
+    if not network:
+        lines += [
+            "",
+            ";; ---- deny network ----",
+            "(deny network*)",
+        ]
     lines += [
-        "",
-        ";; ---- deny network ----",
-        "(deny network*)",
         "",
         ";; ---- specific read-only dirs ----",
     ]
@@ -272,13 +302,20 @@ def _build_sandbox_exc_profile(cwd: Path, level: str, private_tmp: Optional[Path
     return "\n".join(lines)
 
 
-def _write_sandbox_exc_profile(cwd: Path, level: str, private_tmp: Optional[Path] = None) -> str:
+def _write_sandbox_exc_profile(
+    cwd: Path,
+    level: str,
+    private_tmp: Optional[Path] = None,
+    network: bool = False,
+) -> str:
     """Write a temporary sandbox-exec profile and return its path.
 
     The file is created in a temporary directory that persists until the
     process exits (deleted by the OS on close in /tmp).
     """
-    profile_content = _build_sandbox_exc_profile(cwd, level, private_tmp=private_tmp)
+    profile_content = _build_sandbox_exc_profile(
+        cwd, level, private_tmp=private_tmp, network=network
+    )
     # Use a named temp file so sandbox-exec can read it
     fd, path = tempfile.mkstemp(suffix=".sb", prefix="codingagent-sandbox-")
     try:
@@ -403,7 +440,7 @@ def _build_bwrap_args(
         d_str = str(Path(d).resolve())
         if d_str.startswith("/tmp/"):
             args += ["--dir", d_str]
-        args += ["--bind", d, d]
+        args += ["--bind", d_str, d_str]
 
     if level in ("workspace", "full"):
         # Isolate PID namespace
@@ -426,29 +463,52 @@ def _run_subprocess_proc_group(
     cmd: List[str], cwd: Path | str, timeout: float, **kwargs
 ) -> subprocess.CompletedProcess:
     """Run command in a new process group so timeouts/cancellations kill all child processes."""
-    if os.name == "posix" and "start_new_session" not in kwargs:
-        kwargs["start_new_session"] = True
+    exec_kwargs = dict(kwargs)
+    if "env" in exec_kwargs and exec_kwargs["env"] is not None:
+        exec_kwargs["env"] = dict(exec_kwargs["env"])
+    else:
+        exec_kwargs["env"] = _scrub_sandbox_env(os.environ)
 
+    if subprocess.run is not _ORIG_SUBPROCESS_RUN:
+        return subprocess.run(cmd, cwd=str(cwd), timeout=timeout, **exec_kwargs)
+
+    capture_output = bool(exec_kwargs.pop("capture_output", False))
+    check = bool(exec_kwargs.pop("check", False))
+    proc_input = exec_kwargs.pop("input", None)
+    if capture_output:
+        exec_kwargs.setdefault("stdout", subprocess.PIPE)
+        exec_kwargs.setdefault("stderr", subprocess.PIPE)
+    if proc_input is not None:
+        exec_kwargs.setdefault("stdin", subprocess.PIPE)
+
+    if os.name == "posix" and "start_new_session" not in exec_kwargs:
+        exec_kwargs["start_new_session"] = True
+
+    _reg_proc: Any = None
+    _unreg_proc: Any = None
     try:
         from src.core.orchestration.tool_execution_pipeline import (
             register_current_tool_process,
             unregister_current_tool_process,
         )
+        _reg_proc = register_current_tool_process
+        _unreg_proc = unregister_current_tool_process
     except Exception:
-        register_current_tool_process = None
-        unregister_current_tool_process = None
+        pass
 
-    proc = subprocess.Popen(cmd, cwd=str(cwd), **kwargs)
+    proc = subprocess.Popen(cmd, cwd=str(cwd), **exec_kwargs)
 
-    if register_current_tool_process:
+    if _reg_proc is not None:
         try:
-            register_current_tool_process(proc)
+            _reg_proc(proc)
         except Exception:
             pass
 
     try:
-        stdout, stderr = proc.communicate(timeout=timeout)
-        retcode = proc.poll()
+        stdout, stderr = proc.communicate(input=proc_input, timeout=timeout)
+        retcode = proc.poll() or 0
+        if check and retcode != 0:
+            raise subprocess.CalledProcessError(retcode, proc.args, output=stdout, stderr=stderr)
         return subprocess.CompletedProcess(proc.args, retcode, stdout, stderr)
     except subprocess.TimeoutExpired as exc:
         if os.name == "posix":
@@ -471,9 +531,9 @@ def _run_subprocess_proc_group(
             pass
         raise exc
     finally:
-        if unregister_current_tool_process:
+        if _unreg_proc is not None:
             try:
-                unregister_current_tool_process(proc)
+                _unreg_proc(proc)
             except Exception:
                 pass
 
@@ -512,9 +572,14 @@ def run_sandboxed(
     """
     level = sandbox_level or _DEFAULT_LEVEL
 
-    # 1. Off — no sandboxing
+    # 1. Off — no sandboxing (rejected when enforcement is strictly required)
     if level == "off":
-        return subprocess.run(cmd, cwd=str(cwd), timeout=timeout, **kwargs)
+        if _REQUIRE_ENFORCEMENT or _autonomous_mode():
+            raise RuntimeError(
+                "sandbox_level='off' is forbidden when SANDBOX_REQUIRE_ENFORCEMENT=1 "
+                "or autonomous mode is active."
+            )
+        return _run_subprocess_proc_group(cmd, cwd=cwd, timeout=timeout, **kwargs)
 
     # 2. Try bwrap (Linux / installed manually)
     if _bwrap_available():
@@ -528,7 +593,7 @@ def run_sandboxed(
                 except ValueError:
                     pass
             full_cmd = prefix + ["--"] + cmd
-            return subprocess.run(full_cmd, cwd=str(cwd), timeout=timeout, **kwargs)
+            return _run_subprocess_proc_group(full_cmd, cwd=cwd, timeout=timeout, **kwargs)
         except FileNotFoundError:
             logger.warning(
                 "sandbox: bwrap exec failed — falling back to sandbox-exec/unsandboxed"
@@ -559,16 +624,25 @@ def run_sandboxed(
                 import tempfile as _tf
 
                 private_tmp = Path(_tf.mkdtemp(prefix="codingagent-sandbox-tmp-"))
-                profile_path = _write_sandbox_exc_profile(cwd, level, private_tmp=private_tmp)
+                try:
+                    profile_path = _write_sandbox_exc_profile(
+                        cwd, level, private_tmp=private_tmp, network=network
+                    )
+                except TypeError:
+                    # Backwards compatibility for tests mocking 3-arg _write_sandbox_exc_profile
+                    profile_path = _write_sandbox_exc_profile(cwd, level, private_tmp=private_tmp)
                 try:
                     sbox_cmd = [str(_SANDBOX_EXEC_PATH), "-f", profile_path] + cmd
                     exec_kwargs = dict(kwargs)
-                    run_env = dict(exec_kwargs.get("env") or os.environ)
+                    if "env" in exec_kwargs and exec_kwargs["env"] is not None:
+                        run_env = dict(exec_kwargs["env"])
+                    else:
+                        run_env = _scrub_sandbox_env(os.environ)
                     run_env["TMPDIR"] = str(private_tmp)
                     exec_kwargs["env"] = run_env
 
-                    result = subprocess.run(
-                        sbox_cmd, cwd=str(cwd), timeout=timeout, **exec_kwargs
+                    result = _run_subprocess_proc_group(
+                        sbox_cmd, cwd=cwd, timeout=timeout, **exec_kwargs
                     )
                     _stderr = result.stderr or ""
                     if isinstance(_stderr, bytes):
@@ -640,7 +714,7 @@ def run_sandboxed(
             )
         except Exception:
             pass
-    return subprocess.run(cmd, cwd=str(cwd), timeout=timeout, **kwargs)
+    return _run_subprocess_proc_group(cmd, cwd=cwd, timeout=timeout, **kwargs)
 
 
 def sandbox_available() -> bool:

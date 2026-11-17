@@ -3,6 +3,8 @@
 ## Source Of Truth
 
 - Treat the live implementation and tests as authoritative.
+- `docs/SPEC.md` defines the mandatory engineering specification and non-negotiable system invariants that must be followed for all changes.
+- `docs/TASKLIST.md` tracks the prioritized remediation and gap-closure tasks derived from system audits.
 - `docs/audit/audit-instructions.md` defines the audit scope and required report structure.
 - `README.md` and `ARCHITECTURE.md` describe the current implementation and must be updated when behavior, commands, boundaries, or safety guarantees change.
 - Do not restore deleted historical documentation without validating every claim against current code.

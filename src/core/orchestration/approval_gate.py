@@ -201,8 +201,10 @@ class AsyncGate:
                 #
                 # Import is deferred (circular import risk) but done *once*
                 # and cached so the hot path never re-imports.
-                assert _run_with_correlation is not None
-                _wait_coro = _run_with_correlation(loop, None, lambda: ev.wait(timeout))
+                if _run_with_correlation is not None:
+                    _wait_coro = _run_with_correlation(loop, None, lambda: ev.wait(timeout))
+                else:
+                    _wait_coro = loop.run_in_executor(None, ev.wait, timeout)
                 await _asyncio.wait_for(
                     _wait_coro,
                     timeout=timeout + 1,

@@ -58,7 +58,11 @@ def _wire_provider_manager(orch: Any, pm: Any) -> None:
         pm.set_event_bus(orch.event_bus)
     else:
         orch.event_bus = getattr(pm, "_event_bus")
-    _ensure_provider_manager_initialized_sync()
+    _probe = not bool(getattr(orch, "_defer_provider_probe", False))
+    try:
+        _ensure_provider_manager_initialized_sync(probe=_probe)
+    except TypeError:
+        _ensure_provider_manager_initialized_sync()
 
 
 def _select_default_adapter(orch: Any, pm: Any) -> None:

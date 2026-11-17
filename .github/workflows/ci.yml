@@ -70,7 +70,7 @@ jobs:
           python -m ruff check src tests tui --select=E,F,W --ignore=E501
       - name: Type check (mypy)
         run: |
-          python -m mypy src/server src/core/inference/provider_utils.py src/core/orchestration/tool_contracts.py src/core/orchestration/tool_parser.py --ignore-missing-imports --follow-imports=silent --disable-error-code=import-untyped --no-error-summary
+          python -m mypy src/server src/core/evaluation src/core/telemetry src/core/observability src/core/security src/core/scheduler src/core/plugin src/cli src/core/inference/provider_utils.py src/core/orchestration/tool_contracts.py src/core/orchestration/tool_parser.py --ignore-missing-imports --follow-imports=silent --disable-error-code=import-untyped --no-error-summary
 
   unit-tests:
     runs-on: ubuntu-latest
@@ -200,6 +200,23 @@ jobs:
       - name: Run benchmark tests (ET-3)
         run: |
           python -m pytest tests/benchmarks -q -p no:logging
+
+  acceptance:
+    runs-on: ubuntu-latest
+    needs: unit-tests
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install acceptance dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e .[dev,server]
+      - name: Run system acceptance tests
+        run: |
+          python -m pytest tests/acceptance -q -p no:logging
 
   live-provider-checks:
     runs-on: ubuntu-latest

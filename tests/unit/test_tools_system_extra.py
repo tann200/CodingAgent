@@ -21,6 +21,7 @@ def test_grep_tool(tmp_path):
 
 
 def test_git_diff(monkeypatch):
+    monkeypatch.setenv("CODINGAGENT_SANDBOX_ALLOW_UNENFORCED", "1")
     # Mock subprocess.run
     def mock_run(*args, **kwargs):
         class MockProcess:

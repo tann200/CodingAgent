@@ -341,11 +341,14 @@ class OpenAICompatibleAdapter(LLMClient):
         Returns:
             (payload, endpoint) — endpoint is None when no URL is resolvable.
         """
+        filtered = {
+            k: v for k, v in kwargs.items() if k not in ("num_ctx", "kv_cache_quant")
+        }
         if isinstance(messages, (list, tuple)):
             payload: Dict[str, Any] = {
                 "model": model_name,
                 "messages": messages,
-                **kwargs,
+                **filtered,
             }
             ep = self._compose("chat/completions") or self._compose("responses")
         else:
@@ -395,6 +398,7 @@ class OpenAICompatibleAdapter(LLMClient):
         ep: str,
         payload: Dict[str, Any],
         stream: bool,
+        timeout: Optional[float] = None,
     ) -> Any:
         """POST *payload* to *ep* with exponential-backoff retry on transient errors.
 
@@ -402,6 +406,7 @@ class OpenAICompatibleAdapter(LLMClient):
         Raises on unrecoverable errors.
         """
         _MAX_RETRIES = 3
+        effective_timeout = timeout if timeout is not None else self.DEFAULT_TIMEOUT
         r = None
         last_exc: Optional[Exception] = None
         for _attempt in range(_MAX_RETRIES):
@@ -410,13 +415,11 @@ class OpenAICompatibleAdapter(LLMClient):
                     ep,
                     self._headers(),
                     payload,
-                    timeout=self.DEFAULT_TIMEOUT,
+                    timeout=effective_timeout,
                     stream=stream,
                 )
-                if stream:
-                    return r
                 if not is_retryable_status_code(r.status_code):
-                    break
+                    return r
                 _logger.warning(
                     "%s.chat attempt %d/%d: status %d, retrying",
                     self.__class__.__name__,
@@ -424,6 +427,11 @@ class OpenAICompatibleAdapter(LLMClient):
                     _MAX_RETRIES,
                     r.status_code,
                 )
+                if _attempt < _MAX_RETRIES - 1:
+                    try:
+                        r.close()
+                    except Exception:
+                        pass
             except requests.exceptions.ConnectionError as _ce:
                 last_exc = _ce
                 _logger.warning(
@@ -589,12 +597,12 @@ class OpenAICompatibleAdapter(LLMClient):
                     list(payload.keys()),
                 )
 
+            if format_json and "response_format" not in payload:
+                payload["response_format"] = {"type": "json_object"}
+
             self._apply_provider_flags(payload)
 
-            r = self._execute_with_retry(ep, payload, stream)
-
-            if stream:
-                return r
+            r = self._execute_with_retry(ep, payload, stream, timeout=timeout)
 
             if r is None:  # pragma: no cover — defensive; satisfies type narrowing
                 raise RuntimeError(
@@ -605,6 +613,9 @@ class OpenAICompatibleAdapter(LLMClient):
                 r.raise_for_status()
             except Exception as he:
                 return self._parse_error_response(he, r)
+
+            if stream:
+                return r
 
             try:
                 return r.json()
@@ -634,26 +645,19 @@ class OpenAICompatibleAdapter(LLMClient):
         stream: bool = False,
         timeout: Optional[float] = None,
         provider: Optional[str] = None,
+        format_json: bool = False,
         **kwargs,
     ) -> Dict[str, Any]:
         """Synchronous call: return normalized payload."""
         try:
             raw_response = self._chat_internal(
-                messages, model=model, stream=stream, timeout=timeout, **kwargs
+                messages,
+                model=model,
+                stream=stream,
+                format_json=format_json,
+                timeout=timeout,
+                **kwargs,
             )
-
-            if stream:
-                return {
-                    "ok": True,
-                    "provider": self.name,
-                    "model": model or self.default_model or "unknown",
-                    "latency": 0.0,
-                    "prompt_tokens": 0,
-                    "completion_tokens": 0,
-                    "total_tokens": 0,
-                    "choices": [],
-                    "raw": raw_response,
-                }
 
             if (
                 isinstance(raw_response, dict)
@@ -676,6 +680,19 @@ class OpenAICompatibleAdapter(LLMClient):
                     "provider": self.name,
                     "model": model or self.default_model or "unknown",
                     "error": raw_response["error"],
+                    "raw": raw_response,
+                }
+
+            if stream:
+                return {
+                    "ok": True,
+                    "provider": self.name,
+                    "model": model or self.default_model or "unknown",
+                    "latency": 0.0,
+                    "prompt_tokens": 0,
+                    "completion_tokens": 0,
+                    "total_tokens": 0,
+                    "choices": [],
                     "raw": raw_response,
                 }
 
@@ -728,10 +745,13 @@ class OpenAICompatibleAdapter(LLMClient):
             cache_read_input_tokens: int = 0
             if raw_response and "usage" in raw_response:
                 _u = raw_response["usage"]
-                cache_creation_input_tokens = int(
-                    _u.get("cache_creation_input_tokens", 0) or 0
-                )
-                cache_read_input_tokens = int(_u.get("cache_read_input_tokens", 0) or 0)
+                if isinstance(_u, dict):
+                    cache_creation_input_tokens = int(
+                        _u.get("cache_creation_input_tokens", 0) or 0
+                    )
+                    cache_read_input_tokens = int(
+                        _u.get("cache_read_input_tokens", 0) or 0
+                    )
 
             return {
                 "ok": True,

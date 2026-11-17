@@ -48,8 +48,9 @@ class TestBashToolShellOperatorBlocking:
                 or "not allowed" in result["error"].lower()
             )
 
-    def test_bash_accepts_safe_commands(self):
+    def test_bash_accepts_safe_commands(self, monkeypatch):
         """Test that bash tool accepts safe commands."""
+        monkeypatch.setenv("CODINGAGENT_SANDBOX_ALLOW_UNENFORCED", "1")
         from src.tools import file_tools
 
         safe_commands = [

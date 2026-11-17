@@ -90,6 +90,10 @@ def _build_tracer():
         return None
 
     try:
+        existing = _ot_trace.get_tracer_provider()  # type: ignore[union-attr]
+        if hasattr(existing, "add_span_processor"):
+            return _ot_trace.get_tracer(_SERVICE)  # type: ignore[union-attr]
+
         resource = _Resource.create({_SERVICE_NAME: _SERVICE})  # type: ignore[union-attr]
         provider = _TracerProvider(resource=resource)  # type: ignore[misc]
 
@@ -256,16 +260,24 @@ def wire_event_bus(event_bus: Any) -> None:
     """
 
     def _on_tool_start(payload: dict) -> None:
-        _bridge_event("codingagent.tool.start", payload, ["tool_name", "session_id"])
+        _bridge_event(
+            "codingagent.tool.start",
+            payload,
+            ["tool", "tool_name", "title", "tool_call_id", "session_id"],
+        )
 
     def _on_tool_finish(payload: dict) -> None:
         _bridge_event(
-            "codingagent.tool.finish", payload, ["tool_name", "session_id", "ok"]
+            "codingagent.tool.finish",
+            payload,
+            ["tool", "tool_name", "title", "tool_call_id", "session_id", "ok", "status"],
         )
 
     def _on_tool_error(payload: dict) -> None:
         _bridge_event(
-            "codingagent.tool.error", payload, ["tool_name", "session_id", "error"]
+            "codingagent.tool.error",
+            payload,
+            ["tool", "tool_name", "title", "tool_call_id", "session_id", "error"],
         )
 
     def _on_perception(payload: dict) -> None:

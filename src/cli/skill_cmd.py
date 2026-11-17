@@ -104,20 +104,29 @@ def resolve_export_destination(
     out_dir: Optional[str] = None,
 ) -> Path:
     """Compute the target file path for an exported skill."""
-    base = Path(resolve_workdir(out_dir))
+    if not skill_name or "/" in skill_name or "\\" in skill_name or ".." in skill_name:
+        raise ValueError(f"Invalid skill name: {skill_name!r}")
+    clean_skill_name = Path(skill_name).name
+    if clean_skill_name != skill_name:
+        raise ValueError(f"Invalid skill name: {skill_name!r}")
+
+    base = Path(resolve_workdir(out_dir)).resolve()
     t_lower = (target or "agensi").lower()
 
     if t_lower == "claude":
-        dest_dir = base / ".claude" / "skills" / skill_name
+        dest_dir = base / ".claude" / "skills" / clean_skill_name
     elif t_lower == "cursor":
-        dest_dir = base / ".cursor" / "skills" / skill_name
+        dest_dir = base / ".cursor" / "skills" / clean_skill_name
     elif t_lower == "agensi":
-        dest_dir = base / ".agensi" / "skills" / skill_name
+        dest_dir = base / ".agensi" / "skills" / clean_skill_name
     else:
         # Direct directory export
-        dest_dir = base / skill_name
+        dest_dir = base / clean_skill_name
 
-    return dest_dir / "SKILL.md"
+    dest_file = (dest_dir / "SKILL.md").resolve()
+    if not dest_file.is_relative_to(base):
+        raise ValueError(f"Export destination escapes base directory: {dest_file}")
+    return dest_file
 
 
 def export_single_skill(
@@ -138,13 +147,15 @@ def export_single_skill(
         content = path.read_text(encoding="utf-8")
         meta_name, desc, body = extract_skill_metadata(content, skill_name)
 
-        # Standardise frontmatter
+        # Standardise frontmatter safely via yaml
+        import yaml
+        fm_dict = {"name": meta_name, "description": desc}
+        fm_yaml = yaml.safe_dump(fm_dict, sort_keys=False).strip()
         standardized_content = (
             f"---\n"
-            f"name: {meta_name}\n"
-            f"description: {desc}\n"
+            f"{fm_yaml}\n"
             f"---\n\n"
-            f"{body}\n"
+            f"{body.strip()}\n"
         )
 
         dest_file = resolve_export_destination(skill_name, target, out_dir)

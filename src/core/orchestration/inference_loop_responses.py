@@ -57,17 +57,65 @@ def _build_assistant_message(
 
 
 def _sync_msg_mgr_with_final_history(orch: Any, final_state: Dict[str, Any]) -> None:
-    """Append only new graph-produced turns into the MessageManager."""
+    """Sync graph-produced history (including compactions and tool call metadata) into MessageManager."""
     if not final_state or "history" not in final_state:
         return
 
-    msg_count_before = len(orch.msg_mgr.messages)
-    if len(final_state["history"]) <= msg_count_before:
+    final_history = list(final_state["history"] or [])
+    if not final_history:
         return
 
-    new_turns = final_state["history"][msg_count_before:]
-    for turn in new_turns:
-        orch.msg_mgr.append(turn["role"], turn["content"])
+    lock = getattr(orch.msg_mgr, "_lock", None)
+
+    def _entry_from_turn(turn: Dict[str, Any]) -> Dict[str, Any]:
+        entry: Dict[str, Any] = {
+            "role": turn.get("role", "user"),
+            "content": turn.get("content", ""),
+        }
+        for key in ("tool_calls", "tool_call_id", "name"):
+            if key in turn and turn[key] is not None:
+                entry[key] = turn[key]
+        return entry
+
+    def _apply() -> None:
+        msgs_before = list(orch.msg_mgr.messages)
+        msg_count_before = len(msgs_before)
+
+        # Detect compaction: final_history became shorter/replaced and starts with compacted summary
+        is_compacted = False
+        if len(final_history) <= msg_count_before and final_history:
+            first_content = str(final_history[0].get("content") or "")
+            if (
+                len(final_history) < msg_count_before
+                or "<summary>" in first_content
+                or "Conversation summary:" in first_content
+                or "This session is being continued from a previous conversation" in first_content
+            ):
+                is_compacted = True
+
+        if is_compacted:
+            if hasattr(orch.msg_mgr, "clear"):
+                orch.msg_mgr.clear()
+            else:
+                orch.msg_mgr.messages.clear()
+            for turn in final_history:
+                extras = {k: turn[k] for k in ("tool_calls", "tool_call_id", "name") if k in turn and turn[k] is not None}
+                orch.msg_mgr.append(turn.get("role", "user"), turn.get("content", ""), **extras)
+            return
+
+        if len(final_history) <= msg_count_before:
+            return
+
+        new_turns = final_history[msg_count_before:]
+        for turn in new_turns:
+            extras = {k: turn[k] for k in ("tool_calls", "tool_call_id", "name") if k in turn and turn[k] is not None}
+            orch.msg_mgr.append(turn.get("role", "user"), turn.get("content", ""), **extras)
+
+    if lock is not None:
+        with lock:
+            _apply()
+    else:
+        _apply()
 
 
 def _extract_assistant_and_tool_results(

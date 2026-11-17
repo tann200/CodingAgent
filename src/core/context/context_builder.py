@@ -896,6 +896,7 @@ class ContextBuilder:
         conversation: List[Dict],
         static_prefix: str,
         dynamic_parts: List[str],
+        conversation_quota: Optional[int] = None,
     ) -> Tuple[Optional[List[Dict]], str]:
         """Return budget-filtered retrieved snippets and the rendered repo block."""
         if not retrieved_snippets:
@@ -905,9 +906,17 @@ class ContextBuilder:
             try:
                 _sys_text = static_prefix + "\n\n".join(dynamic_parts)
                 _file_descs = build_context_controller_descriptors(retrieved_snippets)
-                _included, _excluded = context_controller.enforce_budget(
-                    _file_descs, conversation, _sys_text
-                )
+                try:
+                    _included, _excluded = context_controller.enforce_budget(
+                        _file_descs,
+                        conversation,
+                        _sys_text,
+                        conversation_quota=conversation_quota,
+                    )
+                except TypeError:
+                    _included, _excluded = context_controller.enforce_budget(
+                        _file_descs, conversation, _sys_text
+                    )
                 if _excluded:
                     logging.getLogger(__name__).debug(
                         "ContextController: excluded %d snippet(s) to fit budget",
@@ -997,6 +1006,19 @@ class ContextBuilder:
             _lsp_block = get_lsp_context_block(workdir=self._agent_context_dir.parent)
             if _lsp_block:
                 dynamic_parts.append(_lsp_block)
+
+            try:
+                from src.core.indexing.lsp_context import (  # type: ignore[import]
+                    get_lsp_diagnostics_block,
+                )
+
+                _lsp_diag_block = get_lsp_diagnostics_block(
+                    workdir=self._agent_context_dir.parent
+                )
+                if _lsp_diag_block:
+                    dynamic_parts.append(_lsp_diag_block)
+            except ImportError:
+                pass
         except Exception as exc:
             logger.debug("context_builder: LSP context block failed: %s", exc)  # never fail prompt build due to LSP errors
 
@@ -1138,6 +1160,15 @@ class ContextBuilder:
             full_system = static_prefix + "\n\n" + "\n\n".join(dynamic_parts)
         else:
             full_system = static_prefix
+
+        # TASK-13: Compute actual system token cost after assembly so conversation_quota
+        # reflects real assembled prompt size rather than a static _SYSTEM_OVERHEAD_TOKENS guess.
+        try:
+            system_tokens = int(self.token_estimator(full_system) or 0)
+        except Exception:
+            system_tokens = _SYSTEM_OVERHEAD_TOKENS
+        dynamic_quota = max(0, max_tokens - system_tokens)
+        conversation_quota = min(conversation_quota, dynamic_quota) if conversation_quota > 0 else dynamic_quota
 
         built_messages.append({"role": "system", "content": full_system})
 

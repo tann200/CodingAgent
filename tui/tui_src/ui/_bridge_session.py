@@ -273,6 +273,28 @@ class BridgeSessionMixin(AgentBridgeProtocol):
         self._bus.publish_typed(SessionRequestState(session_id="default"))
         # Kick off the startup chain so the UI status indicators are updated.
         self._publish_system_settings()
+        # Offload deferred HTTP provider probes so UI startup stays non-blocking.
+        if (
+            self._orchestrator is not None
+            and not getattr(self, "_bg_probe_started", False)
+            and hasattr(self, "_thread_pool")
+        ):
+            self._bg_probe_started = True
+
+            def _run_probe() -> None:
+                try:
+                    from src.core.inference.llm_manager import get_provider_manager
+
+                    pm = get_provider_manager()
+                    if pm is not None and hasattr(pm, "probe_providers"):
+                        pm.probe_providers()
+                except Exception:
+                    pass
+
+            try:
+                self._thread_pool.submit(_run_probe)
+            except Exception:
+                pass
 
     def publish_session_new(self) -> None:
         """Publish session.new on /new command (§10.3)."""

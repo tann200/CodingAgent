@@ -127,7 +127,7 @@ def compare_baseline(baseline: Dict[str, Any], results: list) -> Dict[str, Any]:
         "unchanged": sorted(set(unchanged)),
         "new": new,
         "missing": missing,
-        "got_regressions": bool(regressed),
+        "got_regressions": bool(regressed) or bool(missing),
     }
 
 

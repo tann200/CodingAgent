@@ -3,6 +3,8 @@ import sys
 import threading
 import queue as _queue
 
+import pytest
+
 # ruff: noqa: E501
 
 # Ensure the repository root is on sys.path so `import src.*` works during pytest
@@ -10,23 +12,40 @@ _ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 if _ROOT not in sys.path:
     sys.path.insert(0, _ROOT)
 
-# In test runners without bubblewrap/sandbox-exec (e.g. GitHub Actions Linux VMs),
-# permit unenforced execution for tests that invoke local shell commands.
-os.environ.setdefault("CODINGAGENT_SANDBOX_ALLOW_UNENFORCED", "1")
 
-# If the home directory is not writable (e.g. sandboxed test runner),
-# redirect HOME to /tmp to ensure test logs and artifacts can be created.
-try:
-    from pathlib import Path
-    _probe_dir = Path.home() / ".coding_agent" / "logs"
-    _probe_dir.mkdir(parents=True, exist_ok=True)
-    _probe_file = _probe_dir / ".write_probe"
-    with open(_probe_file, "a") as _f:
-        pass
-    _probe_file.unlink(missing_ok=True)
-except Exception:
+_ORIG_HOME: str | None = os.environ.get("HOME")
+_TEMP_HOME_OBJ = None
+
+
+def pytest_configure(config):
+    """Redirect HOME into a scoped TemporaryDirectory only if ~/.coding_agent/logs is non-writable."""
+    global _ORIG_HOME, _TEMP_HOME_OBJ
     import tempfile
-    os.environ["HOME"] = tempfile.gettempdir()
+    from pathlib import Path
+
+    _ORIG_HOME = os.environ.get("HOME")
+    try:
+        _probe_dir = Path.home() / ".coding_agent" / "logs"
+        _probe_dir.mkdir(parents=True, exist_ok=True)
+        _probe_file = _probe_dir / ".write_probe"
+        with open(_probe_file, "a"):
+            pass
+        _probe_file.unlink(missing_ok=True)
+    except Exception:
+        _TEMP_HOME_OBJ = tempfile.TemporaryDirectory(prefix="codingagent_home_")
+        os.environ["HOME"] = _TEMP_HOME_OBJ.name
+
+
+def pytest_unconfigure(config):
+    """Restore original HOME environment variable cleanly on pytest teardown."""
+    global _TEMP_HOME_OBJ
+    if _TEMP_HOME_OBJ is not None:
+        if _ORIG_HOME is None:
+            os.environ.pop("HOME", None)
+        else:
+            os.environ["HOME"] = _ORIG_HOME
+        _TEMP_HOME_OBJ.cleanup()
+        _TEMP_HOME_OBJ = None
 
 
 def recv_json_ws_factory():
@@ -57,9 +76,6 @@ def recv_json_ws_factory():
             raise TimeoutError("WebSocket receive timed out")
 
     return _recv_json_ws
-
-
-import pytest
 
 
 # Minimal synchronous Thread and ThreadPoolExecutor replacements used by

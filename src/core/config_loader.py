@@ -87,18 +87,64 @@ def _get_workspace_config_paths() -> List[Path]:
     return [candidate / "config.json", candidate / "config.local.json"]
 
 
-def load_merged_config(working_dir: Optional[Path] = None) -> Dict[str, Any]:
+# Privileged keys ignored from untrusted workspace config.json / config.local.json
+# so cloned repos cannot redirect provider endpoints, swap models, weaken tool
+# permissions, or enable hooks/plugins automatically.
+_UNTRUSTED_WORKSPACE_PRIVILEGED_KEYS: frozenset[str] = frozenset(
+    {
+        "providers",
+        "active_provider",
+        "default_model",
+        "planning_model",
+        "execution_model",
+        "provider_overrides",
+        "model_overrides",
+        "tools",
+        "tool_permissions",
+        "allowed_tools",
+        "permission_mode",
+        "permissionMode",
+        "hooks",
+        "plugins",
+        "plugin_dirs",
+        "remote_skills",
+        "custom_tools",
+        "api_base",
+        "base_url",
+        "api_key",
+    }
+)
+
+
+def _workspace_config_is_trusted() -> bool:
+    try:
+        from src.core.orchestration.deferred_init import is_trusted
+
+        return is_trusted()
+    except Exception:
+        return False
+
+
+def load_merged_config(
+    working_dir: Optional[Path] = None,
+    trusted: Optional[bool] = None,
+) -> Dict[str, Any]:
     """Load and deep-merge all configuration layers.
 
     If ``working_dir`` is provided, workspace layer files are resolved relative
     to that directory (``<working_dir>/.codingAgent/config.json`` and
     ``config.local.json``). This mirrors test expectations which call
     ``load_merged_config(working_dir=...)``.
+
+    When the workspace is untrusted (``trusted`` is False, or ``None`` and
+    ``is_trusted()`` returns False), workspace overrides for providers, models,
+    permissions, hooks, and tools are ignored.
     """
     result: Dict[str, Any] = {}
+    effective_trusted = bool(trusted) if trusted is not None else _workspace_config_is_trusted()
 
     # Always include bundled defaults and user config; workspace layer depends on working_dir
-    paths = [_BUNDLED_DEFAULTS, _USER_CONFIG]
+    base_paths = [_BUNDLED_DEFAULTS, _USER_CONFIG]
     if working_dir is None:
         workspace_paths = _get_workspace_config_paths()
     else:
@@ -133,12 +179,26 @@ def load_merged_config(working_dir: Optional[Path] = None) -> Dict[str, Any]:
                     candidate / "config.json",
                     candidate / "config.local.json",
                 ]
-    paths.extend(workspace_paths)
+    workspace_path_set = set(workspace_paths)
+    paths = base_paths + workspace_paths
     skipped = []
 
     for path in paths:
         if path.exists():
             data = _load_config_file(path)
+            is_workspace_layer = path in workspace_path_set
+            if is_workspace_layer and not effective_trusted:
+                if isinstance(data, dict):
+                    data = {
+                        k: v
+                        for k, v in data.items()
+                        if k not in _UNTRUSTED_WORKSPACE_PRIVILEGED_KEYS
+                    }
+                    if not data:
+                        continue
+                else:
+                    # Never let an untrusted workspace override global providers list
+                    continue
             # providers.json is a list at the top-level; treat lists as the `providers`
             # top-level key to avoid passing a list into _deep_merge (which expects dicts).
             if isinstance(data, dict):

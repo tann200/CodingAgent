@@ -446,14 +446,14 @@ class ToolRegistry:
                 self.set_orchestrator(orch)
             except Exception as exc:
                 logger.warning("ToolRegistry.call: could not create fallback orchestrator: %s", exc)
+                raise RuntimeError(
+                    f"Refusing unguarded tool call {name!r}: orchestrator initialization failed: {exc}"
+                ) from exc
 
-        if orch is not None:
-            out = orch.execute_tool({"name": name, "arguments": kwargs})
-            if isinstance(out, dict) and "result" in out and out.get("ok") is True:
-                return out["result"]
-            return out
-
-        return entry["fn"](**kwargs)
+        out = orch.execute_tool({"name": name, "arguments": kwargs})
+        if isinstance(out, dict) and "result" in out and out.get("ok") is True:
+            return out["result"]
+        return out
 
     def get_openai_functions(self, include_aliases: bool = False) -> List[Dict[str, Any]]:
         """Return registered tools formatted as OpenAI function-calling schemas.

@@ -154,7 +154,16 @@ class BridgeProviderMixin(AgentBridgeProtocol):
             # Local providers (lm_studio, ollama, openai_compat) don't require
             # auth credentials — treat them as "connected" on startup so the
             # banner doesn't stay at "connecting…" indefinitely.
-            _LOCAL_PROVIDER_TYPES = {"lm_studio", "ollama", "openai_compat", "local"}
+            _LOCAL_PROVIDER_TYPES = {
+                "lm_studio",
+                "ollama",
+                "openai_compat",
+                "local",
+                "mlx",
+                "llama_server",
+                "vllm",
+                "litellm",
+            }
 
             if provider_type == "github_copilot":
                 # Determine status from stored OAuth token (no network call).
@@ -173,9 +182,18 @@ class BridgeProviderMixin(AgentBridgeProtocol):
                 # with "disconnected" if the endpoint is actually unreachable.
                 initial_status = "connected"
             else:
-                # Cloud providers with API keys: start at "initializing" and wait
-                # for ProviderManager to probe the adapter.
+                # Cloud providers with API keys: check both providers.json and UserPrefs.
                 api_key = active.get("api_key") or ""
+                if not api_key:
+                    try:
+                        from tui.tui_src.ui.config_writer import load_provider_credentials
+
+                        api_key = (
+                            load_provider_credentials(provider_type or provider_name).get("api_key")
+                            or ""
+                        )
+                    except Exception:
+                        pass
                 initial_status = "connected" if api_key else "initializing"
 
             self._post(

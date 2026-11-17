@@ -43,11 +43,14 @@ def test_acceptance_headless_cli_returns_assistant_message(tmp_path, capsys):
     assert exit_code == 0
     payload = json.loads(capsys.readouterr().out)
     assert payload["assistant_message"] == "Acceptance CLI summary"
-    mock_orchestrator.assert_called_once_with(working_dir=str(workdir), dry_run=False)
+    mock_orchestrator.assert_called_once_with(
+        working_dir=str(workdir), dry_run=False, trusted=None, plugin_dir=None
+    )
 
 
-def test_acceptance_server_task_and_websocket_flow(tmp_path, recv_json_ws):
+def test_acceptance_server_task_and_websocket_flow(tmp_path, recv_json_ws, monkeypatch):
     workdir = _make_workdir(tmp_path)
+    monkeypatch.setenv("CODINGAGENT_ALLOWED_WORKSPACE_ROOTS", str(workdir))
     bus = EventBus()
 
     dummy_orch = MagicMock()

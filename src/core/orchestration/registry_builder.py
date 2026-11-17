@@ -32,11 +32,19 @@ def example_registry() -> ToolRegistry:
         for name in _new_reg.list():
             entry = _new_reg.get(name)
             if entry:
-                reg.tools[name] = {
-                    "fn": entry["fn"],
-                    "side_effects": entry.get("side_effects", []),
-                    "description": entry.get("description", ""),
-                }
+                fn = entry["fn"]
+                meta_obj = getattr(fn, "__tool_meta__", None)
+                reg.register(
+                    name=name,
+                    fn=fn,
+                    side_effects=entry.get("side_effects", []),
+                    description=entry.get("description", ""),
+                    origin=_new_reg._origins.get(name, "builtin"),
+                    tags=entry.get("tags", []),
+                    schema_visibility=entry.get("schema_visibility", "primary"),
+                    tool_meta=meta_obj,
+                    permission_kind=_new_reg.get_permission_kind(name),
+                )
         # Ensure legacy edit_by_line_range comes from file_tools when available.
         # Some discovery paths may not include _edit_tools; force the file_tools
         # implementation into the registry so tests and callers see a single
@@ -45,11 +53,19 @@ def example_registry() -> ToolRegistry:
             from src.tools import file_tools  # type: ignore[import]
 
             if hasattr(file_tools, "edit_by_line_range"):
-                reg.tools["edit_by_line_range"] = {
-                    "fn": file_tools.edit_by_line_range,
-                    "side_effects": ["write"],
-                    "description": "edit_by_line_range(path, start_line, end_line, new_content) -> Replace lines in file",
-                }
+                _edit_fn = file_tools.edit_by_line_range
+                _edit_meta = getattr(_edit_fn, "__tool_meta__", None)
+                reg.register(
+                    name="edit_by_line_range",
+                    fn=_edit_fn,
+                    side_effects=["write"],
+                    description="edit_by_line_range(path, start_line, end_line, new_content) -> Replace lines in file",
+                    origin="builtin",
+                    tags=getattr(_edit_meta, "tags", ["coding"]),
+                    schema_visibility=getattr(_edit_meta, "schema_visibility", "primary"),
+                    tool_meta=_edit_meta,
+                    permission_kind=getattr(_edit_meta, "permission_kind", None),
+                )
         except AttributeError as exc:
             logger.debug("registry_builder: edit_by_line_range override skipped: %s", exc)
         return reg

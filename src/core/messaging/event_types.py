@@ -324,6 +324,20 @@ class SpawnPermissionRequired(Event):
 
 
 @dataclass
+class BashApprovalRequired(Event):
+    """
+    Published when a Tier-3 bash command requires explicit user confirmation.
+
+    Publishers:
+        src/tools/_bash_exec.py:_check_tier3_approval
+
+    Use-case: Show bash approval prompt in TUI and wait on bash gate for tool_id.
+    """
+    tool_id: str
+    command: str = ""
+
+
+@dataclass
 class BashApprovalGranted(Event):
     """
     Published from the TUI when the user approves a bash command.

@@ -30,8 +30,9 @@ export function configure(cfg: UserConfig): StringOrNumber {
     assert result is None, f"Expected validation to pass, but got: {result}"
 
 
-def test_javascript_syntax_error_is_blocked(tmp_path):
+def test_javascript_syntax_error_is_blocked(tmp_path, monkeypatch):
     """Validates that plain JS with actual syntax error is still caught by node --check if node is installed."""
+    monkeypatch.setenv("CODINGAGENT_SANDBOX_ALLOW_UNENFORCED", "1")
     import shutil
     if not shutil.which("node"):
         pytest.skip("node binary not available")

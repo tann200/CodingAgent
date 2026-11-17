@@ -75,6 +75,8 @@ class MCPStdioServer:
         self._subscription_id = 0
         self._pending_requests: Dict[str, asyncio.Future] = {}
         self._lock = threading.Lock()
+        self._stdout_lock = threading.Lock()
+        self._subscribed_handlers: list[tuple[str, Callable]] = []
         # Optional orchestrator reference for tools/list and resources/read
         self._orchestrator = orchestrator
         # PERF-VOL24-1: Reuse a single thread executor across sampling/create
@@ -321,7 +323,7 @@ class MCPStdioServer:
         prompts: list = []
         try:
             _roles_dir = (
-                _Path(__file__).parents[3] / "config" / "agent-brain" / "roles"
+                _Path(__file__).parents[2] / "config" / "agent-brain" / "roles"
             )
             if _roles_dir.exists():
                 for f in sorted(_roles_dir.glob("*.md")):
@@ -337,7 +339,7 @@ class MCPStdioServer:
         name = request.params.get("name", "")
         try:
             _roles_dir = (
-                _Path(__file__).parents[3] / "config" / "agent-brain" / "roles"
+                _Path(__file__).parents[2] / "config" / "agent-brain" / "roles"
             ).resolve()
             _prompt_file = (_roles_dir / f"{name}.md").resolve()
             if not str(_prompt_file).startswith(str(_roles_dir) + "/"):
@@ -429,7 +431,7 @@ class MCPStdioServer:
         try:
             if ref.get("type") == "ref/prompt":
                 _roles_dir = (
-                    _Path(__file__).parents[3] / "config" / "agent-brain" / "roles"
+                    _Path(__file__).parents[2] / "config" / "agent-brain" / "roles"
                 )
                 if _roles_dir.exists():
                     completion_values = [
@@ -500,6 +502,12 @@ class MCPStdioServer:
         if eb:
             eb.publish(f"mcp.{method}", params)
 
+    def _write_stdout(self, text: str) -> None:
+        """Write one JSON-RPC line to stdout atomically under a lock."""
+        with self._stdout_lock:
+            sys.stdout.write(f"{text}\n")
+            sys.stdout.flush()
+
     def _event_bus_wildcard_handler(self, event_name: str) -> Callable:
         """Create a handler that forwards EventBus events to stdout as JSON-RPC."""
 
@@ -519,7 +527,7 @@ class MCPStdioServer:
                         notification = payload
 
                 output = self._build_notification("session/update", notification)
-                print(output, flush=True)
+                self._write_stdout(output)
             except Exception as e:
                 logger.error(f"Failed to forward event {event_name}: {e}")
 
@@ -530,6 +538,7 @@ class MCPStdioServer:
         eb = self._get_event_bus()
         if not eb:
             return
+        self._unsubscribe_from_event_bus()
 
         # Subscribe to wildcard to catch all events
         # GAP 3: Forward all EventBus events to stdout as JSON-RPC notifications
@@ -567,9 +576,26 @@ class MCPStdioServer:
         ]
 
         for topic in topics:
-            eb.subscribe(topic, self._event_bus_wildcard_handler(topic))
+            handler = self._event_bus_wildcard_handler(topic)
+            eb.subscribe(topic, handler)
+            self._subscribed_handlers.append((topic, handler))
 
         logger.info(f"MCPStdioServer: subscribed to {len(topics)} EventBus topics")
+
+    def _unsubscribe_from_event_bus(self) -> None:
+        """Remove registered EventBus wildcard handlers on shutdown."""
+        if not self._subscribed_handlers:
+            return
+        eb = self._get_event_bus()
+        handlers = list(self._subscribed_handlers)
+        self._subscribed_handlers.clear()
+        if eb is None or not hasattr(eb, "unsubscribe"):
+            return
+        for topic, handler in handlers:
+            try:
+                eb.unsubscribe(topic, handler)
+            except Exception:
+                pass
 
     def _read_stdin(self, loop: asyncio.AbstractEventLoop) -> None:
         """Read and process stdin in a loop."""
@@ -584,7 +610,7 @@ class MCPStdioServer:
                         if isinstance(message, JsonRpcRequest):
                             response = self._handle_request(message)
                             if response:
-                                print(response, flush=True)
+                                self._write_stdout(response)
                         elif isinstance(message, JsonRpcNotification):
                             self._handle_notification(message)
         except Exception as e:
@@ -631,6 +657,7 @@ class MCPStdioServer:
 
                 await loop.run_in_executor(None, _call_reader_in_thread)
         finally:
+            self._unsubscribe_from_event_bus()
             self._sampling_executor.shutdown(wait=False)
             # TUI-08: notify TUI that MCP server has stopped
             try:
@@ -665,7 +692,7 @@ class MCPStdioServer:
                         if isinstance(message, JsonRpcRequest):
                             response = self._handle_request(message)
                             if response:
-                                print(response, flush=True)
+                                self._write_stdout(response)
                         elif isinstance(message, JsonRpcNotification):
                             self._handle_notification(message)
         except KeyboardInterrupt:
@@ -674,6 +701,7 @@ class MCPStdioServer:
             logger.error(f"MCPStdioServer error: {e}")
         finally:
             self._running = False
+            self._unsubscribe_from_event_bus()
             self._sampling_executor.shutdown(wait=False)
             # TUI-08: notify TUI that MCP server has stopped
             try:

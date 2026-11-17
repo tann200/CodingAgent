@@ -15,7 +15,7 @@ from typing import Any, Dict, cast
 from src.core.inference.kv_cache_governor import (
     CompactionAction,
     KVCacheGovernor,
-    create_governor_for_model,
+    get_or_create_governor_for_orchestrator,
 )
 from src.core.messaging.event_types import AgentStatus
 from src.core.orchestration.graph.completion_contract import _MODIFYING_TOOL_NAMES
@@ -424,7 +424,6 @@ async def frontier_loop_node(
     raw_user_task: str = task
     history: list = list(state.get("history") or [])
     tool_call_count: int = int(state.get("tool_call_count") or 0)
-    max_tool_calls: int = int(state.get("max_tool_calls") or 30)
     model_tier: str = (state.get("model_tier") or "frontier").lower()
     errors: list = list(state.get("errors") or [])
     pending_action: Dict[str, Any] | None = (
@@ -436,6 +435,11 @@ async def frontier_loop_node(
         runtime_block.get("policy")
         if isinstance(runtime_block, dict) and isinstance(runtime_block.get("policy"), dict)
         else None
+    )
+    max_tool_calls: int = int(
+        state.get("max_tool_calls")
+        or (runtime_policy.get("tool_limit") if isinstance(runtime_policy, dict) and runtime_policy.get("tool_limit") else None)
+        or 30
     )
     if _MAX_FRONTIER_TURNS != _DEFAULT_MAX_FRONTIER_TURNS:
         effective_max_turns = _MAX_FRONTIER_TURNS
@@ -500,7 +504,7 @@ async def frontier_loop_node(
     kv_gov: KVCacheGovernor | None = None
     try:
         if model_name:
-            kv_gov = create_governor_for_model(model_name)
+            kv_gov = get_or_create_governor_for_orchestrator(orchestrator, model_name, state=state)
     except Exception:
         pass
 
@@ -515,6 +519,25 @@ async def frontier_loop_node(
     incomplete_nudges: int = 0
     mutating_tool_calls_count: int = 0
     replan_required: str | None = None
+    cancelled: bool = False
+    budget_exhausted: bool = False
+    llm_error: str | None = None
+
+    prev_run_turns = int((state.get("run") or {}).get("turns") or 0)
+    remaining_turns = max(0, effective_max_turns - prev_run_turns)
+    cancel_event = state.get("cancel_event") or (
+        getattr(orchestrator, "cancel_event", None) if orchestrator else None
+    )
+
+    def _loop_cancelled() -> bool:
+        try:
+            return bool(
+                cancel_event is not None
+                and hasattr(cancel_event, "is_set")
+                and cancel_event.is_set() is True
+            )
+        except Exception:
+            return False
 
     bus: Any = getattr(orchestrator, "event_bus", None) if orchestrator else None
     try:
@@ -525,7 +548,11 @@ async def frontier_loop_node(
     except Exception:
         pass
 
-    while turns_taken < effective_max_turns:
+    while turns_taken < remaining_turns:
+        if _loop_cancelled():
+            logger.info("frontier_loop_node: cancellation requested — exiting loop")
+            cancelled = True
+            break
         turns_taken += 1
 
         # MID-INJ: Drain any in-flight operator injections from the bridge buffer
@@ -558,6 +585,7 @@ async def frontier_loop_node(
                 tool_call_count,
                 max_tool_calls,
             )
+            budget_exhausted = True
             break
 
         role = (
@@ -656,6 +684,10 @@ async def frontier_loop_node(
                 _notify_provider_limit(error_str)
                 if _is_context_overflow(error_str):
                     errors = list(errors) + ["context_overflow"]
+                else:
+                    llm_error = error_str or "LLM call failed"
+                    errors = list(errors) + ["llm_call_failed"]
+                    last_result = {"ok": False, "error": llm_error}
                 break
 
             if (isinstance(response, dict) and response.get("context_overflow") is True) or _is_context_overflow(
@@ -683,6 +715,17 @@ async def frontier_loop_node(
                         if kv_state.action in (CompactionAction.COMPACT, CompactionAction.FORCE_COMPACT):
                             errors = list(errors) + ["context_overflow"]
                             break
+
+            if tool_calls and orchestrator:
+                for tc in tool_calls:
+                    tool_name, tool_args = _normalize_tool_call(tc)
+                    if tool_name and _plan_mode_blocks(orchestrator, tool_name):
+                        logger.info("frontier_loop_node: plan-mode blocked '%s' — suspending", tool_name)
+                        return build_plan_mode_blocked_exit(
+                            tool_name=tool_name, tool_args=tool_args, history=history,
+                            tool_call_count=tool_call_count, last_result=last_result,
+                            last_tool_name=last_tool_name, errors=errors, turns_taken=turns_taken, state=state,
+                        )
 
             history = list(history)
             if tool_calls and use_native_tools:
@@ -743,27 +786,16 @@ async def frontier_loop_node(
                 errors = clear_transient_contract_errors(errors)
             break
 
-        # ---- Plan-mode gate ----------------------------------------------
+        # Track mutating tool calls
         for tc in tool_calls:
-            tool_name, tool_args = _normalize_tool_call(tc)
+            tool_name, _ = _normalize_tool_call(tc)
             if tool_name and tool_name in _MODIFYING_TOOL_NAMES:
                 mutating_tool_calls_count += 1
-            if tool_name and orchestrator and _plan_mode_blocks(orchestrator, tool_name):
-                logger.info(
-                    "frontier_loop_node: plan-mode blocked '%s' — suspending for approval",
-                    tool_name,
-                )
-                return build_plan_mode_blocked_exit(
-                    tool_name=tool_name,
-                    tool_args=tool_args,
-                    history=history,
-                    tool_call_count=tool_call_count,
-                    last_result=last_result,
-                    last_tool_name=last_tool_name,
-                    errors=errors,
-                    turns_taken=turns_taken,
-                    state=state,
-                )
+
+        if _loop_cancelled():
+            logger.info("frontier_loop_node: cancellation requested before tool dispatch")
+            cancelled = True
+            break
 
         # ---- Execute tool calls ------------------------------------------
         dispatch_kwargs: Dict[str, Any] = dict(
@@ -821,35 +853,29 @@ async def frontier_loop_node(
             break
 
         if tool_call_count >= max_tool_calls:
+            budget_exhausted = True
             break
 
     try:
         if bus:
-            bus.publish_typed(
-                AgentStatus(
-                    status="idle",
-                    node="frontier_loop",
-                    turns=turns_taken,
-                    tool_calls=tool_call_count,
-                )
-            )
+            bus.publish_typed(AgentStatus(status="idle", node="frontier_loop", turns=turns_taken, tool_calls=tool_call_count))
     except Exception:
         pass
 
+    turn_budget_exhausted = bool(
+        not cancelled and not budget_exhausted and not llm_error and not replan_required
+        and "context_overflow" not in (errors or [])
+        and not (last_result and last_result.get("completed_without_tool"))
+        and turns_taken >= remaining_turns
+    )
+
     return finalize_frontier_exit(
-        state=state,
-        orchestrator=orchestrator,
-        history=history,
-        tool_call_count=tool_call_count,
-        last_result=last_result,
-        last_tool_name=last_tool_name,
-        errors=errors,
-        turns_taken=turns_taken,
-        inline_verifications=inline_verifications,
-        replan_required=replan_required,
-        retrieved_snippets=retrieved_snippets,
-        last_tool_args=last_tool_args or None,
-        verified_file_hashes=verified_hashes or None,
+        state=state, orchestrator=orchestrator, history=history, tool_call_count=tool_call_count,
+        last_result=last_result, last_tool_name=last_tool_name, errors=errors, turns_taken=turns_taken,
+        inline_verifications=inline_verifications, replan_required=replan_required,
+        retrieved_snippets=retrieved_snippets, last_tool_args=last_tool_args or None,
+        verified_file_hashes=verified_hashes or None, cancelled=cancelled,
+        budget_exhausted=budget_exhausted, llm_error=llm_error, turn_budget_exhausted=turn_budget_exhausted,
     )
 
 

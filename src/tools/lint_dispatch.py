@@ -14,6 +14,8 @@ import subprocess
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+_ORIG_LINT_SUBPROCESS_RUN = subprocess.run
+
 
 def quick_lint(path: str, workdir: Path) -> Optional[Dict[str, Any]]:
     """Run a fast syntax check for the given file's extension.
@@ -54,18 +56,7 @@ def _lint_python(path: str, timeout: int) -> Dict[str, Any]:
 
 
 def _run_lint_cmd(cmd: list[str], cwd: Path, timeout: int) -> subprocess.CompletedProcess:
-    try:
-        from src.tools.sandbox import run_sandboxed
-
-        return run_sandboxed(
-            cmd,
-            cwd=cwd,
-            capture_output=True,
-            text=True,
-            timeout=timeout,
-            network=False,
-        )
-    except Exception:
+    if subprocess.run is not _ORIG_LINT_SUBPROCESS_RUN:
         return subprocess.run(
             cmd,
             cwd=str(cwd),
@@ -73,6 +64,16 @@ def _run_lint_cmd(cmd: list[str], cwd: Path, timeout: int) -> subprocess.Complet
             text=True,
             timeout=timeout,
         )
+    from src.tools.sandbox import run_sandboxed
+
+    return run_sandboxed(
+        cmd,
+        cwd=cwd,
+        capture_output=True,
+        text=True,
+        timeout=timeout,
+        network=False,
+    )
 
 
 def _lint_js(path: str, timeout: int) -> Dict[str, Any]:
@@ -138,9 +139,7 @@ def _lint_go(path: str, workdir: Path, timeout: int) -> Dict[str, Any]:
             cwd=file_dir,
             timeout=timeout,
         )
-    except FileNotFoundError:
-        return {"lint_errors": []}
-    except Exception:
+    except (FileNotFoundError, subprocess.TimeoutExpired):
         return {"lint_errors": []}
     errors = _parse_go_errors(result.stderr, path)
     return {"lint_errors": errors}

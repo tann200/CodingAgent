@@ -171,7 +171,9 @@ def evaluate_completion_contract(
         if last_failed:
             err_msg = ""
             if isinstance(last_result, Mapping):
-                err_msg = str(last_result.get("error") or last_result.get("result", {}).get("error") or "Mutation action failed")
+                _nested_res = last_result.get("result")
+                _nested_err = _nested_res.get("error") if isinstance(_nested_res, Mapping) else None
+                err_msg = str(last_result.get("error") or _nested_err or "Mutation action failed")
             return CompletionContractVerdict(
                 is_complete=False,
                 task_type=TaskType.MUTATING,

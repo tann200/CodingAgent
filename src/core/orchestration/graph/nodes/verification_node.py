@@ -23,7 +23,7 @@ from src.core.orchestration.graph.nodes.verification_helpers import (
     run_rust_verification,
     run_targeted_ruff,
 )
-from src.core.orchestration.graph.state import StateLike
+from src.core.orchestration.graph.state import StateLike, replace_state_list
 from src.tools import verification_tools
 
 logger = logging.getLogger(__name__)
@@ -147,11 +147,28 @@ async def _verification_node_impl(state: StateLike, config: RunnableConfig) -> D
                         "verification_passed": False,
                     }
                 logger.info("Verification PASSED: %s successfully deleted", deleted_path)
+                del_run = dict(state.get("run") or {})
+                del_run["status"] = "completed"
+                del_run["outcome"] = "complete"
                 return {
                     "verification_result": {
                         "deletion_verification": "PASSED",
                         "path": deleted_path,
-                    }
+                    },
+                    "verification_passed": True,
+                    "verification": {
+                        "required": True,
+                        "passed": True,
+                        "commands": ["deletion_verification"],
+                        "evidence": [
+                            {
+                                "check": "deletion_verification",
+                                "status": "ok",
+                                "details": f"Deleted {deleted_path}",
+                            }
+                        ],
+                    },
+                    "run": del_run,
                 }
 
     last_tool_name: str = state.get("last_tool_name") or ""
@@ -205,14 +222,25 @@ async def _verification_node_impl(state: StateLike, config: RunnableConfig) -> D
         except Exception:
             return False
 
+    def _cancelled_result(
+        extra_results: Dict[str, Any] | None = None,
+    ) -> Dict[str, Any]:
+        payload = dict(extra_results or {})
+        payload["cancelled"] = True
+        run_state = dict(state.get("run") or {})
+        run_state["status"] = "cancelled"
+        run_state["outcome"] = "cancelled"
+        return {
+            "verification_result": payload,
+            "verification_passed": False,
+            "run": run_state,
+        }
+
     results: Dict[str, Any] = {}
     if need_verify:
         if _is_cancelled():
             logger.info("verification_node: cancelled before running tools — skipping")
-            return {
-                "verification_result": {"cancelled": True},
-                "verification_passed": False,
-            }
+            return _cancelled_result()
         try:
             wd = Path(state.get("working_dir") or ".")
             unverified_paths, current_hashes, skipped_cached = filter_unverified_files(
@@ -257,16 +285,10 @@ async def _verification_node_impl(state: StateLike, config: RunnableConfig) -> D
                 elif run_full_suite and verification_mode != "targeted":
                     results["js_tests"] = verification_tools.run_js_tests(str(wd))
                     if _is_cancelled():
-                        return {
-                            "verification_result": {**results, "cancelled": True},
-                            "verification_passed": False,
-                        }
+                        return _cancelled_result(results)
                     results["ts_check"] = verification_tools.run_ts_check(str(wd))
                     if _is_cancelled():
-                        return {
-                            "verification_result": {**results, "cancelled": True},
-                            "verification_passed": False,
-                        }
+                        return _cancelled_result(results)
                     results["eslint"] = verification_tools.run_eslint(str(wd))
                 elif verification_mode == "targeted":
                     js_paths = [
@@ -330,16 +352,10 @@ async def _verification_node_impl(state: StateLike, config: RunnableConfig) -> D
                         str(wd), use_last_failed=last_failed_exists
                     )
                     if _is_cancelled():
-                        return {
-                            "verification_result": {**results, "cancelled": True},
-                            "verification_passed": False,
-                        }
+                        return _cancelled_result(results)
                     results["linter"] = verification_tools.run_linter(str(wd))
                     if _is_cancelled():
-                        return {
-                            "verification_result": {**results, "cancelled": True},
-                            "verification_passed": False,
-                        }
+                        return _cancelled_result(results)
                     if session_modified and not unverified_paths and skipped_cached > 0:
                         results["syntax"] = {
                             "status": "ok",
@@ -438,9 +454,9 @@ async def _verification_node_impl(state: StateLike, config: RunnableConfig) -> D
                 recovery_limit=recovery_limit,
                 modified_files=session_modified,
             )
-            updated_history = list(state.get("history") or []) + [
-                {"role": "user", "content": feedback}
-            ]
+            updated_history = replace_state_list(
+                list(state.get("history") or []) + [{"role": "user", "content": feedback}]
+            )
             logger.info(
                 "verification_node: deferring rollback for recovery attempt %d/%d",
                 attempt,

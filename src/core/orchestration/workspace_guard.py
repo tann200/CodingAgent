@@ -126,7 +126,17 @@ class WorkspaceGuard:
                     ):
                         return True
                 else:
-                    if cand_str.endswith(pattern) or cand_name == pattern:
+                    if "*" in pattern or "?" in pattern or "[" in pattern:
+                        import fnmatch
+
+                        if fnmatch.fnmatch(cand_name, pattern) or fnmatch.fnmatch(cand_str, pattern):
+                            return True
+                    elif (
+                        cand_name == pattern
+                        or cand_str == pattern
+                        or cand_str.endswith("/" + pattern)
+                        or cand_str.endswith("\\" + pattern)
+                    ):
                         return True
 
         return False

@@ -5,7 +5,7 @@ import json
 import logging
 import re
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 from datetime import datetime
 
 logger = logging.getLogger(__name__)
@@ -296,15 +296,22 @@ class SymbolGraph:
             logger.warning("Failed to parse %s: %s", path, e)
             return {"classes": [], "functions": [], "imports": [], "docstring": ""}
 
-    def update_file(self, path: str):
+    def update_file(self, path: str, *, save: bool = True):
         """Update symbols for a single file."""
         p = Path(path)
+        if not p.is_absolute():
+            p = self.workdir / p
+        p = p.resolve()
         if not p.exists() or p.suffix not in _SUPPORTED_SUFFIXES:
             return
 
         current_hash = self._get_file_hash(p)
+        try:
+            rel_path = p.relative_to(self.workdir.resolve()).as_posix()
+        except ValueError:
+            rel_path = p.as_posix()
 
-        if str(p) in self.file_hashes and self.file_hashes[str(p)] == current_hash:
+        if self.file_hashes.get(rel_path) == current_hash or self.file_hashes.get(str(p)) == current_hash:
             logger.debug("File unchanged: %s", path)
             return
 
@@ -313,15 +320,15 @@ class SymbolGraph:
             self._parse_file(p) if p.suffix == ".py" else self._parse_file_regex(p)
         )
 
-        rel_path = str(p.relative_to(self.workdir))
         self.nodes[rel_path] = {
             "symbols": symbols,
             "updated_at": datetime.now().isoformat(),
         }
-        self.file_hashes[str(p)] = current_hash
+        self.file_hashes[rel_path] = current_hash
 
         self._update_edges(rel_path, symbols)
-        self._save_graph()
+        if save:
+            self._save_graph()
 
     def _update_edges(self, file_path: str, symbols: Dict):
         """Update import edges."""
@@ -442,18 +449,77 @@ class SymbolGraph:
 
         return all_symbols
 
+    def rank_important_files(self, top_n: int = 10, iterations: int = 12, damping: float = 0.85) -> List[Tuple[str, float]]:
+        """Rank files in the symbol graph via power-iteration PageRank over import edges."""
+        nodes = list(self.nodes.keys())
+        if not nodes:
+            return []
+        node_set = set(nodes)
+        # Resolve module import strings (e.g. "src.core.utils") to matching file nodes
+        stem_map: Dict[str, str] = {}
+        for rel in nodes:
+            no_ext = rel.rsplit(".", 1)[0].replace("/", ".")
+            stem_map[no_ext] = rel
+            stem_map[Path(rel).stem] = rel
+
+        out_links: Dict[str, List[str]] = {n: [] for n in nodes}
+        for edge in self.edges:
+            src = edge.get("from", "")
+            dst_raw = str(edge.get("to", ""))
+            if src not in node_set:
+                continue
+            dst = stem_map.get(dst_raw)
+            if not dst and "." in dst_raw:
+                dst = stem_map.get(dst_raw.rsplit(".", 1)[0])
+            if dst and dst in node_set and dst != src:
+                out_links[src].append(dst)
+
+        n = len(nodes)
+        scores = {node: 1.0 / n for node in nodes}
+        base = (1.0 - damping) / n
+        for _ in range(max(1, iterations)):
+            next_scores = {node: base for node in nodes}
+            dangling = sum(scores[node] for node in nodes if not out_links[node])
+            dangling_share = damping * dangling / n
+            for node in nodes:
+                next_scores[node] += dangling_share
+                targets = out_links[node]
+                if targets:
+                    share = damping * scores[node] / len(targets)
+                    for tgt in targets:
+                        next_scores[tgt] += share
+            scores = next_scores
+
+        ranked = sorted(scores.items(), key=lambda kv: (-kv[1], kv[0]))
+        return ranked[: max(1, int(top_n))]
+
+    def get_call_graph_context(self, top_n: int = 8) -> str:
+        """Render concise PageRank + symbol map summary for planning/retrieval."""
+        ranked = self.rank_important_files(top_n=top_n)
+        if not ranked:
+            return ""
+        lines: List[str] = []
+        for rel, score in ranked:
+            sym = (self.nodes.get(rel) or {}).get("symbols") or {}
+            names = [c.get("name") for c in sym.get("classes", [])[:3] if c.get("name")]
+            names.extend(f.get("name") for f in sym.get("functions", [])[:4] if f.get("name"))
+            sig = f" [{', '.join(names)}]" if names else ""
+            lines.append(f"- {rel} (centrality={score:.3f}){sig}")
+        return "\n".join(lines)
+
     def rebuild_index(self, root_path: Optional[str] = None):
-        """Full rebuild of the symbol index."""
+        """Full rebuild of the symbol index using walk_language_files and a single batch save."""
+        from src.core.indexing.repo_indexer import walk_language_files
+
         root = Path(root_path) if root_path else self.workdir
 
         logger.info("Rebuilding symbol graph from %s", root)
         self._init_empty()
 
-        for path in root.rglob("*"):
-            if not path.is_file() or path.suffix not in _SUPPORTED_SUFFIXES:
-                continue
-            if any(skip in path.parts for skip in _SKIP_DIRS):
-                continue
-            self.update_file(str(path))
+        language_files = walk_language_files(root)
+        for path in language_files.values():
+            if path.suffix in _SUPPORTED_SUFFIXES:
+                self.update_file(str(path), save=False)
 
+        self._save_graph()
         logger.info("Symbol graph rebuilt: %s files indexed", len(self.nodes))

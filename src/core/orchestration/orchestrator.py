@@ -123,8 +123,10 @@ class Orchestrator:
         trusted: Optional[bool] = None,
         plugin_dir: Optional[str | Path] = None,
         workflow_config: Optional[Any] = None,
+        defer_provider_probe: bool = False,
     ):
         self._dry_run = dry_run
+        self._defer_provider_probe = bool(defer_provider_probe)
         self._adapter = adapter
         self.workflow_config = workflow_config
         self._provider_name = ""  # set during provider resolution
@@ -541,6 +543,15 @@ class Orchestrator:
 
     def close(self) -> None:
         """Release long-lived resources (executor thread pools, MCP subprocesses)."""
+        try:
+            _atexit_fn = getattr(self, "_atexit_shutdown_fn", None)
+            if _atexit_fn is not None:
+                import atexit as _atexit
+
+                _atexit.unregister(_atexit_fn)
+                self._atexit_shutdown_fn = None
+        except Exception:
+            pass
         try:
             if hasattr(self, "_graph_executor"):
                 self._graph_executor.shutdown(wait=True)

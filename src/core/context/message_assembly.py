@@ -46,10 +46,9 @@ def sanitize_conversation_messages(
                         clean_tcs.append(tc_dict)
                 if clean_tcs:
                     entry["tool_calls"] = clean_tcs
-            if isinstance(message.get("thinking_blocks"), list) and message.get(
-                "thinking_blocks"
-            ):
-                entry["thinking_blocks"] = list(message["thinking_blocks"])  # type: ignore[arg-type]
+            raw_tb = message.get("thinking_blocks")
+            if isinstance(raw_tb, list) and raw_tb:
+                entry["thinking_blocks"] = list(raw_tb)
             if message.get("reasoning_content"):
                 entry["reasoning_content"] = str(message["reasoning_content"])
             sanitized.append(entry)

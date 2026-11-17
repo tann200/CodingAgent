@@ -37,6 +37,9 @@ class MessageManager:
         event_bus: Optional[Any] = None,
         compact_callback: Optional[Callable[[List[Dict]], str]] = None,
     ):
+        import threading
+
+        self._lock = threading.RLock()
         self.messages: List[Dict[str, Any]] = []
         self.max_tokens = int(max_tokens) if max_tokens is not None else None
         self.event_bus = event_bus
@@ -46,40 +49,47 @@ class MessageManager:
         # carry it and from_dict() can migrate older formats.
         self.version: int = self.SCHEMA_VERSION
 
-    def append(self, role: str, content: Any):
-        # Normalize content to string for token estimation
-        entry = {"role": role, "content": content}
-        self.messages.append(entry)
-        if self.max_tokens is not None:
-            try:
-                self._truncate_to_window()
-            except Exception as e:
-                # Truncation must not raise to callers; log for telemetry
+    def append(self, role: str, content: Any, **extra: Any):
+        # Preserve structured tool fields (tool_calls, tool_call_id, name) when provided
+        entry: Dict[str, Any] = {"role": role, "content": content}
+        for k, v in extra.items():
+            if v is not None:
+                entry[k] = v
+        with self._lock:
+            self.messages.append(entry)
+            if self.max_tokens is not None:
                 try:
-                    logger.exception(f"MessageManager truncation failed: {e}")
-                except Exception:
-                    pass
+                    self._truncate_to_window()
+                except Exception as e:
+                    # Truncation must not raise to callers; log for telemetry
+                    try:
+                        logger.exception(f"MessageManager truncation failed: {e}")
+                    except Exception:
+                        pass
 
     def all(self) -> List[Dict[str, Any]]:
-        return list(self.messages)
+        with self._lock:
+            return list(self.messages)
 
     def clear(self):
-        self.messages.clear()
+        with self._lock:
+            self.messages.clear()
 
     def set_system_prompt(self, content: str) -> None:
         """Ensure the first message is a system message with the given content."""
-        try:
-            if not self.messages:
-                self.messages.insert(0, {"role": "system", "content": content})
-                return
-            first = self.messages[0]
-            if isinstance(first, dict) and first.get("role") == "system":
-                if first.get("content") != content:
-                    self.messages[0] = {"role": "system", "content": content}
-            else:
-                self.messages.insert(0, {"role": "system", "content": content})
-        except Exception:
-            pass
+        with self._lock:
+            try:
+                if not self.messages:
+                    self.messages.insert(0, {"role": "system", "content": content})
+                    return
+                first = self.messages[0]
+                if isinstance(first, dict) and first.get("role") == "system":
+                    if first.get("content") != content:
+                        self.messages[0] = {"role": "system", "content": content}
+                else:
+                    self.messages.insert(0, {"role": "system", "content": content})
+            except Exception:
+                pass
 
     def _estimate_tokens(self, text: str) -> int:
         """Estimate tokens for a given text."""
@@ -169,10 +179,19 @@ class MessageManager:
             before_total -= tcount
             dropped_tokens += tcount
 
-            # FIX: If we just dropped a 'user' message, and the next available
-            # non-system message is 'assistant' / 'tool', drop it too.
-            # Local models crash if the alternating user→assistant sequence breaks.
-            if dropped.get("role") == "user" and drop_idx < len(kept):
+            # TurnGroup-aware truncation:
+            # 1) Dropping a 'user' message followed by 'assistant'/'tool' drops that assistant turn + its tool outputs.
+            # 2) Dropping an 'assistant' with tool_calls drops all immediately following 'tool' responses atomically.
+            if dropped.get("role") == "assistant" and dropped.get("tool_calls"):
+                while drop_idx < len(kept) and kept[drop_idx].get("role") == "tool":
+                    dropped_assoc = kept.pop(drop_idx)
+                    dropped_messages.append(dropped_assoc)
+                    assoc_c = dropped_assoc.get("content")
+                    assoc_s = assoc_c if isinstance(assoc_c, str) else str(assoc_c)
+                    assoc_tcount = self._estimate_tokens(assoc_s)
+                    before_total -= assoc_tcount
+                    dropped_tokens += assoc_tcount
+            elif dropped.get("role") == "user" and drop_idx < len(kept):
                 next_msg = kept[drop_idx]
                 if next_msg.get("role") in ("assistant", "tool"):
                     dropped_assoc = kept.pop(drop_idx)
@@ -182,6 +201,14 @@ class MessageManager:
                     assoc_tcount = self._estimate_tokens(assoc_s)
                     before_total -= assoc_tcount
                     dropped_tokens += assoc_tcount
+                    while drop_idx < len(kept) and kept[drop_idx].get("role") == "tool":
+                        tool_assoc = kept.pop(drop_idx)
+                        dropped_messages.append(tool_assoc)
+                        tc = tool_assoc.get("content")
+                        ts = tc if isinstance(tc, str) else str(tc)
+                        tt = self._estimate_tokens(ts)
+                        before_total -= tt
+                        dropped_tokens += tt
 
         # ── Inline compaction ─────────────────────────────────────────────
         # If we have a compaction callback, summarise what was dropped and

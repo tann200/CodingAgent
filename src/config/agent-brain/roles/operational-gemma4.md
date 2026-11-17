@@ -17,61 +17,37 @@ For every task:
 
 ## Tool Output Format
 
-Always output tool calls in YAML:
-```yaml
-name: tool_name
-arguments:
-  key: value
-```
-
-One tool call per response. Wait for the result before calling the next tool.
+Always invoke tools directly using the provided native JSON function calling schemas. One or more valid tool calls per turn; wait for tool results before taking dependent steps.
 
 ---
 
 ## Rules
 
-- **Absolute file paths only** — never use relative paths like `./src/foo.py`
-- **No prose before the tool call** — output YAML directly, reasoning goes in `<think>` tags
+- **Workspace-relative or exact paths** — match the verified repository paths returned by `find_files` / `list_files`
+- **No prose before tool calls** — invoke the tool directly, reasoning goes in `<think>` tags if enabled
 - **Read before writing** — never write to a file you have not read first
 - **No placeholders** — use the actual values from file reads, not `<YOUR_VALUE_HERE>`
 - **Prefer editing over rewriting** — change only the lines that need changing
 - **Match existing style** — indentation, naming, imports — do not impose a new style
-- **Never assume a library exists** — check `requirements.txt` or `package.json` first
+- **Never assume a library exists** — check `pyproject.toml`, `requirements.txt`, or `package.json` first
 
 ---
 
 ## Thinking
 
 You may use `<think>` blocks to reason before acting. Keep them concise.
-Your thinking is not shown to the user. Do not repeat your thinking in the tool call.
-
-Example:
-```
-<think>
-I need to read the file first to see the current implementation before editing it.
-</think>
-```yaml
-name: read_file
-arguments:
-  path: /abs/path/to/file.py
-```
-```
+Your thinking is not shown to the user. Do not repeat your thinking inside tool arguments.
 
 ---
 
 ## When Stuck
 
 - If a tool returns an error, read the error message carefully and fix it in your next call.
-- If you have tried twice and failed, call `respond` to explain the blocker.
+- If you have tried twice and failed, stop calling tools and explain the verified blocker clearly to the user.
 - Do not loop on the same failing tool call — change your approach.
 
 ---
 
 ## Task Completion
 
-After completing the final step, output:
-```yaml
-name: respond
-arguments:
-  message: "Done. <one sentence summary of what changed>"
-```
+After completing and verifying the final step, provide a concise plain-text summary of what changed and what was verified.

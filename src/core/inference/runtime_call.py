@@ -241,6 +241,7 @@ async def call_adapter_with_fallbacks(
                     elif hasattr(raw, "__iter__"):
                         from src.core.inference.streaming import consume_generator_stream
 
+                        _prov_name = str(getattr(adapter, "name", None) or result.get("provider") or "ollama")
                         return await run_with_correlation(
                             loop,
                             None,
@@ -248,6 +249,7 @@ async def call_adapter_with_fallbacks(
                                 consume_generator_stream,
                                 raw,
                                 model or result.get("model"),
+                                _prov_name,
                             ),
                         )
                 elif hasattr(result, "__iter__") and not isinstance(
@@ -255,10 +257,11 @@ async def call_adapter_with_fallbacks(
                 ):
                     from src.core.inference.streaming import consume_generator_stream
 
+                    _prov_name = str(getattr(adapter, "name", None) or "ollama")
                     return await run_with_correlation(
                         loop,
                         None,
-                        functools.partial(consume_generator_stream, result, model),
+                        functools.partial(consume_generator_stream, result, model, _prov_name),
                     )
             return result
         except Exception as exc:
@@ -306,6 +309,7 @@ async def call_adapter_with_fallbacks(
                     elif hasattr(raw, "__iter__"):
                         from src.core.inference.streaming import consume_generator_stream
 
+                        _prov_name = str(getattr(adapter, "name", None) or result.get("provider") or "ollama")
                         return await run_with_correlation(
                             loop,
                             None,
@@ -313,6 +317,7 @@ async def call_adapter_with_fallbacks(
                                 consume_generator_stream,
                                 raw,
                                 model or result.get("model"),
+                                _prov_name,
                             ),
                         )
                 elif hasattr(result, "__iter__") and not isinstance(
@@ -320,10 +325,11 @@ async def call_adapter_with_fallbacks(
                 ):
                     from src.core.inference.streaming import consume_generator_stream
 
+                    _prov_name = str(getattr(adapter, "name", None) or "ollama")
                     return await run_with_correlation(
                         loop,
                         None,
-                        functools.partial(consume_generator_stream, result, model),
+                        functools.partial(consume_generator_stream, result, model, _prov_name),
                     )
             return result
         except TypeError:

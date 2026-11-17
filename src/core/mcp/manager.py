@@ -183,14 +183,16 @@ class McpServerManager:
         with self._lock:
             if self._started:
                 return
-            # Disconnect any existing clients before clearing (prevents connection leak on re-entry).
-            for _name, _client in list(self._clients.items()):
-                try:
-                    await _client.disconnect()
-                except Exception:
-                    pass
+            # Snapshot existing clients and clear state BEFORE awaiting disconnect (never hold RLock across await).
+            existing_clients = list(self._clients.items())
             self._states.clear()
             self._clients.clear()
+
+        for _name, _client in existing_clients:
+            try:
+                await _client.disconnect()
+            except Exception:
+                pass
 
         for cfg in servers:
             name = str(cfg.get("name") or "").strip()
@@ -207,18 +209,22 @@ class McpServerManager:
                 self._publish_status()
                 continue
 
-            # SPEC-03: Workspace-defined stdio servers require explicit trust to execute host commands
+            # SPEC-03: Workspace-defined MCP servers across ALL transports require explicit trust
             source = cfg.get("source")
-            is_trusted_workspace = (
-                self._trusted is True
-                or os.environ.get("CODINGAGENT_TRUSTED", "").strip().lower() in ("1", "true", "yes")
-                or os.environ.get("CODINGAGENT_TRUST_WORKSPACE_MCP") == "1"
-            )
-            if transport == "stdio" and source == "workspace":
-                if not is_trusted_workspace and not cfg.get("trusted", False):
+            if self._trusted is False:
+                is_trusted_workspace = False
+            else:
+                is_trusted_workspace = (
+                    self._trusted is True
+                    or os.environ.get("CODINGAGENT_TRUSTED", "").strip().lower() in ("1", "true", "yes")
+                    or os.environ.get("CODINGAGENT_TRUST_WORKSPACE_MCP") == "1"
+                )
+            if source == "workspace":
+                if not is_trusted_workspace and not (cfg.get("trusted", False) and self._trusted is not False):
                     logger.warning(
-                        "mcp manager: refusing to auto-start untrusted workspace stdio MCP server %r. "
-                        "Set CODINGAGENT_TRUST_WORKSPACE_MCP=1 or mark server as trusted to allow.",
+                        "mcp manager: refusing to auto-start untrusted workspace %s MCP server %r. "
+                        "Set CODINGAGENT_TRUST_WORKSPACE_MCP=1 or mark workspace/server as trusted to allow.",
+                        transport,
                         name,
                     )
                     with self._lock:
@@ -347,9 +353,9 @@ class McpServerManager:
     async def stop(self) -> None:
         """Disconnect all connected MCP servers."""
         with self._lock:
-            names = list(self._clients.keys())
-        for name in names:
-            client = self._clients.get(name)
+            clients_snapshot = list(self._clients.items())
+            names = [n for n, _ in clients_snapshot]
+        for name, client in clients_snapshot:
             if client is None:
                 continue
             try:

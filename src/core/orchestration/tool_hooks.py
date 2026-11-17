@@ -70,25 +70,33 @@ class _HookConfig:
     post_tool: List[Dict[str, str]] = field(default_factory=list)
 
 
-def _load_hook_config(working_dir: Optional[Path]) -> _HookConfig:
+def _load_hook_config(
+    working_dir: Optional[Path],
+    *,
+    trusted: Optional[bool] = None,
+) -> _HookConfig:
     """Merge global hooks.json with workspace .codingAgent/hooks.json.
 
-    Workspace entries take precedence by being appended last (evaluated first
-    in ``_run_hooks`` which stops on first match).
-
-    If no hooks.json exists in the workspace, the loader also checks for the
-    shell stubs scaffolded by ``codingagent init``:
-
-    - ``.codingAgent/hooks/pre_tool.sh``  → implicit wildcard pre-tool hook
-    - ``.codingAgent/hooks/post_tool.sh`` → implicit wildcard post-tool hook
-
-    The stubs are auto-wired only when neither the global nor the workspace
-    ``hooks.json`` provides any entries for the corresponding hook type, so
-    explicit ``hooks.json`` configuration always wins.
+    Workspace entries and stub scripts are ONLY loaded when the workspace is
+    trusted (``trusted=True`` or ``is_trusted()``). Untrusted repositories must
+    never execute repo-controlled hook commands automatically.
     """
     entries: Dict[str, List] = {"pre_tool": [], "post_tool": []}
+    if trusted is None:
+        try:
+            from src.core.orchestration.deferred_init import is_trusted
 
-    for path in (_GLOBAL_HOOKS_PATH, _workspace_hooks_path(working_dir)):
+            ws_trusted = is_trusted()
+        except Exception:
+            ws_trusted = False
+    else:
+        ws_trusted = bool(trusted)
+
+    paths: List[Optional[Path]] = [_GLOBAL_HOOKS_PATH]
+    if ws_trusted:
+        paths.append(_workspace_hooks_path(working_dir))
+
+    for path in paths:
         if path is None or not path.is_file():
             continue
         try:
@@ -100,9 +108,8 @@ def _load_hook_config(working_dir: Optional[Path]) -> _HookConfig:
         except Exception as exc:
             logger.debug("tool_hooks: failed to load %s: %s", path, exc)
 
-    # Auto-detect .codingAgent/hooks/pre_tool.sh / post_tool.sh stubs (from
-    # `codingagent init`) when no hooks.json entries exist for that hook type.
-    if working_dir is not None:
+    # Auto-detect .codingAgent/hooks/pre_tool.sh / post_tool.sh stubs ONLY in trusted workspaces.
+    if ws_trusted and working_dir is not None:
         # Resolve the configured agent-context directory using the central
         # helper when available; fall back to the legacy location if needed.
         try:
@@ -151,22 +158,53 @@ def _matches(pattern: str, tool_name: str) -> bool:
     return fnmatch.fnmatch(tool_name, pattern) or pattern == "*"
 
 
+_SECRET_ENV_KEY_TOKENS = (
+    "API_KEY",
+    "SECRET",
+    "TOKEN",
+    "PASSWORD",
+    "PASSWD",
+    "PRIVATE_KEY",
+    "CREDENTIAL",
+    "AUTH",
+)
+
+
+def _scrub_secret_env(env: Dict[str, str]) -> Dict[str, str]:
+    """Strip likely secret/credential environment variables before spawning hooks."""
+    cleaned: Dict[str, str] = {}
+    for k, v in env.items():
+        upper_k = k.upper()
+        if any(tok in upper_k for tok in _SECRET_ENV_KEY_TOKENS):
+            continue
+        cleaned[k] = v
+    return cleaned
+
+
 def _build_env(tool_name: str, args: Dict[str, Any], result: Any = None) -> dict:
-    # Copy the current process environment for subprocess execution but scrub
-    # any delegation-related keys so a child process cannot observe or forge
-    # the in-process delegation depth.
-    env = os.environ.copy()
-    # Remove any delegation depth env vars if present
+    # Copy the current process environment for subprocess execution while
+    # scrubbing delegation depth keys and secret/credential env vars.
+    env = _scrub_secret_env(os.environ.copy())
     env.pop("CODINGAGENT_DELEGATION_DEPTH", None)
     env.pop("AGENT_DELEGATION_DEPTH", None)
     env["TOOL_NAME"] = tool_name
+
     try:
-        env["TOOL_ARGS_JSON"] = json.dumps(args)
+        from src.core.security.redaction import redact_data
+
+        safe_args = redact_data(args)
+        safe_result = redact_data(result) if result is not None else None
+    except Exception:
+        safe_args = {}
+        safe_result = {} if result is not None else None
+
+    try:
+        env["TOOL_ARGS_JSON"] = json.dumps(safe_args)
     except Exception:
         env["TOOL_ARGS_JSON"] = "{}"
     if result is not None:
         try:
-            env["TOOL_RESULT_JSON"] = json.dumps(result)
+            env["TOOL_RESULT_JSON"] = json.dumps(safe_result)
         except Exception:
             env["TOOL_RESULT_JSON"] = "{}"
     return env
@@ -178,13 +216,18 @@ class ToolHookRunner:
     Instances are cheap to create — they load (and cache) hook config lazily.
     """
 
-    def __init__(self, working_dir: Optional[Path] = None) -> None:
+    def __init__(
+        self,
+        working_dir: Optional[Path] = None,
+        trusted: Optional[bool] = None,
+    ) -> None:
         self._working_dir = working_dir
+        self._trusted = trusted
         self._config: Optional[_HookConfig] = None
 
     def _get_config(self) -> _HookConfig:
         if self._config is None:
-            self._config = _load_hook_config(self._working_dir)
+            self._config = _load_hook_config(self._working_dir, trusted=self._trusted)
         return self._config
 
     def reload(self) -> None:

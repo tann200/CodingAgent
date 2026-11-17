@@ -423,14 +423,26 @@ class TestWebToolsUrlBlocking:
         result = read_web_page("ftp://example.com/file.txt")
         assert result["status"] == "error"
 
-    def test_http_not_blocked(self):
+    def test_http_not_blocked(self, monkeypatch):
         from src.tools.web_tools import _is_url_blocked
+        import socket
 
+        monkeypatch.setattr(
+            socket,
+            "getaddrinfo",
+            lambda host, *a, **kw: [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("93.184.216.34", 80))],
+        )
         assert not _is_url_blocked("http://example.com/page")
 
-    def test_https_not_blocked(self):
+    def test_https_not_blocked(self, monkeypatch):
         from src.tools.web_tools import _is_url_blocked
+        import socket
 
+        monkeypatch.setattr(
+            socket,
+            "getaddrinfo",
+            lambda host, *a, **kw: [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("151.101.1.223", 443))],
+        )
         assert not _is_url_blocked("https://docs.python.org/3/")
 
     def test_localhost_blocked(self):
@@ -454,8 +466,9 @@ class TestWebToolsUrlBlocking:
 # BUG-9: lint_dispatch — Go build uses file directory
 # ---------------------------------------------------------------------------
 class TestLintDispatchGo:
-    def test_go_lint_uses_file_directory_not_relative_path(self, tmp_path):
+    def test_go_lint_uses_file_directory_not_relative_path(self, tmp_path, monkeypatch):
         """_lint_go must not raise ValueError when path is not relative to workdir."""
+        monkeypatch.setenv("CODINGAGENT_SANDBOX_ALLOW_UNENFORCED", "1")
         from src.tools.lint_dispatch import _lint_go
 
         # Create a Go file in a subdirectory

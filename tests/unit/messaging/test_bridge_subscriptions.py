@@ -132,8 +132,8 @@ class TestTypedEventRoutingTable:
     """UC-BS-02: Every entry in TYPED_EVENT_ROUTING resolves correctly."""
 
     def test_routing_has_expected_count(self):
-        """There should be 48 entries (one per non-lambda bridge subscription, including ToolResult)."""
-        assert len(TYPED_EVENT_ROUTING) == 48
+        """There should be 49 entries (one per non-lambda bridge subscription, including BashApprovalRequired)."""
+        assert len(TYPED_EVENT_ROUTING) == 49
 
     def test_all_entries_resolve_to_classes(self):
         """Every entry's event class is importable and is an Event subclass."""
@@ -221,6 +221,7 @@ class TestSetupTypedSubscriptions:
             def _on_step_finish(self_fake, p): pass
             def _on_mcp_server_status(self_fake, p): pass
             def _on_tool_permission_required(self_fake, p): pass
+            def _on_bash_approval_required(self_fake, p): pass
             def _on_spawn_permission_required(self_fake, p): pass
             def _on_usage_turn_summary(self_fake, p): pass
             def _on_subagent_cost(self_fake, p): pass
@@ -232,7 +233,7 @@ class TestSetupTypedSubscriptions:
         bridge = FakeBridge()
         bridge._setup_typed_subscriptions()
 
-        assert len(subscribed) == 48
+        assert len(subscribed) == 49
         subscribed_classes = {cls for cls, _ in subscribed}
         expected_classes = {
             _resolve_event_class(name) for name, _ in TYPED_EVENT_ROUTING

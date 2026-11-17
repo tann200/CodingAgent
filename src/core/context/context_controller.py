@@ -98,6 +98,7 @@ class ContextController:
         files: List[Dict[str, Any]],
         conversation_history: List[Dict[str, Any]],
         system_prompt: str = "",
+        conversation_quota: Optional[int] = None,
     ) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
         """Enforce context budget by dropping least relevant files and summarizing large files."""
         included = []
@@ -108,6 +109,8 @@ class ContextController:
             self.estimate_tokens(str(msg.get("content", "")))
             for msg in conversation_history
         )
+        if conversation_quota is not None:
+            conversation_tokens = min(conversation_tokens, max(0, int(conversation_quota)))
 
         available_tokens = max(
             0,
@@ -120,23 +123,37 @@ class ContextController:
         self._last_conversation_tokens = conversation_tokens
         self._last_available_tokens = available_tokens
 
-        sorted_files = sorted(files, key=lambda f: f.get("line_count", 0))
+        sorted_files = sorted(
+            files,
+            key=lambda f: (
+                -float(f.get("relevance", f.get("score", 0.0))),
+                f.get("line_count", 0),
+            ),
+        )
 
         current_tokens = 0
 
         for file_info in sorted_files:
-            file_tokens = file_info.get(
-                "estimated_tokens", file_info.get("line_count", 0) // 4
-            )
+            if "estimated_tokens" in file_info:
+                file_tokens = int(file_info["estimated_tokens"])
+            elif file_info.get("content"):
+                file_tokens = self.estimate_tokens(str(file_info["content"]))
+            else:
+                file_tokens = max(1, int(file_info.get("line_count", 0)) * 15)
 
             if current_tokens + file_tokens > available_tokens:
                 if self.should_summarize(file_info):
-                    summarized_tokens = self.SUMMARY_TARGET_LINES // 4
+                    summarized_text = self.summarize_file_content(
+                        file_info.get("content", ""), self.SUMMARY_TARGET_LINES
+                    )
+                    summarized_tokens = (
+                        self.estimate_tokens(summarized_text)
+                        if summarized_text
+                        else self.SUMMARY_TARGET_LINES * 15
+                    )
                     if current_tokens + summarized_tokens <= available_tokens:
                         file_info = file_info.copy()
-                        file_info["content"] = self.summarize_file_content(
-                            file_info.get("content", ""), self.SUMMARY_TARGET_LINES
-                        )
+                        file_info["content"] = summarized_text
                         file_info["summarized"] = True
                         included.append(file_info)
                         current_tokens += summarized_tokens

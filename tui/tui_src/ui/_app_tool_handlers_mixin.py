@@ -6,6 +6,9 @@ to a ≤400-line core.
 
 from __future__ import annotations
 
+import hashlib
+import re
+
 from rich.markup import escape
 from textual import on
 from textual.containers import Horizontal, VerticalScroll
@@ -548,6 +551,23 @@ class AppToolHandlersMixin(AgentAppProtocol):
 
     # ── Bash tier-3 approval gate (§16.1) ─────────────────────────────────
 
+    def _get_perm_raw_ids(self: AgentAppProtocol) -> dict[str, str]:
+        mapping = getattr(self, "_perm_raw_ids", None)
+        if not isinstance(mapping, dict):
+            mapping = {}
+            self._perm_raw_ids = mapping  # type: ignore[attr-defined]
+        return mapping
+
+    @staticmethod
+    def _safe_dom_id(raw_id: str) -> str:
+        raw_str = str(raw_id or "")
+        cleaned = re.sub(r"[^A-Za-z0-9_-]", "_", raw_str)
+        if not cleaned or cleaned != raw_str or not (cleaned[0].isalpha() or cleaned[0] == "_"):
+            digest = hashlib.sha256(raw_str.encode("utf-8")).hexdigest()[:8]
+            prefix = cleaned if (cleaned and (cleaned[0].isalpha() or cleaned[0] == "_")) else f"id_{cleaned}"
+            return f"{prefix}_{digest}"
+        return cleaned
+
     @on(BashApprovalEvent)
     async def handle_bash_approval(self: AgentAppProtocol, event) -> None:
         logger.warning(f"Bash tier-3 approval required: {event.command}")
@@ -559,11 +579,13 @@ class AppToolHandlersMixin(AgentAppProtocol):
             markup=True,
         )
         await chat_log.mount(warn)
-        tid = event.tool_id
-        row = Horizontal(id=f"bash_approval_{tid}", classes="approval_row")
+        raw_tid = str(event.tool_id)
+        safe_tid = self._safe_dom_id(raw_tid)
+        self._get_perm_raw_ids()[safe_tid] = raw_tid
+        row = Horizontal(id=f"bash_approval_{safe_tid}", classes="approval_row")
         await chat_log.mount(row)
-        await row.mount(Button("Allow", id=f"btn_bash_allow_{tid}", variant="success"))
-        await row.mount(Button("Deny", id=f"btn_bash_deny_{tid}", variant="error"))
+        await row.mount(Button("Allow", id=f"btn_bash_allow_{safe_tid}", variant="success"))
+        await row.mount(Button("Deny", id=f"btn_bash_deny_{safe_tid}", variant="error"))
         chat_log.scroll_end(animate=False)
         self._prune_chat_log()
 
@@ -577,6 +599,9 @@ class AppToolHandlersMixin(AgentAppProtocol):
             or btn_id.startswith("btn_bash_deny_")
             or btn_id.startswith("btn_tool_perm_allow_")
             or btn_id.startswith("btn_tool_perm_deny_")
+            or btn_id.startswith("btn_tool_perm_always_")
+            or btn_id.startswith("btn_deny_fb_send_")
+            or btn_id.startswith("btn_deny_fb_skip_")
             or btn_id.startswith("btn_spawn_allow_")
             or btn_id.startswith("btn_spawn_deny_")
             or btn_id.startswith("btn_doom_allow_")
@@ -616,11 +641,12 @@ class AppToolHandlersMixin(AgentAppProtocol):
             self.post_message(PlanRejected())
 
         elif btn_id.startswith("btn_bash_allow_"):
-            tool_id = btn_id[len("btn_bash_allow_") :]
+            safe_tid = btn_id[len("btn_bash_allow_") :]
+            tool_id = self._get_perm_raw_ids().get(safe_tid, safe_tid)
             self._update_perm_badge(-1)
             self._bridge.bash_approved(tool_id)
             try:
-                self.query_one(f"#bash_approval_{tool_id}").remove()
+                self.query_one(f"#bash_approval_{safe_tid}").remove()
             except Exception:
                 pass
             w = Static(
@@ -630,11 +656,12 @@ class AppToolHandlersMixin(AgentAppProtocol):
             self.post_message(BashApproved(tool_id=tool_id))
 
         elif btn_id.startswith("btn_bash_deny_"):
-            tool_id = btn_id[len("btn_bash_deny_") :]
+            safe_tid = btn_id[len("btn_bash_deny_") :]
+            tool_id = self._get_perm_raw_ids().get(safe_tid, safe_tid)
             self._update_perm_badge(-1)
             self._bridge.bash_denied(tool_id)
             try:
-                self.query_one(f"#bash_approval_{tool_id}").remove()
+                self.query_one(f"#bash_approval_{safe_tid}").remove()
             except Exception:
                 pass
             if tool_id in self._tool_widgets:
@@ -651,11 +678,12 @@ class AppToolHandlersMixin(AgentAppProtocol):
             self.post_message(BashDenied(tool_id=tool_id))
 
         elif btn_id.startswith("btn_tool_perm_allow_"):
-            tool_id = btn_id[len("btn_tool_perm_allow_") :]
+            safe_tid = btn_id[len("btn_tool_perm_allow_") :]
+            tool_id = self._get_perm_raw_ids().get(safe_tid, safe_tid)
             self._update_perm_badge(-1)
             self._bridge.publish("tool.permission_granted", {"tool_id": tool_id})
             try:
-                self.query_one(f"#tool_perm_{tool_id}").remove()
+                self.query_one(f"#tool_perm_{safe_tid}").remove()
             except Exception:
                 pass
             w = Static(
@@ -665,10 +693,11 @@ class AppToolHandlersMixin(AgentAppProtocol):
             self.post_message(ToolPermissionApproved(tool_id=tool_id))
 
         elif btn_id.startswith("btn_tool_perm_deny_"):
-            tool_id = btn_id[len("btn_tool_perm_deny_") :]
+            safe_tid = btn_id[len("btn_tool_perm_deny_") :]
+            tool_id = self._get_perm_raw_ids().get(safe_tid, safe_tid)
             self._update_perm_badge(-1)
             try:
-                self.query_one(f"#tool_perm_{tool_id}").remove()
+                self.query_one(f"#tool_perm_{safe_tid}").remove()
             except Exception:
                 pass
             if tool_id in self._tool_widgets:
@@ -678,7 +707,7 @@ class AppToolHandlersMixin(AgentAppProtocol):
                         "[bold #ff5555 strike]✗ tool — denied[/]"
                     )
                 )
-            fb_row = Horizontal(id=f"tool_deny_fb_{tool_id}", classes="approval_row")
+            fb_row = Horizontal(id=f"tool_deny_fb_{safe_tid}", classes="approval_row")
             await self._mount_chat_widget(
                 Static(
                     "[bold #ff5555]✗ Tool denied[/]  [dim]Reason (optional):[/]",
@@ -689,26 +718,27 @@ class AppToolHandlersMixin(AgentAppProtocol):
             await self._mount_chat_widget(fb_row)
             fb_input = Input(
                 placeholder="Why was this denied? (press Enter to send)",
-                id=f"inp_deny_fb_{tool_id}",
+                id=f"inp_deny_fb_{safe_tid}",
             )
             await fb_row.mount(fb_input)
             await fb_row.mount(
-                Button("Send", id=f"btn_deny_fb_send_{tool_id}", variant="primary")
+                Button("Send", id=f"btn_deny_fb_send_{safe_tid}", variant="primary")
             )
             await fb_row.mount(
-                Button("Skip", id=f"btn_deny_fb_skip_{tool_id}", variant="default")
+                Button("Skip", id=f"btn_deny_fb_skip_{safe_tid}", variant="default")
             )
             self._bridge.publish("tool.permission_denied", {"tool_id": tool_id})
             self.post_message(ToolPermissionDenied(tool_id=tool_id))
 
         elif btn_id.startswith("btn_deny_fb_send_"):
-            tool_id = btn_id[len("btn_deny_fb_send_") :]
+            safe_tid = btn_id[len("btn_deny_fb_send_") :]
+            tool_id = self._get_perm_raw_ids().get(safe_tid, safe_tid)
             feedback = ""
             try:
                 feedback = self.query_one(
-                    f"#inp_deny_fb_{tool_id}", Input
+                    f"#inp_deny_fb_{safe_tid}", Input
                 ).value.strip()
-                self.query_one(f"#tool_deny_fb_{tool_id}").remove()
+                self.query_one(f"#tool_deny_fb_{safe_tid}").remove()
             except Exception:
                 pass
             if feedback:
@@ -724,20 +754,20 @@ class AppToolHandlersMixin(AgentAppProtocol):
                 await self._mount_chat_widget(w)
 
         elif btn_id.startswith("btn_deny_fb_skip_"):
-            tool_id = btn_id[len("btn_deny_fb_skip_") :]
+            safe_tid = btn_id[len("btn_deny_fb_skip_") :]
             try:
-                self.query_one(f"#tool_deny_fb_{tool_id}").remove()
+                self.query_one(f"#tool_deny_fb_{safe_tid}").remove()
             except Exception:
                 pass
 
         elif btn_id.startswith("btn_tool_perm_always_"):
-            tool_id = btn_id[len("btn_tool_perm_always_") :]
+            safe_tid = btn_id[len("btn_tool_perm_always_") :]
+            tool_id = self._get_perm_raw_ids().get(safe_tid, safe_tid)
             self._update_perm_badge(-1)
             self._bridge.publish("tool.permission_granted", {"tool_id": tool_id})
-            try:
-                perm_row = self.query_one(f"#tool_perm_{tool_id}")
-                _perm_names = getattr(self, "_perm_tool_names", {})
-                tool_name = _perm_names.get(tool_id, tool_id)
+            _perm_names = getattr(self, "_perm_tool_names", {})
+            tool_name = _perm_names.get(safe_tid) or _perm_names.get(tool_id)
+            if tool_name and tool_name != "delete_file":
                 self._allow_always_tools.add(tool_name)
                 try:
                     from src.core.orchestration.permission_policy import (
@@ -754,7 +784,8 @@ class AppToolHandlersMixin(AgentAppProtocol):
                     logger.info(f"Allow always persisted for: {tool_name}")
                 except Exception as e:
                     logger.warning(f"Failed to persist allow-always rule: {e}")
-                perm_row.remove()
+            try:
+                self.query_one(f"#tool_perm_{safe_tid}").remove()
             except Exception:
                 pass
             w = Static(
@@ -766,12 +797,13 @@ class AppToolHandlersMixin(AgentAppProtocol):
             self.post_message(ToolPermissionApproved(tool_id=tool_id))
 
         elif btn_id.startswith("btn_spawn_allow_"):
-            tool_id = btn_id[len("btn_spawn_allow_") :]
+            safe_tid = btn_id[len("btn_spawn_allow_") :]
+            tool_id = self._get_perm_raw_ids().get(safe_tid, safe_tid)
             self._update_perm_badge(-1)
             self._bridge.publish("spawn.permission_granted", {"tool_id": tool_id})
             self._bridge.publish("tool.permission_granted", {"tool_id": tool_id})
             try:
-                self.query_one(f"#spawn_perm_{tool_id}").remove()
+                self.query_one(f"#spawn_perm_{safe_tid}").remove()
             except Exception:
                 pass
             w = Static(
@@ -781,12 +813,13 @@ class AppToolHandlersMixin(AgentAppProtocol):
             self.post_message(SpawnPermissionApproved(tool_id=tool_id))
 
         elif btn_id.startswith("btn_spawn_deny_"):
-            tool_id = btn_id[len("btn_spawn_deny_") :]
+            safe_tid = btn_id[len("btn_spawn_deny_") :]
+            tool_id = self._get_perm_raw_ids().get(safe_tid, safe_tid)
             self._update_perm_badge(-1)
             self._bridge.publish("spawn.permission_denied", {"tool_id": tool_id})
             self._bridge.publish("tool.permission_denied", {"tool_id": tool_id})
             try:
-                self.query_one(f"#spawn_perm_{tool_id}").remove()
+                self.query_one(f"#spawn_perm_{safe_tid}").remove()
             except Exception:
                 pass
             w = Static(
@@ -796,10 +829,11 @@ class AppToolHandlersMixin(AgentAppProtocol):
             self.post_message(SpawnPermissionDenied(tool_id=tool_id))
 
         elif btn_id.startswith("btn_doom_allow_"):
-            tid = btn_id[len("btn_doom_allow_") :]
+            safe_tid = btn_id[len("btn_doom_allow_") :]
+            tid = self._get_perm_raw_ids().get(safe_tid, safe_tid)
             self._bridge.publish("tool.doom_loop_continue", {"tool_id": tid})
             try:
-                self.query_one(f"#doom_row_{tid}").remove()
+                self.query_one(f"#doom_row_{safe_tid}").remove()
             except Exception:
                 pass
             self.notify(
@@ -807,10 +841,10 @@ class AppToolHandlersMixin(AgentAppProtocol):
             )
 
         elif btn_id.startswith("btn_doom_deny_"):
-            tid = btn_id[len("btn_doom_deny_") :]
-            self._bridge.publish("agent.interrupt", {})
+            safe_tid = btn_id[len("btn_doom_deny_") :]
+            self._bridge.force_interrupt()
             try:
-                self.query_one(f"#doom_row_{tid}").remove()
+                self.query_one(f"#doom_row_{safe_tid}").remove()
             except Exception:
                 pass
             self.notify("Agent stopped", severity="warning")

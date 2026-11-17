@@ -64,25 +64,23 @@ def _is_stale(path: Path, ttl: int) -> bool:
 
 
 def _fetch_text(url: str) -> Optional[str]:
-    """Fetch *url* and return the response text, or None on error."""
+    """Fetch *url* and return the response text, or None on error.
+
+    Validates every redirect hop against SSRF rules (``allow_redirects=False``).
+    """
     try:
-        # SSRF protection: block URLs that resolve to internal/private addresses.
+        from src.tools.web_tools import _fetch_with_validated_redirects
+
+        resp, _final_url = _fetch_with_validated_redirects(url, timeout=_FETCH_TIMEOUT)
         try:
-            from src.tools.web_tools import _is_ssrf_blocked
-
-            _is_ssrf_blocked(url)
-        except PermissionError as pe:
-            logger.warning("remote_skills: SSRF blocked for %s: %s", url, pe)
-            return None
-        except Exception:
-            # If SSRF checker is unavailable for any reason, proceed and let
-            # requests report network errors. Do not fail hard here.
-            pass
-        import requests
-
-        r = requests.get(url, timeout=_FETCH_TIMEOUT)
-        r.raise_for_status()
-        return r.text
+            resp.raise_for_status()
+            return resp.text
+        finally:
+            if hasattr(resp, "close"):
+                resp.close()
+    except PermissionError as pe:
+        logger.warning("remote_skills: SSRF blocked for %s: %s", url, pe)
+        return None
     except Exception as exc:
         logger.debug("remote_skills: fetch failed for %s: %s", url, exc)
         return None
@@ -164,7 +162,14 @@ def fetch_remote_skills(
         if not name or not file_ref:
             continue
 
-        skill_cache = cache_dir / f"{name}.md"
+        import re as _re
+
+        safe_name = _re.sub(r"[^A-Za-z0-9._-]", "_", str(name)).lstrip(".") or "skill"
+        cache_root = cache_dir.resolve()
+        skill_cache = (cache_root / f"{safe_name}.md").resolve()
+        if not skill_cache.is_relative_to(cache_root):
+            logger.warning("remote_skills: rejecting unsafe skill cache path for %r", name)
+            continue
         if _is_stale(skill_cache, ttl_seconds):
             skill_url = urljoin(base_url, file_ref)
             content = _fetch_text(skill_url)

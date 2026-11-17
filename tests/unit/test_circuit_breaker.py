@@ -158,41 +158,44 @@ def test_circuit_breaker_half_open_failure_reopens():
 
 
 def test_circuit_breaker_probe_in_flight_set_on_half_open():
-    """Accessing .state when OPEN transitions to HALF_OPEN and sets _probe_in_flight."""
+    """allow_request() transitions OPEN -> HALF_OPEN after timeout and sets _probe_in_flight."""
     cb = CircuitBreaker(failure_threshold=1, recovery_timeout=0.001)
     cb.record_failure()
     time.sleep(0.01)
 
-    s1 = cb.state
-    assert s1 == CircuitBreaker.HALF_OPEN
-    # The flag must be set so that concurrent callers (in other threads) see OPEN
+    # Reading state/is_open is read-only and must not burn the probe slot.
+    assert cb.is_open() is False
+    assert cb.state == CircuitBreaker.HALF_OPEN
+    assert cb._probe_in_flight is False
+
+    # First allow_request() admits the probe and claims _probe_in_flight.
+    assert cb.allow_request() is True
     assert cb._probe_in_flight is True
+    assert cb.allow_request() is False
 
 
 def test_circuit_breaker_probe_in_flight_blocks_concurrent_probe():
-    """A second thread accessing .state while a probe is in-flight sees OPEN."""
+    """Concurrent allow_request() calls while timeout elapsed admit exactly one probe."""
     cb = CircuitBreaker(failure_threshold=1, recovery_timeout=0.001)
     cb.record_failure()
     time.sleep(0.01)
 
-    results: List[str] = []
+    results: List[bool] = []
     barrier = threading.Barrier(2)
 
-    def _read_state():
+    def _try_allow():
         barrier.wait()
-        results.append(cb.state)
+        results.append(cb.allow_request())
 
-    t1 = threading.Thread(target=_read_state)
-    t2 = threading.Thread(target=_read_state)
+    t1 = threading.Thread(target=_try_allow)
+    t2 = threading.Thread(target=_try_allow)
     t1.start()
     t2.start()
     t1.join()
     t2.join()
 
-    # Exactly one should have seen HALF_OPEN; the other OPEN (or both HALF_OPEN
-    # if there was a race — the important invariant is no corruption).
-    assert set(results).issubset({CircuitBreaker.HALF_OPEN, CircuitBreaker.OPEN})
-    assert CircuitBreaker.HALF_OPEN in results  # at least one probe went through
+    assert results.count(True) == 1
+    assert results.count(False) == 1
 
 
 # ---------------------------------------------------------------------------
@@ -204,7 +207,8 @@ def test_circuit_breaker_record_success_clears_probe_flag():
     cb = CircuitBreaker(failure_threshold=1, recovery_timeout=0.001)
     cb.record_failure()
     time.sleep(0.01)
-    _ = cb.state  # enters HALF_OPEN, sets probe_in_flight
+    assert cb.allow_request() is True
+    assert cb._probe_in_flight is True
     cb.record_success()
     assert cb._probe_in_flight is False
 
@@ -213,7 +217,7 @@ def test_circuit_breaker_record_failure_clears_probe_flag():
     cb = CircuitBreaker(failure_threshold=2, recovery_timeout=0.001)
     cb.record_failure()
     time.sleep(0.01)
-    _ = cb.state  # enters HALF_OPEN
+    assert cb.allow_request() is True
     cb.record_failure()
     assert cb._probe_in_flight is False
 

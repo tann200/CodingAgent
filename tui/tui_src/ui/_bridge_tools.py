@@ -59,8 +59,10 @@ class BridgeToolsMixin(AgentBridgeProtocol):
         if not isinstance(tool_args, dict):
             tool_args = {}
 
-        # §16.1 — bash tier-3 gate
-        if tool_name == "bash":
+        # §16.1 — bash tier-3 gate: in real orchestrator mode _check_tier3_approval
+        # emits BashApprovalRequired with the gate's exact tool_id. Keep the mock
+        # fallback only when running without an orchestrator (MockEngine).
+        if tool_name == "bash" and not getattr(self, "_orchestrator", None):
             cmd = tool_args.get("command", "").lower().strip()
             if any(cmd.startswith(p) for p in TIER3_PREFIXES):
                 self._post(
@@ -266,6 +268,16 @@ class BridgeToolsMixin(AgentBridgeProtocol):
                 role=payload.get("role", ""),
                 task=payload.get("task", ""),
                 tool_id=payload.get("tool_id", ""),
+            )
+        )
+
+    def _on_bash_approval_required(self, payload: dict) -> None:
+        from tui.tui_src.ui.bus import BashApprovalEvent
+
+        self._post(
+            BashApprovalEvent(
+                tool_id=str(payload.get("tool_id", "")),
+                command=str(payload.get("command", "")),
             )
         )
 

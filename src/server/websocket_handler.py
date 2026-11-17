@@ -15,7 +15,10 @@ from src.core.orchestration.event_bus import EventBus
 from src.server.event_delivery import enqueue_with_drop_policy
 from src.server.event_subscriptions import resolve_initial_websocket_events
 from src.server.metrics import record_dropped_session_event
-from src.server.server_config import extract_admin_token_from_headers
+from src.server.server_config import (
+    extract_admin_token_from_headers,
+    validate_websocket_origin,
+)
 from src.server.websocket_control import (
     build_control_error_payload,
     build_control_pong_payload,
@@ -59,6 +62,7 @@ def _make_websocket_handler(
                         (ev_name, payload),
                         drop_policy=drop_policy,
                         on_drop=_record_dropped,
+                        on_evict=_record_dropped if drop_policy == "drop_oldest" else None,
                     )
 
                 loop.call_soon_threadsafe(_enqueue)
@@ -113,6 +117,20 @@ async def websocket_session_handler(
     # Bound keepalive interval between 1s and 300s server-side
     keepalive_interval = max(1, min(keepalive_interval, 300))
 
+    if not validate_websocket_origin(websocket.headers):
+        try:
+            await websocket.close(code=1008)
+        except Exception:
+            pass
+        return
+
+    if session_id == "all" and not admin_token:
+        try:
+            await websocket.close(code=1008)
+        except Exception:
+            pass
+        return
+
     if admin_token:
         token = extract_admin_token_from_headers(websocket.headers)
         if not token or not hmac.compare_digest(token, admin_token):
@@ -133,6 +151,11 @@ async def websocket_session_handler(
 
     loop = asyncio.get_running_loop()
     q: asyncio.Queue[Any] = asyncio.Queue(maxsize=max(1, int(qms)))
+    send_lock = asyncio.Lock()
+
+    async def _send_ws_json(ev_name: str, data_obj: Any) -> None:
+        async with send_lock:
+            await websocket.send_json({"event": ev_name, "data": redact_data(data_obj)})
 
     initial_events = resolve_initial_websocket_events(events_param)
 
@@ -157,6 +180,11 @@ async def websocket_session_handler(
                     ("_keepalive", {"comment": "ping"}),
                     drop_policy=drop_policy,
                     on_drop=lambda ev: record_dropped_session_event(ev, session_id),
+                    on_evict=(
+                        (lambda ev: record_dropped_session_event(ev, session_id))
+                        if drop_policy == "drop_oldest"
+                        else None
+                    ),
                 )
         except asyncio.CancelledError:
             return
@@ -171,7 +199,7 @@ async def websocket_session_handler(
                     break
                 event_name, payload = item
                 try:
-                    await websocket.send_json({"event": event_name, "data": redact_data(payload)})
+                    await _send_ws_json(event_name, payload)
                 except WebSocketDisconnect:
                     break
                 except Exception:
@@ -195,7 +223,10 @@ async def websocket_session_handler(
                         continue
                     if len(handlers) >= 32:
                         try:
-                            q.put_nowait(build_control_error_payload(ev))
+                            ev_n, pay = build_control_error_payload(ev)
+                            await _send_ws_json(ev_n, pay)
+                        except WebSocketDisconnect:
+                            return
                         except Exception:
                             pass
                         continue
@@ -204,12 +235,18 @@ async def websocket_session_handler(
                         event_bus.subscribe(ev, h)
                         handlers[ev] = h
                         try:
-                            q.put_nowait(build_control_subscribed_payload(ev))
+                            ev_n, pay = build_control_subscribed_payload(ev)
+                            await _send_ws_json(ev_n, pay)
+                        except WebSocketDisconnect:
+                            return
                         except Exception:
                             pass
                     except Exception:
                         try:
-                            q.put_nowait(build_control_error_payload(ev))
+                            ev_n, pay = build_control_error_payload(ev)
+                            await _send_ws_json(ev_n, pay)
+                        except WebSocketDisconnect:
+                            return
                         except Exception:
                             pass
                 elif typ == "unsubscribe":
@@ -224,28 +261,38 @@ async def websocket_session_handler(
                             pass
                         handlers.pop(ev, None)
                         try:
-                            q.put_nowait(build_control_unsubscribed_payload(ev))
+                            ev_n, pay = build_control_unsubscribed_payload(ev)
+                            await _send_ws_json(ev_n, pay)
+                        except WebSocketDisconnect:
+                            return
                         except Exception:
                             pass
                     else:
                         try:
-                            q.put_nowait(
-                                build_control_unsubscribed_payload(
-                                    ev, was_subscribed=False
-                                )
+                            ev_n, pay = build_control_unsubscribed_payload(
+                                ev, was_subscribed=False
                             )
+                            await _send_ws_json(ev_n, pay)
+                        except WebSocketDisconnect:
+                            return
                         except Exception:
                             pass
                 elif typ == "list":
                     try:
-                        q.put_nowait(
-                            build_control_subscriptions_payload(list(handlers.keys()))
+                        ev_n, pay = build_control_subscriptions_payload(
+                            list(handlers.keys())
                         )
+                        await _send_ws_json(ev_n, pay)
+                    except WebSocketDisconnect:
+                        return
                     except Exception:
                         pass
                 elif typ == "ping":
                     try:
-                        q.put_nowait(build_control_pong_payload())
+                        ev_n, pay = build_control_pong_payload()
+                        await _send_ws_json(ev_n, pay)
+                    except WebSocketDisconnect:
+                        return
                     except Exception:
                         pass
                 else:

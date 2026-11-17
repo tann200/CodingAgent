@@ -19,6 +19,7 @@ from textual.containers import Container
 from textual.screen import ModalScreen
 from textual.widgets import Input, Label, Static
 from textual.events import Key
+from rich.markup import escape
 
 _log = logging.getLogger(__name__)
 
@@ -176,14 +177,14 @@ class SessionListScreen(ModalScreen[None]):
             date_str = (
                 time.strftime("%Y-%m-%d %H:%M", time.localtime(ts)) if ts else "?"
             )
-            task = str(data.get("task_name", "?"))[:36]
+            task = escape(str(data.get("task_name", "?"))[:36])
             msgs = data.get("message_count", 0)
             # GAP-FOOTER-3: annotate child (subagent) sessions with role + status
             is_child = bool(data.get("parent_session_id"))
             role_tag = ""
             ok_tag = ""
             if is_child:
-                role = data.get("role", "subagent")
+                role = escape(str(data.get("role", "subagent")))
                 ok = data.get("ok", True)
                 ok_tag = " [bold #22c55e]✓[/]" if ok else " [bold #ff5555]✗[/]"
                 role_tag = f"[dim #a78bfa] ↳ {role}[/] "

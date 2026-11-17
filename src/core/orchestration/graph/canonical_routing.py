@@ -24,11 +24,17 @@ def route_after_agent_loop(
     run = state.get("run") or {}
     outcome = run.get("outcome")
 
+    if outcome == "cancelled" or run.get("status") == "cancelled":
+        return "finalize"
+
     if outcome == "approval_required" or state.get("awaiting_plan_approval"):
         return "approval"
 
     if outcome == "compact" or "context_overflow" in (state.get("errors") or []):
         return "compact"
+
+    if outcome in ("complete", "failed"):
+        return "finalize"
 
     if outcome == "recover" or state.get("replan_required"):
         if state.get("use_replan") is False:
@@ -46,10 +52,13 @@ def route_after_agent_loop(
             return "finalize"
         return "verify"
 
-    if outcome in ("complete", "failed", "cancelled"):
-        return "finalize"
-
     if outcome == "continue":
+        tool_calls = int(state.get("tool_call_count") or run.get("tool_calls") or 0)
+        max_tools = int(state.get("max_tool_calls") or 0)
+        if max_tools > 0 and tool_calls >= max_tools:
+            if (state.get("modified_files") or state.get("last_action")) and state.get("use_verification") is not False:
+                return "verify"
+            return "finalize"
         return "agent_loop"
 
     # Fallback heuristics for transitional states
@@ -87,7 +96,7 @@ def route_after_verify(
 
     if outcome == "continue":
         return "agent_loop"
-    if outcome == "failed":
+    if outcome in ("failed", "cancelled") or run.get("status") == "cancelled":
         return "finalize"
 
     if outcome == "recover" or state.get("verification_passed") is False:

@@ -66,6 +66,9 @@ HistoryInput          { height: 3; margin: 0; border: solid #333333; background:
 #status_right  { width: auto; content-align: right middle; color: #555555; }
 /* GAP-FOOTER-1: pending permission badge */
 #perm_count_chip { width: auto; content-align: right middle; padding: 0 1; }
+#mcp_status_chip { width: auto; content-align: right middle; padding: 0 1; color: #888888; }
+#subagent_footer_chip { width: auto; height: 1; min-width: 0; border: none; padding: 0 1; background: #161616; color: #a78bfa; display: none; }
+#subagent_footer_chip.visible { display: block; }
 
 /* ── Right sidebar ─────────────────────────────────────────────────────── */
 #right_sidebar        { width: 44; height: 1fr; dock: right; border-left: solid #333333; padding: 1; background: #111111; }

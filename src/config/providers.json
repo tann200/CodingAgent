@@ -85,5 +85,25 @@
     "provider_supports_parallel_tools": true,
     "disable_thinking": false,
     "active": false
+  },
+  {
+    "name": "mlx_lm",
+    "type": "mlx",
+    "base_url": "http://localhost:8080/v1",
+    "models": [],
+    "supports_native_tools": true,
+    "provider_supports_parallel_tools": false,
+    "disable_thinking": false,
+    "active": false
+  },
+  {
+    "name": "llama_server",
+    "type": "llama_server",
+    "base_url": "http://localhost:8080/v1",
+    "models": [],
+    "supports_native_tools": true,
+    "provider_supports_parallel_tools": false,
+    "disable_thinking": false,
+    "active": false
   }
 ]

@@ -357,23 +357,20 @@ async def lsp_rename(
                 if not file_path.exists():
                     continue
 
-                from src.core.orchestration.workspace_guard import WorkspaceGuard
-                guard = WorkspaceGuard(workspace_root=workdir_path)
-                guard_res = guard.guard_operation("lsp_rename", str(resolved_path))
-                if guard_res.get("status") == "error":
-                    logger.warning("lsp_rename: %s blocked by WorkspaceGuard: %s", resolved_path, guard_res.get("error"))
-                    continue
+                from src.tools._file_io import _pre_write_check
+                from src.tools._edit_tools import _atomic_write
 
-                from src.tools._file_io import _check_project_deny_write
-                deny_err = _check_project_deny_write(resolved_path, workdir_path)
-                if deny_err:
-                    logger.warning("lsp_rename: %s blocked by deny-write: %s", resolved_path, deny_err)
-                    continue
-
-                from src.tools.guardrails import check_read_before_write
-                rbw_err = check_read_before_write(str(resolved_path))
-                if rbw_err:
-                    logger.warning("lsp_rename: %s blocked by read-before-write: %s", resolved_path, rbw_err.get("error"))
+                checked_path, pre_err = _pre_write_check(
+                    str(resolved_path),
+                    workdir_path,
+                    operation="lsp_rename",
+                )
+                if pre_err is not None or checked_path is None:
+                    logger.warning(
+                        "lsp_rename: %s blocked by pre-write guard: %s",
+                        resolved_path,
+                        (pre_err or {}).get("error"),
+                    )
                     continue
 
                 content = file_path.read_text(encoding="utf-8")
@@ -394,7 +391,7 @@ async def lsp_rename(
                     if sl == el and sl < len(lines):
                         line_str = lines[sl]
                         lines[sl] = line_str[:sc] + new_text + line_str[ec:]
-                file_path.write_text("".join(lines), encoding="utf-8")
+                _atomic_write(file_path, "".join(lines))
                 total_edits += len(text_edits)
                 edited_files.append(str(file_path))
             except Exception as file_exc:

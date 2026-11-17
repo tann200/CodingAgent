@@ -349,8 +349,6 @@ def build_static_system_parts(
     if project_instructions_block:
         parts.append(project_instructions_block)
 
-    parts.append(system_prompt_dynamic_boundary)
-
     if active_skills:
         skill_contents = [
             sanitize_text(skill_content)
@@ -391,5 +389,6 @@ def build_static_system_parts(
     parts.append(
         build_output_format_block_fn(use_native_tools, is_simple_mode, tier_str)
     )
+    parts.append(system_prompt_dynamic_boundary)
 
     return "\n\n".join(parts)

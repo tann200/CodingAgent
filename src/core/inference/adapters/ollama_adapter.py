@@ -135,6 +135,7 @@ OLLAMA_OPTIONS = {
     "stop",
     "num_keep",
     "num_ctx",
+    "kv_cache_type",
 }
 
 
@@ -526,15 +527,56 @@ class OllamaAdapter(LLMClient):
         except Exception:
             return response_text
 
+    def _resolve_num_ctx(self, options: dict) -> Optional[int]:
+        if "num_ctx" in options and options["num_ctx"] is not None:
+            try:
+                return max(512, int(options["num_ctx"]))
+            except (TypeError, ValueError):
+                pass
+        prov = self.provider if isinstance(self.provider, dict) else {}
+        for key in ("num_ctx", "context_length"):
+            raw = prov.get(key)
+            if raw is not None:
+                try:
+                    val = int(raw)
+                    if val > 0:
+                        return val
+                except (TypeError, ValueError):
+                    pass
+        try:
+            from src.core.inference.provider_context import _load_active_context_length
+
+            ctx = int(_load_active_context_length("ollama") or 0)
+            if ctx > 0:
+                return ctx
+        except Exception:
+            pass
+        return None
+
     def _extract_ollama_options(self, kwargs: dict) -> tuple[dict, dict]:
         """Separates Ollama-specific options from generic kwargs."""
         options = {}
         payload_kwargs = {}
         for k, v in kwargs.items():
+            if k == "kv_cache_quant":
+                if isinstance(v, str) and v.strip():
+                    options.setdefault("kv_cache_type", v.strip())
+                elif v:
+                    options.setdefault("kv_cache_type", "q8_0")
+                continue
             if k in OLLAMA_OPTIONS:
                 options[k] = v
             else:
                 payload_kwargs[k] = v
+        resolved_ctx = self._resolve_num_ctx(options)
+        if resolved_ctx is not None:
+            options.setdefault("num_ctx", resolved_ctx)
+        if "kv_cache_type" not in options and isinstance(self.provider, dict):
+            prov_kv = self.provider.get("kv_cache_quant")
+            if isinstance(prov_kv, str) and prov_kv.strip():
+                options["kv_cache_type"] = prov_kv.strip()
+            elif prov_kv:
+                options["kv_cache_type"] = "q8_0"
         return options, payload_kwargs
 
     @with_telemetry
@@ -576,6 +618,15 @@ class OllamaAdapter(LLMClient):
                     "provider": "ollama",
                     "model": model or "unknown",
                     "error": raw_response["meta"]["error"],
+                    "raw": raw_response,
+                }
+
+            if isinstance(raw_response, dict) and raw_response.get("error"):
+                return {
+                    "ok": False,
+                    "provider": "ollama",
+                    "model": model or "unknown",
+                    "error": str(raw_response["error"]),
                     "raw": raw_response,
                 }
 
@@ -676,7 +727,7 @@ class OllamaAdapter(LLMClient):
                         chunk = ""
                         try:
                             chunk = (
-                                line.decode()
+                                line.decode("utf-8", errors="replace")
                                 if isinstance(line, (bytes, bytearray))
                                 else str(line)
                             )
@@ -891,7 +942,7 @@ class OllamaAdapter(LLMClient):
                         chunk = ""
                         try:
                             chunk = (
-                                line.decode()
+                                line.decode("utf-8", errors="replace")
                                 if isinstance(line, (bytes, bytearray))
                                 else str(line)
                             )

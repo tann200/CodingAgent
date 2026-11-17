@@ -418,9 +418,9 @@ def _parse_args(argv: list) -> argparse.Namespace:
         default=None,
         help="Directory to load plugins from (requires trusted workspace).",
     )
-    # Allow unknown flags so future args don't break older wrappers
-    known, _ = parser.parse_known_args(argv)
-    return known
+    # Fail closed on unrecognized flags so typos on security flags (e.g.
+    # --untrsted or --permision-mode) never degrade silently.
+    return parser.parse_args(argv)
 
 
 def _run_init(target_dir: Optional[str], force: bool) -> int:
@@ -477,8 +477,8 @@ The agent reads this file at the start of every session.
 #!/usr/bin/env bash
 # pre_tool.sh — runs before every tool call
 # Environment variables set by CodingAgent:
-#   TOOL_NAME   — name of the tool about to execute
-#   TOOL_ARGS   — JSON-encoded tool arguments
+#   TOOL_NAME        — name of the tool about to execute
+#   TOOL_ARGS_JSON   — JSON-encoded tool arguments
 #
 # Exit non-zero to abort the tool call.
 exit 0
@@ -488,8 +488,8 @@ exit 0
 #!/usr/bin/env bash
 # post_tool.sh — runs after every tool call
 # Environment variables set by CodingAgent:
-#   TOOL_NAME   — name of the tool that was executed
-#   TOOL_RESULT — JSON-encoded tool result
+#   TOOL_NAME        — name of the tool that was executed
+#   TOOL_RESULT_JSON — JSON-encoded tool result
 exit 0
 """
 
@@ -566,6 +566,8 @@ def _run_validate_config(workdir: Optional[str]) -> int:
 
     settings_files = []
     for cand in candidates:
+        settings_files.append(cand / "config.json")
+        settings_files.append(cand / "config.local.json")
         settings_files.append(cand / "settings.json")
         settings_files.append(cand / "settings.local.json")
 
@@ -596,11 +598,15 @@ def _run_validate_config(workdir: Optional[str]) -> int:
             continue
 
         _KNOWN_KEYS = {
+            "version",
+            "autonomous",
             "model",
             "permissionMode",
             "permission_mode",
             "maxTurns",
             "max_turns",
+            "compact_token_threshold",
+            "sandbox_level",
             "budgetCeiling",
             "budget_ceiling_usd",
             "hooks",
@@ -1044,22 +1050,32 @@ def main(argv: Optional[list] = None) -> int:
         _workdir_for_ps = getattr(args, "workdir", None)
         _ps = load_project_settings(_workdir_for_ps)
 
-        # CP-8: apply permissionMode from project settings (CLI flag overrides below)
-        if _ps.permission_mode and not getattr(args, "permission_mode", None):
-            from src.tools.tools_config import (
-                PermissionLevel,
-                set_active_permission_mode,
-            )
+        # CP-8: apply permissionMode from project settings ONLY in trusted workspaces
+        # (CLI flag overrides below; untrusted repos must never escalate permissions).
+        from src.core.orchestration.deferred_init import is_trusted as _is_ws_trusted
 
-            try:
-                set_active_permission_mode(PermissionLevel(_ps.permission_mode))
+        _explicit_trust = getattr(args, "trusted", None)
+        _ws_trusted = _explicit_trust if _explicit_trust is not None else _is_ws_trusted()
+        if _ps.permission_mode and not getattr(args, "permission_mode", None):
+            if not _ws_trusted:
                 _dbg(
-                    f"[src.main] Project permissionMode applied: {_ps.permission_mode}"
+                    "[src.main] Ignoring project permissionMode override from untrusted workspace"
                 )
-            except ValueError:
-                _dbg(
-                    f"[src.main] Unknown project permissionMode: {_ps.permission_mode}"
+            else:
+                from src.tools.tools_config import (
+                    PermissionLevel,
+                    set_active_permission_mode,
                 )
+
+                try:
+                    set_active_permission_mode(PermissionLevel(_ps.permission_mode))
+                    _dbg(
+                        f"[src.main] Project permissionMode applied: {_ps.permission_mode}"
+                    )
+                except ValueError:
+                    _dbg(
+                        f"[src.main] Unknown project permissionMode: {_ps.permission_mode}"
+                    )
 
         # CP-13: stash active settings for orchestrator / perception_node
         import src.core.orchestration.project_settings as _psmod
@@ -1129,18 +1145,12 @@ def main(argv: Optional[list] = None) -> int:
         # P1-3: tui/src/ was renamed to tui/tui_src/ so it has a unique package
         # name `tui_src` — no sys.path shadowing required.
         from tui.tui_src.ui.app import AgentApp  # type: ignore[import]
-        from tui.tui_src.ui.core_bridge import AgentBridge  # type: ignore[import]  # noqa: F401
 
-        app = AgentApp()
-        # Inject working_dir into the bridge after the app creates it,
-        # or pass it in before run() so the bridge constructor picks it up.
-        # AgentApp creates its bridge in on_mount; pass via class attribute.
-        if _working_dir is not None:
-            app._initial_working_dir = _working_dir  # type: ignore[attr-defined]
-        if getattr(args, "trusted", None) is not None:
-            app._initial_trusted = args.trusted  # type: ignore[attr-defined]
-        if getattr(args, "plugin_dir", None) is not None:
-            app._initial_plugin_dir = args.plugin_dir  # type: ignore[attr-defined]
+        app = AgentApp(
+            working_dir=_working_dir,
+            trusted=getattr(args, "trusted", None),
+            plugin_dir=getattr(args, "plugin_dir", None),
+        )
         _dbg("[src.main] Delegating startup to AgentApp (new TUI)")
         app.run()
         _dbg("[src.main] AgentApp.run() returned")

@@ -121,16 +121,14 @@ class GUILogger:
             safe_msg = self._format(message)
         entry = {"timestamp": timestamp, "level": level.upper(), "message": safe_msg}
 
-        # Print to stdout for console visibility (important messages)
+        # Print to stderr so stdout stays reserved for structured CLI output
+        # (--output-format json|raw|stream) cleanly.
         try:
-            print(f"[{timestamp}] [{level.upper()}] {safe_msg}")
+            print(f"[{timestamp}] [{level.upper()}] {safe_msg}", file=sys.stderr)
         except OSError:
-            # Some test runners (Textual headless on Windows) replace stdout with invalid handles.  # noqa: E501
-            # Fall back to sys.stderr.write which is more stable.
             try:
                 sys.stderr.write(f"[{timestamp}] [{level.upper()}] {safe_msg}\n")
             except Exception:
-                # Last resort: ignore printing failures to avoid crashing tests
                 pass
 
         # Route through standard logging system for TUI ConsolePanel

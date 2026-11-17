@@ -33,7 +33,7 @@ from src.core.messaging.event_types import (
     ToolExecuteStart, ToolInvoked, ToolExecuteFinish, ToolExecuteError,
     ToolResult, ToolPermissionRequired, ToolDoomLoopDetected,
     # Permission / approval
-    SpawnPermissionRequired, BashApprovalGranted, BashApprovalDenied,
+    SpawnPermissionRequired, BashApprovalRequired, BashApprovalGranted, BashApprovalDenied,
     # Preview / plan
     PreviewPending, PreviewConfirmed, PreviewRejected, PlanRequested, PlanProgress,
     # Step
@@ -103,7 +103,7 @@ __all__ = [
     "ToolExecuteStart", "ToolInvoked", "ToolExecuteFinish", "ToolExecuteError",
     "ToolResult", "ToolPermissionRequired", "ToolDoomLoopDetected",
     # Permission / approval
-    "SpawnPermissionRequired", "BashApprovalGranted", "BashApprovalDenied",
+    "SpawnPermissionRequired", "BashApprovalRequired", "BashApprovalGranted", "BashApprovalDenied",
     # Preview / plan
     "PreviewPending", "PreviewConfirmed", "PreviewRejected", "PlanRequested", "PlanProgress",
     # Step

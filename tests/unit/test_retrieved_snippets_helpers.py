@@ -14,6 +14,7 @@ def test_build_context_controller_descriptors_maps_snippet_fields():
             "content": "line1\nline2",
             "line_count": 2,
             "estimated_tokens": max(1, len("line1\nline2") // 4),
+            "relevance": 0.0,
         }
     ]
 

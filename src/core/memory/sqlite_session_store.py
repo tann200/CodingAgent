@@ -216,7 +216,7 @@ class SqliteSessionStore:
     def get_messages(self, session_id: str) -> List[Dict[str, Any]]:
         conn = self._get_connection()
         rows = conn.execute(
-            "SELECT role, content FROM messages WHERE session_id=? ORDER BY created_at",
+            "SELECT role, content FROM messages WHERE session_id=? ORDER BY created_at, id",
             (session_id or "unknown",),
         ).fetchall()
         return [{"role": r["role"], "content": r["content"]} for r in rows]
@@ -233,7 +233,7 @@ class SqliteSessionStore:
         conn = self._get_connection()
         rows = conn.execute(
             "SELECT session_id, role, content, created_at "
-            "FROM messages WHERE session_id=? ORDER BY created_at",
+            "FROM messages WHERE session_id=? ORDER BY created_at, id",
             (session_id or "unknown",),
         )
         for row in rows:
@@ -262,7 +262,7 @@ class SqliteSessionStore:
         conn = self._get_connection()
         rows = conn.execute(
             "SELECT session_id, role, content, created_at "
-            "FROM messages WHERE session_id=? ORDER BY created_at "
+            "FROM messages WHERE session_id=? ORDER BY created_at, id "
             "LIMIT ? OFFSET ?",
             (session_id or "unknown", page_size + 1, offset),
         ).fetchall()
@@ -360,25 +360,27 @@ class SqliteSessionStore:
     def get_tool_calls(self, session_id: str) -> List[Dict[str, Any]]:
         conn = self._get_connection()
         rows = conn.execute(
-            "SELECT tool_name, args, result, success FROM tool_calls WHERE session_id=? ORDER BY created_at",
+            "SELECT tool_name, args, result, success FROM tool_calls WHERE session_id=? ORDER BY created_at, id",
             (session_id or "unknown",),
         ).fetchall()
         return map_tool_call_rows(rows)
 
     def add_plan(self, session_id: str, plan: Any, status: str = "active") -> None:
+        from src.core.security.redaction import redact_secrets
+
         sid = session_id or "unknown"
         plan_text = (
             plan if isinstance(plan, str) else json.dumps(plan, ensure_ascii=False)
         )
         self._execute_write(
             "INSERT INTO plans (session_id, plan, status) VALUES (?, ?, ?)",
-            (sid, plan_text, status),
+            (sid, redact_secrets(plan_text), status),
         )
 
     def get_plans(self, session_id: str) -> List[Dict[str, Any]]:
         conn = self._get_connection()
         rows = conn.execute(
-            "SELECT plan, status FROM plans WHERE session_id=? ORDER BY created_at",
+            "SELECT plan, status FROM plans WHERE session_id=? ORDER BY created_at, id",
             (session_id or "unknown",),
         ).fetchall()
         return [{"plan": r["plan"], "status": r["status"]} for r in rows]
@@ -387,6 +389,7 @@ class SqliteSessionStore:
     def save_plan(self, session_id: str, plan: list, task: str, step: int) -> None:
         """Persist the current plan to the session store for cross-session resumption."""
         import datetime
+        from src.core.security.redaction import redact_secrets
 
         self._execute_write(
             """INSERT OR REPLACE INTO session_plans
@@ -394,8 +397,8 @@ class SqliteSessionStore:
                VALUES (?, ?, ?, ?, ?)""",
             (
                 session_id or "unknown",
-                json.dumps(plan, ensure_ascii=False),
-                task or "",
+                redact_secrets(json.dumps(plan, ensure_ascii=False)),
+                redact_secrets(task or ""),
                 step,
                 datetime.datetime.utcnow().isoformat(),
             ),
@@ -434,6 +437,8 @@ class SqliteSessionStore:
         error_message: str,
         context: Optional[Any] = None,
     ) -> None:
+        from src.core.security.redaction import redact_secrets
+
         sid = session_id or "unknown"
         try:
             ctx = (
@@ -441,9 +446,11 @@ class SqliteSessionStore:
             )
         except Exception:
             ctx = str(context)
+        clean_err = redact_secrets(str(error_message))
+        clean_ctx = redact_secrets(ctx) if ctx is not None else None
         self._execute_write(
             "INSERT INTO errors (session_id, error_type, error_message, context) VALUES (?, ?, ?, ?)",
-            (sid, error_type, error_message, ctx),
+            (sid, error_type, clean_err, clean_ctx),
         )
         # Learning loop: auto-promote non-transient errors to the mistakes table
         # so they are available for cross-session FTS retrieval.
@@ -451,8 +458,8 @@ class SqliteSessionStore:
             try:
                 self.add_mistake(
                     session_id=sid,
-                    summary=f"{error_type}: {error_message[:100]}",
-                    context=error_message[:400],
+                    summary=f"{error_type}: {clean_err[:100]}",
+                    context=clean_err[:400],
                     tool=None,
                 )
             except Exception:
@@ -461,7 +468,7 @@ class SqliteSessionStore:
     def get_errors(self, session_id: str) -> List[Dict[str, Any]]:
         conn = self._get_connection()
         rows = conn.execute(
-            "SELECT error_type, error_message, context FROM errors WHERE session_id=? ORDER BY created_at",
+            "SELECT error_type, error_message, context FROM errors WHERE session_id=? ORDER BY created_at, id",
             (session_id or "unknown",),
         ).fetchall()
         return map_error_rows(rows)
@@ -492,7 +499,7 @@ class SqliteSessionStore:
     def get_decisions(self, session_id: str) -> List[Dict[str, Any]]:
         conn = self._get_connection()
         rows = conn.execute(
-            "SELECT decision, rationale, created_at FROM decisions WHERE session_id=? ORDER BY created_at",
+            "SELECT decision, rationale, created_at FROM decisions WHERE session_id=? ORDER BY created_at, id",
             (session_id or "unknown",),
         ).fetchall()
         return [

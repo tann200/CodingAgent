@@ -115,18 +115,27 @@ class LSPManager:
     ) -> None:
         self._workspace = workspace.resolve()
         self._clients: Dict[str, LSPClient | _DummyLSPClient] = {}
-        self._lock = asyncio.Lock()
+        self._lock: Optional[asyncio.Lock] = None
+        self._lock_loop: Optional[asyncio.AbstractEventLoop] = None
         self._config = _load_server_config()
         self._max_concurrent = max_concurrent or _get_default_max_lsps()
         self._active_count = 0
         self._semaphore: Optional[asyncio.Semaphore] = None
+        self._semaphore_loop: Optional[asyncio.AbstractEventLoop] = None
+
+    def _get_lock(self) -> asyncio.Lock:
+        loop = asyncio.get_running_loop()
+        if self._lock is None or self._lock_loop is not loop:
+            self._lock = asyncio.Lock()
+            self._lock_loop = loop
+        return self._lock
 
     async def get_client(self, language: str) -> LSPClient | _DummyLSPClient:
         """Return a started LSP client for *language*.
 
         Returns ``_DummyLSPClient`` when no server binary is found.
         """
-        async with self._lock:
+        async with self._get_lock():
             if language in self._clients:
                 existing = self._clients[language]
                 # P4-2: if the cached client is a real LSPClient that is no longer
@@ -168,8 +177,13 @@ class LSPManager:
 
     def get_semaphore(self) -> asyncio.Semaphore:
         """Get or create a semaphore for concurrency control."""
-        if self._semaphore is None:
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            loop = None
+        if self._semaphore is None or (loop is not None and self._semaphore_loop is not loop):
             self._semaphore = asyncio.Semaphore(self._max_concurrent)
+            self._semaphore_loop = loop
         return self._semaphore
 
     @contextlib.asynccontextmanager
@@ -192,7 +206,7 @@ class LSPManager:
 
     async def shutdown_all(self) -> None:
         """Shut down all running LSP servers."""
-        async with self._lock:
+        async with self._get_lock():
             for client in self._clients.values():
                 if isinstance(client, LSPClient):
                     try:
@@ -200,6 +214,19 @@ class LSPManager:
                     except Exception as exc:
                         logger.debug("lsp_manager: error shutting down LSP client: %s", exc)
             self._clients.clear()
+
+    async def notify_file_changed(self, path: str | Path, text: Optional[str] = None) -> None:
+        """Send textDocument/didChange to an already-active LSP client for *path*."""
+        p = Path(path)
+        if not p.is_absolute():
+            p = self._workspace / p
+        p = p.resolve()
+        language = self.language_for_file(str(p))
+        if not language:
+            return
+        client = self._clients.get(language)
+        if isinstance(client, LSPClient) and client.available:
+            await client.notify_file_changed(p.as_uri(), text=text)
 
     @staticmethod
     def language_for_file(path: str) -> str:
@@ -213,6 +240,7 @@ class LSPManager:
 
 _MANAGERS: Dict[str, LSPManager] = {}
 _MANAGER_LOCK: asyncio.Lock | None = None
+_MANAGER_LOCK_LOOP: asyncio.AbstractEventLoop | None = None
 # ARCH-audit fix: a threading.Lock guards _MANAGERS for the synchronous
 # get_lsp_manager() path, which may be called from non-async contexts or
 # from multiple threads concurrently.
@@ -220,10 +248,29 @@ _MANAGERS_THREAD_LOCK: threading.Lock = threading.Lock()
 
 
 def _get_manager_lock() -> asyncio.Lock:
-    global _MANAGER_LOCK
-    if _MANAGER_LOCK is None:
+    global _MANAGER_LOCK, _MANAGER_LOCK_LOOP
+    loop = asyncio.get_running_loop()
+    if _MANAGER_LOCK is None or _MANAGER_LOCK_LOOP is not loop:
         _MANAGER_LOCK = asyncio.Lock()
+        _MANAGER_LOCK_LOOP = loop
     return _MANAGER_LOCK
+
+
+def notify_active_lsp_file_changed(path: str | Path, working_dir: str | Path) -> None:
+    """Best-effort sync helper to dispatch didChange on already-active LSP clients."""
+    try:
+        root = Path(working_dir).resolve()
+        with _MANAGERS_THREAD_LOCK:
+            mgr = _MANAGERS.get(str(root))
+        if mgr is None or not mgr._clients:
+            return
+        try:
+            loop = asyncio.get_running_loop()
+            loop.create_task(mgr.notify_file_changed(path))
+        except RuntimeError:
+            asyncio.run(mgr.notify_file_changed(path))
+    except Exception:
+        pass
 
 
 def get_lsp_manager(workspace: Optional[Path] = None) -> LSPManager:

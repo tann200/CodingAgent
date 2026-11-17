@@ -5,6 +5,7 @@ This module provides automated rollback functionality when verification fails,
 allowing the agent to recover to a previous state.
 """
 
+import base64
 import hashlib
 import json
 import logging
@@ -29,6 +30,40 @@ class FileSnapshot:
     timestamp: str = ""
     checksum: str = ""
     exists: bool = True
+    encoding: str = "utf-8"
+
+
+def _read_snapshot_payload(path: Path) -> tuple[str, str, bytes]:
+    """Read *path* preserving binary bytes as base64 or UTF-8 text."""
+    raw = path.read_bytes()
+    if b"\x00" in raw:
+        return base64.b64encode(raw).decode("ascii"), "base64", raw
+    try:
+        return raw.decode("utf-8"), "utf-8", raw
+    except UnicodeDecodeError:
+        return base64.b64encode(raw).decode("ascii"), "base64", raw
+
+
+def _snapshot_to_dict(s: FileSnapshot) -> Dict[str, Any]:
+    return {
+        "path": s.path,
+        "content": s.content,
+        "timestamp": s.timestamp,
+        "checksum": s.checksum,
+        "exists": s.exists,
+        "encoding": getattr(s, "encoding", "utf-8"),
+    }
+
+
+def _snapshot_from_dict(f: Dict[str, Any]) -> FileSnapshot:
+    return FileSnapshot(
+        path=f["path"],
+        content=f.get("content"),
+        timestamp=f.get("timestamp", ""),
+        checksum=f.get("checksum", ""),
+        exists=f.get("exists", True if f.get("content") is not None else False),
+        encoding=f.get("encoding", "utf-8"),
+    )
 
 
 class RollbackManager:
@@ -89,17 +124,15 @@ class RollbackManager:
                     )
                 elif child.is_file():
                     try:
-                        try:
-                            child_content = child.read_text(encoding="utf-8")
-                        except UnicodeDecodeError:
-                            child_content = child.read_text(encoding="utf-8", errors="replace")
+                        child_content, child_enc, child_raw = _read_snapshot_payload(child)
                         snaps.append(
                             FileSnapshot(
                                 path=rel_p,
                                 content=child_content,
                                 timestamp=datetime.now().isoformat(),
-                                checksum=self._compute_checksum(child_content),
+                                checksum=hashlib.sha256(child_raw).hexdigest()[:16],
                                 exists=True,
+                                encoding=child_enc,
                             )
                         )
                     except Exception as err:
@@ -178,17 +211,15 @@ class RollbackManager:
                 continue
 
             try:
-                try:
-                    content = path.read_text(encoding="utf-8")
-                except UnicodeDecodeError:
-                    content = path.read_text(encoding="utf-8", errors="replace")
+                content, enc, raw_bytes = _read_snapshot_payload(path)
                 snapshots.append(
                     FileSnapshot(
                         path=norm_path,
                         content=content,
                         timestamp=datetime.now().isoformat(),
-                        checksum=self._compute_checksum(content),
+                        checksum=hashlib.sha256(raw_bytes).hexdigest()[:16],
                         exists=True,
+                        encoding=enc,
                     )
                 )
             except Exception as e:
@@ -201,16 +232,7 @@ class RollbackManager:
         snapshot_data = {
             "snapshot_id": snapshot_id,
             "timestamp": datetime.now().isoformat(),
-            "files": [
-                {
-                    "path": s.path,
-                    "content": s.content,
-                    "timestamp": s.timestamp,
-                    "checksum": s.checksum,
-                    "exists": s.exists,
-                }
-                for s in snapshots
-            ],
+            "files": [_snapshot_to_dict(s) for s in snapshots],
         }
         try:
             snapshot_file.parent.mkdir(parents=True, exist_ok=True)
@@ -320,16 +342,7 @@ class RollbackManager:
             if snapshot_file.exists():
                 try:
                     data = json.loads(snapshot_file.read_text())
-                    snapshots = [
-                        FileSnapshot(
-                            path=f["path"],
-                            content=f.get("content"),
-                            timestamp=f.get("timestamp", ""),
-                            checksum=f.get("checksum", ""),
-                            exists=f.get("exists", True if f.get("content") is not None else False),
-                        )
-                        for f in data.get("files", [])
-                    ]
+                    snapshots = [_snapshot_from_dict(f) for f in data.get("files", [])]
                     self.snapshots[snapshot_id] = snapshots  # type: ignore[index]
                 except Exception as e:
                     return {"ok": False, "error": f"Failed to load snapshot: {e}"}
@@ -412,14 +425,26 @@ class RollbackManager:
                         fd, tmpf = tempfile.mkstemp(
                             dir=str(file_path.parent), suffix=".tmp"
                         )
-                        with os.fdopen(fd, "w", encoding="utf-8") as f:
-                            fd = None
-                            f.write(snap.content)
-                            try:
-                                f.flush()
-                                os.fsync(f.fileno())
-                            except Exception:
-                                pass
+                        is_binary = getattr(snap, "encoding", "utf-8") == "base64"
+                        if is_binary:
+                            raw_payload = base64.b64decode(snap.content.encode("ascii"))
+                            with os.fdopen(fd, "wb") as f:
+                                fd = None
+                                f.write(raw_payload)
+                                try:
+                                    f.flush()
+                                    os.fsync(f.fileno())
+                                except Exception:
+                                    pass
+                        else:
+                            with os.fdopen(fd, "w", encoding="utf-8") as f:
+                                fd = None
+                                f.write(snap.content)
+                                try:
+                                    f.flush()
+                                    os.fsync(f.fileno())
+                                except Exception:
+                                    pass
                         try:
                             shutil.move(tmpf, str(file_path))
                         except Exception:
@@ -495,14 +520,7 @@ class RollbackManager:
                 try:
                     data = json.loads(snapshot_file.read_text())
                     self.snapshots[snapshot_id] = [
-                        FileSnapshot(
-                            path=f["path"],
-                            content=f.get("content"),
-                            timestamp=f.get("timestamp", ""),
-                            checksum=f.get("checksum", ""),
-                            exists=f.get("exists", True if f.get("content") is not None else False),
-                        )
-                        for f in data.get("files", [])
+                        _snapshot_from_dict(f) for f in data.get("files", [])
                     ]
                 except Exception:
                     return []
@@ -592,14 +610,7 @@ class RollbackManager:
                 try:
                     data = json.loads(snapshot_file.read_text())
                     self.snapshots[snapshot_id] = [
-                        FileSnapshot(
-                            path=f["path"],
-                            content=f.get("content"),
-                            timestamp=f.get("timestamp", ""),
-                            checksum=f.get("checksum", ""),
-                            exists=f.get("exists", True if f.get("content") is not None else False),
-                        )
-                        for f in data.get("files", [])
+                        _snapshot_from_dict(f) for f in data.get("files", [])
                     ]
                 except Exception as e:
                     logger.warning(
@@ -646,17 +657,15 @@ class RollbackManager:
                     existing_paths.add(child_snap.path)
         else:
             try:
-                try:
-                    content = path.read_text(encoding="utf-8")
-                except UnicodeDecodeError:
-                    content = path.read_text(encoding="utf-8", errors="replace")
+                content, enc, raw_bytes = _read_snapshot_payload(path)
                 self.snapshots[snapshot_id].append(
                     FileSnapshot(
                         path=norm_path,
                         content=content,
                         timestamp=datetime.now().isoformat(),
-                        checksum=self._compute_checksum(content),
+                        checksum=hashlib.sha256(raw_bytes).hexdigest()[:16],
                         exists=True,
+                        encoding=enc,
                     )
                 )
             except Exception as e:
@@ -669,16 +678,7 @@ class RollbackManager:
             snapshot_data = {
                 "snapshot_id": snapshot_id,
                 "timestamp": datetime.now().isoformat(),
-                "files": [
-                    {
-                        "path": s.path,
-                        "content": s.content,
-                        "timestamp": s.timestamp,
-                        "checksum": s.checksum,
-                        "exists": s.exists,
-                    }
-                    for s in self.snapshots[snapshot_id]
-                ],
+                "files": [_snapshot_to_dict(s) for s in self.snapshots[snapshot_id]],
             }
             try:
                 snapshot_file.parent.mkdir(parents=True, exist_ok=True)
@@ -844,12 +844,17 @@ class RollbackManager:
         Called after verification passes.
         """
         snapshot_id = self._step_to_snapshot.pop(step_id, None)
-        if snapshot_id and snapshot_id in self.snapshots:
-            del self.snapshots[snapshot_id]
-
+        if snapshot_id is None and (
+            step_id in self.snapshots or (self.snapshot_dir / f"{step_id}.json").exists()
+        ):
+            snapshot_id = step_id
+        if snapshot_id:
+            self.snapshots.pop(snapshot_id, None)
             snapshot_file = self.snapshot_dir / f"{snapshot_id}.json"
             if snapshot_file.exists():
                 snapshot_file.unlink()
+            if self.current_snapshot == snapshot_id:
+                self.current_snapshot = None
 
         logger.info(f"commit_step: {step_id} committed, snapshot removed")
 

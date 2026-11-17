@@ -19,11 +19,14 @@ class StreamView(Static):
                 self.call_later(self._flush)
 
     def _flush(self) -> None:
-        self._flush_pending = False
+        with self._flush_lock:
+            self._flush_pending = False
+            raw_snapshot = self._raw
         t = Text()
         t.append(f"{self._role}: ", style="bold #10b981")
-        t.append(self._raw)
+        t.append(raw_snapshot)
         self.update(t)
 
     def finalize(self) -> str:
-        return self._raw
+        with self._flush_lock:
+            return self._raw

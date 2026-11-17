@@ -50,39 +50,20 @@ def ast_rename(
 
     from src.tools.tools_config import get_default_workdir
 
-    workdir_path = Path(workdir) if workdir else get_default_workdir()
+    workdir_path = Path(workdir).resolve() if workdir else get_default_workdir()
 
-    try:
-        file_path = _safe_resolve(path, workdir_path)
-    except PermissionError as pe:
-        return {"status": "error", "error": str(pe)}
+    from src.tools._file_io import _pre_write_check
+
+    file_path, pre_err = _pre_write_check(
+        path, workdir_path, operation="ast_rename"
+    )
+    if pre_err is not None or file_path is None:
+        return pre_err or {"status": "error", "error": "Pre-write check failed"}
 
     if not file_path.exists():
         return {"status": "error", "error": f"File not found: {path}"}
 
     original = file_path.read_text(encoding="utf-8")
-
-    workdir_resolved = workdir_path.resolve()
-    from src.core.orchestration.workspace_guard import WorkspaceGuard
-    guard = WorkspaceGuard(workspace_root=workdir_resolved)
-    guard_res = guard.guard_operation("ast_rename", str(file_path))
-    if guard_res.get("status") == "error":
-        return {"status": "error", "error": guard_res.get("error")}
-
-    from src.tools._file_io import _check_project_deny_write
-    deny_err = _check_project_deny_write(file_path, workdir_resolved)
-    if deny_err:
-        return {"status": "error", "error": deny_err}
-
-    # Guardrail: verify write is allowed (file must have been read first)
-    try:
-        from src.tools.guardrails import check_read_before_write
-
-        err = check_read_before_write(str(file_path.resolve()))
-        if err:
-            return {"status": "error", "error": err["error"]}
-    except ImportError:
-        pass
 
     if _is_python_file(file_path):
         # Python: use AST to collect line numbers that contain the symbol, then
@@ -148,8 +129,10 @@ def ast_rename(
     )
     diff = "\n".join(diff_lines)
 
-    # Write the new content
-    file_path.write_text(new_content, encoding="utf-8")
+    # Write the new content atomically
+    from src.tools._edit_tools import _atomic_write
+
+    _atomic_write(file_path, new_content)
     try:
         from src.tools.guardrails import mark_file_read
 

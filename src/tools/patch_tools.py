@@ -63,6 +63,10 @@ def generate_patch(
             }
         if not p.exists():
             return {"status": "error", "error": "file not found"}
+        from src.tools._file_io import _is_binary_file
+
+        if _is_binary_file(p):
+            return {"status": "error", "error": f"Cannot generate text diff for binary file: {path}"}
         old = p.read_text(encoding="utf-8").splitlines(keepends=True)
         new = new_content.splitlines(keepends=True)
         patch_lines = list(

@@ -22,6 +22,7 @@ from __future__ import annotations
 
 from typing import Any, Dict, List
 
+from rich.markup import escape
 from textual.app import ComposeResult
 from textual.widget import Widget
 from textual.widgets import Label, Static
@@ -91,7 +92,7 @@ class TodoListWidget(Widget):
     def _render_item(item: Dict[str, Any]) -> str:
         status = str(item.get("status", "pending")).lower()
         icon, style = _STATUS_STYLES.get(status, _DEFAULT_STYLE)
-        desc = str(item.get("description", "")).strip()
+        desc = escape(str(item.get("description", "")).strip())
         if style:
             return f"[{style}]{icon} {desc}[/]"
         return f"{icon} {desc}"

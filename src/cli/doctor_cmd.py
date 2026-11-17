@@ -576,6 +576,7 @@ def diagnose_cloud_provider(
     target_model: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Diagnose configuration and policy for cloud/frontier providers."""
+    import os
     cfg_models = provider_cfg.get("models") or []
     first_model = cfg_models[0] if cfg_models else "claude-sonnet-4.6"
     if isinstance(first_model, dict):
@@ -585,6 +586,54 @@ def diagnose_cloud_provider(
     policy: ModelRuntimePolicy = resolve_runtime_policy(model=chosen_model, provider=provider_name)
     schemas = get_tool_schemas_for_tier(policy.toolset_name)
     schemas_valid, schema_errors = validate_tool_schemas(schemas)
+
+    # Check for credentials (api_key or OAuth token)
+    api_key = provider_cfg.get("api_key") or ""
+    if not api_key:
+        try:
+            from tui.tui_src.ui.config_writer import load_provider_credentials
+            api_key = load_provider_credentials(provider_name).get("api_key") or ""
+        except Exception:
+            pass
+    if not api_key:
+        env_vars = [
+            f"{provider_name.upper().replace('-', '_').replace(' ', '_')}_API_KEY",
+            f"{provider_name.upper().replace('-', '_').replace(' ', '_')}_KEY",
+        ]
+        norm_name = provider_name.lower().replace("-", "_").replace(" ", "_")
+        if "anthropic" in norm_name:
+            env_vars.append("ANTHROPIC_API_KEY")
+        elif "openai" in norm_name:
+            env_vars.append("OPENAI_API_KEY")
+        elif "groq" in norm_name:
+            env_vars.append("GROQ_API_KEY")
+        elif "gemini" in norm_name:
+            env_vars.append("GEMINI_API_KEY")
+        for ev in env_vars:
+            val = os.getenv(ev)
+            if val:
+                api_key = val
+                break
+
+    has_creds = bool(api_key)
+    if "copilot" in provider_name.lower():
+        try:
+            from tui.tui_src.ui.core_bridge import _load_copilot_auth_module
+            _copilot = _load_copilot_auth_module()
+            has_creds = bool(_copilot.is_authenticated()) or has_creds
+        except Exception:
+            pass
+
+    recommendations: List[str] = []
+    if not schemas_valid:
+        status = "error"
+    elif has_creds:
+        status = "configured"
+    else:
+        status = "no_credentials"
+        recommendations.append(
+            f"No API key or credentials configured for {provider_name}. Set environment variable or configure in settings."
+        )
 
     return {
         "provider": provider_name,
@@ -604,8 +653,8 @@ def diagnose_cloud_provider(
             "schemas_valid": schemas_valid,
             "schema_errors": schema_errors,
         },
-        "status": "configured" if schemas_valid else "error",
-        "recommendations": [],
+        "status": status,
+        "recommendations": recommendations,
     }
 
 
@@ -678,7 +727,10 @@ def build_doctor_diagnosis(args: Any = None) -> Dict[str, Any]:
                 validate_tools=validate_tools,
                 endpoint_override=endpoint_override,
             )
-        elif p_type in ("lm_studio", "openai_compat", "vllm", "local") or "lm_studio" in name:
+        elif (
+            p_type in ("lm_studio", "openai_compat", "vllm", "local", "litellm", "mlx", "llama_server")
+            or any(k in name for k in ("lm_studio", "litellm", "mlx", "llama_server"))
+        ):
             res = diagnose_openai_compat_provider(
                 provider_name=name,
                 provider_cfg=p_cfg,
@@ -698,7 +750,7 @@ def build_doctor_diagnosis(args: Any = None) -> Dict[str, Any]:
             all_recommendations.extend(res["recommendations"])
 
     # Compute overall health score
-    online_count = sum(1 for p in provider_results if p.get("online") or p.get("status") == "configured")
+    online_count = sum(1 for p in provider_results if p.get("online") or p.get("status") in ("healthy", "configured"))
     error_count = sum(1 for p in provider_results if p.get("status") == "error")
 
     overall_status = "healthy"
@@ -706,7 +758,7 @@ def build_doctor_diagnosis(args: Any = None) -> Dict[str, Any]:
         overall_status = "error"
     elif online_count == 0 and len(provider_results) > 0:
         overall_status = "offline"
-    elif any(p.get("status") == "warning" for p in provider_results):
+    elif any(p.get("status") in ("warning", "no_credentials") for p in provider_results):
         overall_status = "warning"
 
     return {
@@ -756,8 +808,12 @@ def format_doctor_tui_markup(diag: Dict[str, Any]) -> str:
     for p in provs:
         p_name = p.get("provider", "unknown")
         p_stat = p.get("status", "unknown")
-        if p_stat in ("healthy", "configured"):
+        if p_stat == "healthy":
             stag = "[green][ONLINE][/]"
+        elif p_stat == "configured":
+            stag = "[green][CONFIGURED][/]"
+        elif p_stat == "no_credentials":
+            stag = "[yellow][NO CREDENTIALS][/]"
         elif p_stat == "warning":
             stag = "[yellow][WARNING][/]"
         elif p_stat == "offline":
@@ -836,8 +892,12 @@ def run_doctor(args: Any) -> int:
         p_name = p.get("provider", "unknown")
         p_stat = p.get("status", "unknown")
 
-        if p_stat in ("healthy", "configured"):
+        if p_stat == "healthy":
             status_tag = f"{_C_GREEN}[ONLINE]{_C_RESET}"
+        elif p_stat == "configured":
+            status_tag = f"{_C_GREEN}[CONFIGURED]{_C_RESET}"
+        elif p_stat == "no_credentials":
+            status_tag = f"{_C_YELLOW}[NO CREDENTIALS]{_C_RESET}"
         elif p_stat == "warning":
             status_tag = f"{_C_YELLOW}[WARNING]{_C_RESET}"
         elif p_stat == "offline":

@@ -52,8 +52,8 @@ def test_call_model_uses_providers_json(tmp_path, monkeypatch):
         mod = types.ModuleType(modname)
         import sys
 
-        sys.modules[modname] = mod
-    setattr(mod, "OllamaAdapter", DummyAdapter)
+        monkeypatch.setitem(sys.modules, modname, mod)
+    monkeypatch.setattr(mod, "OllamaAdapter", DummyAdapter, raising=False)
 
     # call call_model asynchronously
     async def _run():

@@ -12,10 +12,10 @@ def test_write_file_overwrites_binary_file_without_crash(tmp_path: Path):
     # Satisfy read-before-write invariant
     mark_file_read(str(bin_file))
 
-    # Overwrite the binary file with new text content
+    # Text write tool refuses binary target gracefully without crashing on decode (TASK-07)
     res = write_file(path=str(bin_file), content="new text content", workdir=tmp_path)
-    assert res.get("status") in ("ok", "success")
-    assert bin_file.read_text(encoding="utf-8") == "new text content"
+    assert res.get("status") == "error"
+    assert "binary" in str(res.get("error", "")).lower()
 
 
 def test_rollback_manager_snapshots_binary_file_without_crash(tmp_path: Path):

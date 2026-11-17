@@ -199,8 +199,10 @@ class LSPClient:
         self._reader_task: Optional[asyncio.Task] = None
         self._stderr_task: Optional[asyncio.Task] = None
         self._open_documents: set[str] = set()
+        self._document_versions: Dict[str, int] = {}
         self._started = False
-        self._lock = asyncio.Lock()
+        self._lock: Optional[asyncio.Lock] = None
+        self._lock_loop: Optional[asyncio.AbstractEventLoop] = None
         # P4-2: auto-restart state
         self._shutting_down: bool = False
         self._restart_count: int = 0
@@ -461,6 +463,8 @@ class LSPClient:
         if self._shutting_down:
             return
         # Reset state so start() will proceed
+        self._open_documents.clear()
+        self._document_versions.clear()
         self._started = False
         self._proc = None
         self._reader_task = None
@@ -506,16 +510,26 @@ class LSPClient:
     async def _notify(self, method: str, params: Any) -> None:
         await self._send({"jsonrpc": "2.0", "method": method, "params": params})
 
+    def _get_lock(self) -> asyncio.Lock:
+        loop = asyncio.get_running_loop()
+        if self._lock is None or self._lock_loop is not loop:
+            self._lock = asyncio.Lock()
+            self._lock_loop = loop
+        return self._lock
+
     async def _send(self, msg: Any) -> None:
         if self._proc is None or self._proc.stdin is None:
             return
         body = json.dumps(msg).encode()
         header = f"Content-Length: {len(body)}\r\n\r\n".encode()
-        try:
-            self._proc.stdin.write(header + body)
-            await self._proc.stdin.drain()
-        except Exception as exc:
-            logger.debug("LSPClient: send error: %s", exc)
+        async with self._get_lock():
+            if self._proc is None or self._proc.stdin is None:
+                return
+            try:
+                self._proc.stdin.write(header + body)
+                await self._proc.stdin.drain()
+            except Exception as exc:
+                logger.debug("LSPClient: send error: %s", exc)
 
     async def _reader_loop(self) -> None:
         """Read JSON-RPC messages from the server stdout and resolve futures."""
@@ -638,8 +652,41 @@ class LSPClient:
                         },
                     )
                     self._open_documents.add(file_uri)
+                    self._document_versions[file_uri] = 1
         except Exception as e:
             logger.debug("LSPClient: didOpen failed for %s: %s", file_uri, e)
+
+    async def notify_file_changed(
+        self, file_uri: str, text: Optional[str] = None
+    ) -> None:
+        """Notify language server via ``textDocument/didChange`` (or ``didOpen``)."""
+        if not self.available:
+            return
+        if file_uri not in self._open_documents:
+            await self._ensure_document_open(file_uri)
+            return
+        if text is None:
+            try:
+                from urllib.parse import urlparse, unquote
+
+                parsed = urlparse(file_uri)
+                if parsed.scheme == "file":
+                    p = Path(unquote(parsed.path))
+                    if p.exists() and p.is_file():
+                        text = p.read_text(encoding="utf-8", errors="replace")
+            except Exception:
+                return
+        if text is None:
+            return
+        version = self._document_versions.get(file_uri, 1) + 1
+        self._document_versions[file_uri] = version
+        await self._notify(
+            "textDocument/didChange",
+            {
+                "textDocument": {"uri": file_uri, "version": version},
+                "contentChanges": [{"text": text}],
+            },
+        )
 
     # ------------------------------------------------------------------
     # Parsers

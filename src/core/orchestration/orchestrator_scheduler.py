@@ -2,11 +2,26 @@
 
 from __future__ import annotations
 
+from contextlib import contextmanager
+import threading
 import time
 from typing import Any
 
 from src.core.logger import logger as guilogger
 from src.core.messaging.event_types import SchedulerDistillRequest
+
+_SUPPRESS_SCHEDULER_TLS = threading.local()
+
+
+@contextmanager
+def suppress_scheduler_init():
+    """Suppress global scheduler job mutations during scoped per-request orchestrators."""
+    prev = getattr(_SUPPRESS_SCHEDULER_TLS, "active", False)
+    _SUPPRESS_SCHEDULER_TLS.active = True
+    try:
+        yield
+    finally:
+        _SUPPRESS_SCHEDULER_TLS.active = prev
 
 
 def _init_scheduler(orch: Any) -> None:
@@ -16,6 +31,10 @@ def _init_scheduler(orch: Any) -> None:
     a thin wrapper. This function is conservative and fails silently on any
     error to avoid impacting startup.
     """
+    if getattr(_SUPPRESS_SCHEDULER_TLS, "active", False) or getattr(
+        orch, "_skip_scheduler", False
+    ):
+        return
     try:
         import os as _os
 

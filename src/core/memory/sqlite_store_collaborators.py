@@ -536,12 +536,12 @@ class SnapshotManager:
         try:
             conn = self._cm.get_connection()
             row = conn.execute(
-                "SELECT saved_at FROM session_snapshots WHERE session_id=? AND snapshot_id=?",
+                "SELECT saved_at, rowid FROM session_snapshots WHERE session_id=? AND snapshot_id=?",
                 (sid, snap_id),
             ).fetchone()
             if not row:
                 return {"ok": False, "deleted": {}}
-            saved_at = row[0]
+            saved_at, target_rowid = row[0], row[1]
 
             try:
                 snapshot_rows = conn.execute(
@@ -576,12 +576,14 @@ class SnapshotManager:
                         try:
                             wconn.execute(
                                 "DELETE FROM session_snapshot_rows WHERE snapshot_id IN ("
-                                "SELECT id FROM session_snapshots WHERE session_id=? AND datetime(saved_at) > datetime(?))",
-                                (sid, saved_at),
+                                "SELECT snapshot_id FROM session_snapshots WHERE session_id=? "
+                                "AND (datetime(saved_at) > datetime(?) OR (datetime(saved_at) = datetime(?) AND rowid > ?)))",
+                                (sid, saved_at, saved_at, target_rowid),
                             )
                             wconn.execute(
-                                "DELETE FROM session_snapshots WHERE session_id=? AND datetime(saved_at) > datetime(?)",
-                                (sid, saved_at),
+                                "DELETE FROM session_snapshots WHERE session_id=? "
+                                "AND (datetime(saved_at) > datetime(?) OR (datetime(saved_at) = datetime(?) AND rowid > ?))",
+                                (sid, saved_at, saved_at, target_rowid),
                             )
                         except Exception:
                             pass
@@ -659,7 +661,7 @@ class SnapshotManager:
                 try:
                     conn.execute(
                         "DELETE FROM session_snapshot_rows WHERE snapshot_id IN ("
-                        "SELECT id FROM session_snapshots WHERE session_id=?)",
+                        "SELECT snapshot_id FROM session_snapshots WHERE session_id=?)",
                         (sid,),
                     )
                     conn.execute(

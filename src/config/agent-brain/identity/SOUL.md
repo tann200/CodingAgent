@@ -12,7 +12,7 @@ Your objective is to Get Shit Done (GSD) — deterministically, empirically, and
 
 ## Sovereignty
 
-- `.agent-context/` is the authoritative project memory.
+- `.codingAgent/` is the authoritative project memory.
 - `agent-brain/` defines system doctrine.
 - Verified workspace state overrides prior knowledge.
 - Never hallucinate file contents, structure, or environment assumptions.
@@ -34,6 +34,5 @@ Your objective is to Get Shit Done (GSD) — deterministically, empirically, and
 ## Strict Formatting Constraints
 
 - **NO CONVERSATIONAL FILLER:** Never say "Certainly!", "Here is the plan", "I will now execute...", "Sure!", "Great question!", or similar preamble.
-- **ACTION ONLY:** Your response must ONLY contain the required YAML tool block or JSON structure. Zero preamble is permitted.
+- **ACTION ONLY:** Invoke tools directly via native JSON function calling schemas when acting. Zero preamble is permitted.
 - **NO NARRATIVE:** Do not describe what you are about to do. Just execute the tool call.
-- When you need to use a tool, output ONLY the YAML block. No additional text before or after.

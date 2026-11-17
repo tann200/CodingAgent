@@ -24,7 +24,7 @@ class ThinkingProcess(Vertical):
         time_str = f"{self.elapsed:.2f}s"
         content_str = self.raw_content if isinstance(self.raw_content, str) else str(self.raw_content)
         summary = content_str[:80].replace("\n", " ") + "..."
-        yield Label(f"  Thinking: {summary} [ {time_str} ]", classes="header")
+        yield Label(f"  Thinking: {summary} [ {time_str} ]", classes="header", markup=False)
         try:
             md = Markdown(content_str)
         except Exception:

@@ -41,8 +41,8 @@ def _is_ip_blocked(ip_str: str) -> bool:
             if clean.isdigit():
                 addr = ipaddress.ip_address(int(clean))
             else:
-                return False
-        except (ValueError, OverflowError):
+                addr = ipaddress.IPv4Address(socket.inet_aton(clean))
+        except (ValueError, OverflowError, OSError):
             return False
 
     # Unwrap IPv6 transition addresses
@@ -103,9 +103,8 @@ def _is_url_blocked(url: str) -> bool:
                 if _is_ip_blocked(addr_str):
                     return True
         except (socket.gaierror, OSError):
-            # DNS resolution failed — allow the request to proceed and let
-            # the HTTP client handle the connection error naturally
-            pass
+            # Fail closed when DNS resolution fails so unresolvable/poisoned hosts cannot bypass SSRF checks
+            return True
         return False
     except Exception:
         return True  # Block on any parse failure
@@ -130,6 +129,8 @@ def _is_ssrf_blocked(url: str) -> None:
             raise PermissionError(f"Blocked URL scheme: {parsed.scheme}")
 
         host = parsed.hostname or ""
+        if not host:
+            raise PermissionError(f"Blocked URL with missing hostname: {url}")
 
         # Load optional allowlist from config (web.ssrf_allowlist)
         try:
@@ -143,17 +144,21 @@ def _is_ssrf_blocked(url: str) -> None:
         def _host_allowed_by_allowlist(h: str) -> bool:
             if not allowlist:
                 return False
+            h_low = h.lower().rstrip(".")
             for ent in allowlist:
                 if not isinstance(ent, str):
                     continue
-                ent = ent.strip()
-                if not ent:
+                ent_clean = ent.strip().lower().rstrip(".")
+                if not ent_clean or ent_clean == "*" or "/" in ent_clean:
                     continue
-                # Exact hostname match
-                if h == ent:
+                # Strip optional leading dot suffix syntax (e.g. ".example.local")
+                suffix = ent_clean.lstrip(".")
+                if not suffix:
+                    continue
+                if h_low == suffix:
                     return True
-                # Domain suffix match (allow example.com and sub.example.com)
-                if h.endswith("." + ent) or h == ent:
+                # Only allow suffix matching for multi-label domains (blocks bare TLD matches like "com")
+                if "." in suffix and h_low.endswith("." + suffix):
                     return True
             return False
 
@@ -164,14 +169,14 @@ def _is_ssrf_blocked(url: str) -> None:
         if _BLOCKED_HOSTS.match(host) or _is_ip_blocked(host):
             raise PermissionError(f"URL '{url}' points to a blocked host: {host}")
 
-        # Resolve addresses and check each one. Only catch socket.gaierror
-        # around the getaddrinfo call so PermissionError raised during
-        # address inspection is not swallowed (PermissionError subclasses OSError).
+        # Resolve addresses and check each one. Fail closed on DNS resolution
+        # errors so invalid/unresolvable hosts cannot bypass SSRF validation.
         try:
             infos = socket.getaddrinfo(host, None)
-        except socket.gaierror:
-            # DNS resolution failed — allow and let the HTTP client report errors
-            infos = []
+        except socket.gaierror as exc:
+            raise PermissionError(
+                f"DNS resolution failed for host '{host}' (SSRF guard fail-closed): {exc}"
+            ) from exc
 
         for info in infos:
             addr_str = info[4][0]

@@ -61,7 +61,7 @@ class RuntimeProfile:
 
     def compute_vram_usage(self, context_tokens: int) -> float:
         weights = self.model.compute_weights_gb()
-        kv = self.model.compute_kv_cache_gb(context_tokens)
+        kv = self.model.compute_kv_cache_gb(context_tokens, kv_cache_quant=self.kv_cache_quant)
         overhead = 1.5
         return weights + kv + overhead
 

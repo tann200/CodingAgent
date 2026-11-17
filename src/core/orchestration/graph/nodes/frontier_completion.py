@@ -31,6 +31,8 @@ import logging
 from pathlib import Path
 from typing import Any, Dict, List, Mapping, Optional
 
+from src.core.orchestration.graph.state import replace_state_list
+
 logger = logging.getLogger(__name__)
 
 # Errors that mean "this run did not finish the plan" even when the model
@@ -113,7 +115,7 @@ def build_exit_result(
     that was actually cut off by the context window.
     """
     result: Dict[str, Any] = {
-        "history": history,
+        "history": replace_state_list(history if isinstance(history, list) else list(history or [])),
         "tool_call_count": tool_call_count,
         "last_result": last_result,
         "last_tool_name": last_tool_name,
@@ -121,14 +123,14 @@ def build_exit_result(
         "_frontier_loop_turns": turns_taken,
         "awaiting_plan_approval": False,
         "modified_files": modified_files or [],
+        "replan_required": replan_required,
+        "action_failed": bool(replan_required),
     }
     if inline_verifications:
         failures = [r for r in inline_verifications if r.get("status") == "failed"]
         if failures:
             result["inline_verification_failures"] = failures
     if replan_required:
-        result["replan_required"] = replan_required
-        result["action_failed"] = True
         result["next_action"] = None
     if "context_overflow" in (errors or []):
         result["_budget_compaction"] = True
@@ -344,7 +346,7 @@ def build_plan_mode_blocked_exit(
         "tool_calls": tool_call_count,
     })
     return {
-        "history": history,
+        "history": replace_state_list(history if isinstance(history, list) else list(history or [])),
         "tool_call_count": tool_call_count,
         "last_result": last_result,
         "last_tool_name": last_tool_name,
@@ -373,6 +375,10 @@ def finalize_frontier_exit(
     retrieved_snippets: Optional[Any] = None,
     last_tool_args: Optional[Dict[str, Any]] = None,
     verified_file_hashes: Optional[Dict[str, str]] = None,
+    cancelled: bool = False,
+    budget_exhausted: bool = False,
+    llm_error: Optional[str] = None,
+    turn_budget_exhausted: bool = False,
 ) -> Dict[str, Any]:
     """Assemble final exit state for frontier_loop_node."""
     mod_files = set()
@@ -418,9 +424,14 @@ def finalize_frontier_exit(
     run_state["turns"] = prev_turns + turns_taken
     run_state["tool_calls"] = tool_call_count
 
-    if "context_overflow" in (errors or []):
-        run_state["status"] = "running"
-        run_state["outcome"] = "compact"
+    if cancelled:
+        run_state["status"], run_state["outcome"] = "cancelled", "cancelled"
+    elif "context_overflow" in (errors or []):
+        run_state["status"], run_state["outcome"] = "running", "compact"
+    elif llm_error:
+        run_state["status"], run_state["outcome"] = "failed", "failed"
+        if not isinstance(result.get("last_result"), dict) or result["last_result"].get("ok") is not False:
+            result["last_result"] = {"ok": False, "error": llm_error}
     elif replan_required or (last_result and last_result.get("ok") is False) or ("inline_verification_failed" in (errors or [])):
         prev_recoveries = int(run_state.get("recoveries") or 0)
         rt_policy = (state.get("runtime") or {}).get("policy") if isinstance(state.get("runtime"), Mapping) else None
@@ -428,38 +439,35 @@ def finalize_frontier_exit(
         recovery_limit = int(raw_limit) if raw_limit is not None else 2
         if state.get("use_replan") is not False and prev_recoveries < recovery_limit:
             run_state["recoveries"] = prev_recoveries + 1
-            run_state["status"] = "recovering"
-            run_state["outcome"] = "recover"
+            run_state["status"], run_state["outcome"] = "recovering", "recover"
             reason = (
                 replan_required
                 or str((last_result or {}).get("error") or "")
                 or "Previous attempt did not satisfy completion or verification checks."
             )
             guidance_hist = list(result.get("history") or [])
-            guidance_hist.append(
-                {
-                    "role": "user",
-                    "content": (
-                        f"<recovery_guidance attempt=\"{prev_recoveries + 1}/{recovery_limit}\">\n"
-                        f"{reason}\n"
-                        "Apply a focused fix using different arguments or smaller targeted edits.\n"
-                        "</recovery_guidance>"
-                    ),
-                }
-            )
-            result["history"] = guidance_hist
+            guidance_hist.append({
+                "role": "user",
+                "content": (
+                    f"<recovery_guidance attempt=\"{prev_recoveries + 1}/{recovery_limit}\">\n"
+                    f"{reason}\nApply a focused fix using different arguments or smaller targeted edits.\n"
+                    "</recovery_guidance>"
+                ),
+            })
+            result["history"] = replace_state_list(guidance_hist)
         else:
-            run_state["status"] = "failed"
-            run_state["outcome"] = "failed"
+            run_state["status"], run_state["outcome"] = "failed", "failed"
     elif mod_files:
-        run_state["status"] = "verifying"
-        run_state["outcome"] = "verify"
+        run_state["status"], run_state["outcome"] = "verifying", "verify"
     elif result.get("plan_completed") or (last_result and last_result.get("completed_without_tool")):
-        run_state["status"] = "completed"
-        run_state["outcome"] = "complete"
+        run_state["status"], run_state["outcome"] = "completed", "complete"
+    elif budget_exhausted or turn_budget_exhausted:
+        if not isinstance(result.get("last_result"), dict) or result["last_result"].get("ok") is not False:
+            msg = "Tool budget exhausted before task completion." if budget_exhausted else "Turn budget exhausted before task completion."
+            result["last_result"] = {"ok": False, "error": msg}
+        run_state["status"], run_state["outcome"] = "failed", "failed"
     else:
-        run_state["status"] = "running"
-        run_state["outcome"] = "continue"
+        run_state["status"], run_state["outcome"] = "completed", "complete"
 
     result["run"] = run_state
 
@@ -469,29 +477,15 @@ def finalize_frontier_exit(
             if isinstance(last_tool_args, dict)
             else (state.get("planned_action") if isinstance(state.get("planned_action"), dict) else {})
         )
-        last_action = create_last_action(
-            name=last_tool_name,
-            arguments=effective_args,
-            result=last_result,
-            side_effects=sorted(mod_files) if mod_files else [],
-            modified_files=sorted(mod_files),
+        result["last_action"] = create_last_action(
+            name=last_tool_name, arguments=effective_args, result=last_result,
+            side_effects=sorted(mod_files) if mod_files else [], modified_files=sorted(mod_files),
         )
-        result["last_action"] = last_action
 
     return result
 
 
-_CORE_TOOL_NAMES = frozenset(
-    {
-        "read_file",
-        "write_file",
-        "edit_file_atomic",
-        "glob",
-        "grep",
-        "bash",
-        "delegate_task",
-    }
-)
+_CORE_TOOL_NAMES = frozenset({"read_file", "write_file", "edit_file_atomic", "glob", "grep", "bash", "delegate_task"})
 
 
 def _filter_tools_for_tier(tools_schema: list, model_tier: str) -> list:
@@ -504,22 +498,10 @@ def _filter_tools_for_tier(tools_schema: list, model_tier: str) -> list:
     except (ValueError, AttributeError):
         return tools_schema
     if tier == ModelTier.SMALL:
-        return [
-            t
-            for t in tools_schema
-            if t.get("function", {}).get("name") in _CORE_TOOL_NAMES
-        ]
+        return [t for t in tools_schema if t.get("function", {}).get("name") in _CORE_TOOL_NAMES]
     limit = get_tool_limit(tier)
-    core = [
-        t
-        for t in tools_schema
-        if t.get("function", {}).get("name") in _CORE_TOOL_NAMES
-    ]
-    extras = [
-        t
-        for t in tools_schema
-        if t.get("function", {}).get("name") not in _CORE_TOOL_NAMES
-    ]
+    core = [t for t in tools_schema if t.get("function", {}).get("name") in _CORE_TOOL_NAMES]
+    extras = [t for t in tools_schema if t.get("function", {}).get("name") not in _CORE_TOOL_NAMES]
     expanded = list(core)
     remaining = limit - len(core)
     if remaining > 0 and extras:

@@ -78,6 +78,7 @@ def grep(
             "grep",
             "-r",
             "-n",
+            "-H",
         ]
         if include:
             cmd += [f"--include={include}"]
@@ -94,8 +95,7 @@ def grep(
         ]
         if context > 0:
             cmd += ["-C", str(context)]
-        cmd.append(pattern)
-        cmd.append(str(search_path))
+        cmd += ["-e", pattern, "--", str(search_path)]
 
         from src.tools.sandbox import run_sandboxed
 
@@ -165,7 +165,8 @@ def grep(
         out_lines: list[str] = []
         matches: list[dict] = []
 
-        for p in search_path.rglob("*"):
+        candidates = [search_path] if search_path.is_file() else search_path.rglob("*")
+        for p in candidates:
             if not p.is_file():
                 continue
             if is_secret_path(p):
@@ -178,7 +179,10 @@ def grep(
             try:
                 with p.open("r", encoding="utf-8", errors="ignore") as fh:
                     file_lines = fh.readlines()
-                rel = str(p.relative_to(search_path)) if p.exists() else str(p)
+                if search_path.is_file():
+                    rel = search_path.name
+                else:
+                    rel = str(p.relative_to(search_path)) if p.exists() else str(p)
                 for i, line in enumerate(file_lines):
                     if regex.search(line):
                         line_clean = redact_secrets(line.rstrip())

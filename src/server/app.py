@@ -11,7 +11,7 @@ from typing import Dict, Optional
 import uvicorn
 
 from src.core.env_shims import getenv_with_compat as _getenv
-from fastapi import FastAPI, HTTPException, Request, WebSocket
+from fastapi import Depends, FastAPI, HTTPException, Request, WebSocket
 from fastapi.responses import StreamingResponse, Response
 from contextlib import asynccontextmanager
 from pydantic import BaseModel
@@ -26,6 +26,7 @@ from src.server.server_config import (
     metrics_basic_auth_valid,
     read_sse_adapter_settings,
     validate_server_exposure,
+    validate_websocket_origin,
 )
 from src.server.scheduler_endpoints import (
     load_scheduler_worker,
@@ -62,6 +63,10 @@ class SessionResponse(BaseModel):
 @asynccontextmanager
 async def _lifespan(app: FastAPI):
     """Lifespan handler to initialize and cleanup server resources."""
+    bind_host = _getenv("CODINGAGENT_SERVER_HOST", "CODING_AGENT_SERVER_HOST") or "127.0.0.1"
+    admin_token = _getenv("CODINGAGENT_ADMIN_TOKEN", "CODING_AGENT_ADMIN_TOKEN")
+    validate_server_exposure(bind_host, admin_token)
+    _task_endpoints._get_task_executor()
     # Create local EventBus and adapter when running as standalone server
     local_bus = EventBus()
     register_event_bus(local_bus)
@@ -69,6 +74,10 @@ async def _lifespan(app: FastAPI):
     try:
         yield
     finally:
+        try:
+            _task_endpoints.shutdown_task_executor(wait=False)
+        except Exception:
+            pass
         logger.info("CodingAgent HTTP/SSE server shutting down (lifespan)")
 
 
@@ -153,7 +162,7 @@ def _on_perception_corrective(payload: Dict) -> None:
 """Lifespan-managed startup/shutdown handled in _lifespan."""
 
 
-@app.post("/session", response_model=SessionResponse)
+@app.post("/session", response_model=SessionResponse, dependencies=[Depends(_require_admin_auth)])
 async def create_session(session_req: SessionCreateRequest, request: Request):
     """Create a new session (or use provided session ID)."""
     _require_admin_auth(request)
@@ -165,10 +174,17 @@ async def create_session(session_req: SessionCreateRequest, request: Request):
     return SessionResponse(session_id=session_id)
 
 
-@app.get("/session/{session_id}/events")
+@app.get("/session/{session_id}/events", dependencies=[Depends(_require_admin_auth)])
 async def session_events(session_id: str, request: Request):
     """Server-Sent Events endpoint for a session."""
     _require_admin_auth(request)
+    if session_id == "all":
+        admin_token = _getenv("CODINGAGENT_ADMIN_TOKEN", "CODING_AGENT_ADMIN_TOKEN")
+        if not admin_token:
+            raise HTTPException(
+                status_code=403,
+                detail="CODINGAGENT_ADMIN_TOKEN required for /session/all stream",
+            )
     if not sse_adapter:
         raise HTTPException(status_code=503, detail="Server not properly initialized")
 
@@ -230,7 +246,7 @@ async def metrics_endpoint(request: Request):
     return Response(content=text, media_type="text/plain; version=0.0.4")
 
 
-@app.get("/scheduler/jobs")
+@app.get("/scheduler/jobs", dependencies=[Depends(_require_admin_auth)])
 async def list_scheduler_jobs(request: Request):
     """List registered scheduler jobs and metadata."""
     require_scheduler_admin_auth(
@@ -251,7 +267,7 @@ async def list_scheduler_jobs(request: Request):
         raise HTTPException(status_code=503, detail="Scheduler unavailable")
 
 
-@app.post("/scheduler/jobs/{name}/unregister")
+@app.post("/scheduler/jobs/{name}/unregister", dependencies=[Depends(_require_admin_auth)])
 async def unregister_scheduler_job(name: str, request: Request):
     """Unregister a scheduler job by name."""
     require_scheduler_admin_auth(
@@ -271,7 +287,7 @@ async def unregister_scheduler_job(name: str, request: Request):
         raise HTTPException(status_code=503, detail="Scheduler unavailable")
 
 
-@app.post("/scheduler/jobs/clear")
+@app.post("/scheduler/jobs/clear", dependencies=[Depends(_require_admin_auth)])
 async def clear_scheduler_jobs(request: Request):
     """Clear all registered scheduler jobs."""
     require_scheduler_admin_auth(
@@ -287,7 +303,7 @@ async def clear_scheduler_jobs(request: Request):
         raise HTTPException(status_code=503, detail="Scheduler unavailable")
 
 
-@app.post("/scheduler/jobs/{name}/enable")
+@app.post("/scheduler/jobs/{name}/enable", dependencies=[Depends(_require_admin_auth)])
 async def enable_scheduler_job(name: str, request: Request):
     """Enable/restore a job registered via a job factory."""
     require_scheduler_admin_auth(
@@ -307,9 +323,9 @@ async def enable_scheduler_job(name: str, request: Request):
         raise HTTPException(status_code=503, detail="Scheduler unavailable")
 
 
-@app.patch("/scheduler/jobs/{name}")
-@app.patch("/scheduler/jobs/{name}/interval")
-@app.post("/scheduler/jobs/{name}/interval")
+@app.patch("/scheduler/jobs/{name}", dependencies=[Depends(_require_admin_auth)])
+@app.patch("/scheduler/jobs/{name}/interval", dependencies=[Depends(_require_admin_auth)])
+@app.post("/scheduler/jobs/{name}/interval", dependencies=[Depends(_require_admin_auth)])
 async def update_scheduler_job_interval(name: str, request: Request):
     """Update the interval for a specific job.
 
@@ -345,7 +361,14 @@ async def update_scheduler_job_interval(name: str, request: Request):
 @app.websocket("/ws/session/{session_id}")
 async def websocket_session_events(session_id: str, websocket: WebSocket):
     """WebSocket endpoint — delegates to websocket_handler for full logic."""
+    if not validate_websocket_origin(websocket.headers):
+        await websocket.close(code=1008)
+        return
+
     admin_token = _getenv("CODINGAGENT_ADMIN_TOKEN", "CODING_AGENT_ADMIN_TOKEN")
+    if session_id == "all" and not admin_token:
+        await websocket.close(code=1008)
+        return
     if admin_token:
         inc_admin_auth_counter("attempts")
         token = extract_admin_token_from_headers(websocket.headers)

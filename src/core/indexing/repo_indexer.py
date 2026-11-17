@@ -4,6 +4,7 @@ import json
 import logging
 import os
 import re
+import threading
 from pathlib import Path
 from typing import Dict, Any, List, Optional
 from datetime import datetime
@@ -612,19 +613,17 @@ def _flat_symbols_for_file(
     return out
 
 
+_INDEX_WRITE_LOCK = threading.RLock()
+
+
 def refresh_file_in_index(file_path: str, working_dir: str) -> bool:
-    """Re-parse a single file and update its entry in the on-disk index.
+    """Re-parse a single file and update its entry in the on-disk index."""
+    with _INDEX_WRITE_LOCK:
+        return _refresh_file_in_index_unlocked(file_path, working_dir)
 
-    P3-T3: Call this after any write_file / edit_file tool completes successfully
-    so the in-process symbol index stays consistent with the filesystem.
-    Returns True if the index was updated, False on any error (non-fatal).
 
-    P1.2 fix: this used to refresh only the ``files`` entry, leaving the flat
-    top-level ``symbols`` list untouched.  ``get_symbols_for_task`` — the sole
-    consumer — reads *only* ``symbols``, so every post-write refresh was a
-    silent no-op for symbol lookups and the index drifted further out of sync
-    with each edit.  Both lists are now updated together.
-    """
+def _refresh_file_in_index_unlocked(file_path: str, working_dir: str) -> bool:
+    """Unlocked implementation of refresh_file_in_index (called under _INDEX_WRITE_LOCK)."""
     try:
         p = Path(file_path)
         if not p.is_absolute():

@@ -362,6 +362,7 @@ def test_pm6_fix_syntax_pipeline(tmp_path, monkeypatch):
       call 3: completion text   → next_action=None, last_result ok → memory_sync
     """
     monkeypatch.setattr("src.tools.tools_config._AUTONOMOUS_MODE", True)
+    monkeypatch.setattr("src.tools.tools_config._AUTONOMOUS_APPROVE", frozenset({"run_tests"}))
 
     dummy_file = tmp_path / "src" / "dummy.py"
     dummy_file.parent.mkdir(parents=True, exist_ok=True)

@@ -215,17 +215,17 @@ def repo_inspect(
     wd = Path(workdir) if workdir else None
 
     if op == "summary" and paths:
-        from src.tools.repo_read_tools import multi_file_summary
+        from src.tools.state_tools import multi_file_summary
 
         return multi_file_summary(paths=paths, workdir=wd)  # type: ignore[arg-type]
     elif op == "structure":
-        from src.tools.repo_read_tools import summarize_structure
+        from src.tools.system_tools import summarize_structure
 
         return summarize_structure(path=path or ".", workdir=wd)  # type: ignore[arg-type]
     elif op == "fingerprint":
-        from src.tools.repo_read_tools import fingerprint_tech_stack
+        from src.tools.project_tools import fingerprint_tech_stack
 
-        return fingerprint_tech_stack(workdir=wd)  # type: ignore[arg-type]
+        return fingerprint_tech_stack(workdir=str(wd) if wd else None)
     elif op == "analyze":
         from src.tools.repo_read_tools import analyze_repository
 
@@ -458,7 +458,7 @@ def tasks_wait(
     **kwargs: Any,
 ) -> Dict[str, Any]:
     """Check background task status."""
-    from src.tools.project_tools import check_background_task
+    from src.tools._bash_exec import check_background_task
 
     return check_background_task(task_id=task_id)
 
@@ -483,20 +483,21 @@ def verify(
 ) -> Dict[str, Any]:
     """Run tests, linter, or syntax verification."""
     op = (operation or "test").lower()
-    wd = Path(workdir) if workdir else None
+    wd = str(workdir or ".")
 
     if op == "lint":
         from src.tools.verification_tools import run_linter
 
-        return run_linter(path=path or ".", workdir=wd)  # type: ignore[arg-type]
+        return run_linter(workdir=wd, paths=[path] if path else None)
     elif op == "syntax":
         from src.tools.verification_tools import syntax_check
 
-        return syntax_check(path=path or ".", workdir=wd)  # type: ignore[arg-type]
+        return syntax_check(workdir=wd)
     else:
         from src.tools.verification_tools import run_tests
 
-        return run_tests(path=path or "tests", test_name=test_name, workdir=wd)  # type: ignore[arg-type]
+        tfiles = [path] if path else ([test_name] if test_name else None)
+        return run_tests(workdir=wd, test_files=tfiles)
 
 
 # ---------------------------------------------------------------------------
@@ -518,9 +519,9 @@ def format_tool(
     **kwargs: Any,
 ) -> Dict[str, Any]:
     """Run code formatter on file."""
-    from src.tools.formatter import format_file
+    from src.tools.verification_tools import format_file
 
-    return format_file(file_path=file_path)
+    return format_file(path=file_path)
 
 
 # ---------------------------------------------------------------------------
@@ -531,7 +532,8 @@ def format_tool(
 @tool(
     name="git",
     description="Inspect git status/diff or manage commits, stash, and restore.",
-    permission_kind=PermissionKind.GIT_READ,
+    side_effects=["write"],
+    permission_kind=PermissionKind.GIT_WRITE,
     tags=["coding"],
 )
 def git(
@@ -551,9 +553,9 @@ def git(
 
         return git_log(max_count=max_count, workdir=wd)
     elif op == "diff":
-        from src.tools.git_tools import get_git_diff
+        from src.tools.system_tools import get_git_diff
 
-        return get_git_diff(path=path, workdir=wd)
+        return get_git_diff()
     elif op == "commit":
         from src.tools.git_tools import git_commit
 
@@ -685,13 +687,13 @@ def memory(
     op = (operation or "search").lower()
 
     if op == "save" and content:
-        from src.tools.memory_tools import save_memory
+        from src.tools.memory_tools import memory_save
 
-        return save_memory(content=content)
+        return memory_save(content=content)
     elif op == "mistake" and content:
         from src.tools.memory_tools import record_mistake
 
-        return record_mistake(content=content)
+        return record_mistake(summary=content)
     else:
         from src.tools.memory_tools import memory_search
 
@@ -706,6 +708,7 @@ def memory(
 @tool(
     name="state",
     description="Manage checkpoints, list snapshots, inspect diff, or revert changes.",
+    side_effects=["write"],
     permission_kind=PermissionKind.WRITE_FILE,
     tags=["coding"],
 )
@@ -713,6 +716,8 @@ def state(
     operation: str = "checkpoint",
     name: Optional[str] = None,
     workdir: Optional[str] = None,
+    checkpoint_id1: str = "",
+    checkpoint_id2: str = "",
     **kwargs: Any,
 ) -> Dict[str, Any]:
     """State snapshot and checkpoint operations."""
@@ -726,15 +731,21 @@ def state(
     elif op == "diff":
         from src.tools.state_tools import diff_state
 
-        return diff_state(workdir=wd)  # type: ignore[arg-type]
+        return diff_state(checkpoint_id1=checkpoint_id1, checkpoint_id2=checkpoint_id2, workdir=wd)  # type: ignore[arg-type]
     elif op == "revert":
-        from src.tools.state_tools import revert_last_tool
+        from src.tools.rollback_tools import revert_last_tool
 
-        return revert_last_tool(workdir=wd)  # type: ignore[arg-type]
+        return revert_last_tool()
     else:
         from src.tools.state_tools import create_state_checkpoint
 
-        return create_state_checkpoint(name=name or "auto", workdir=wd)  # type: ignore[arg-type]
+        return create_state_checkpoint(
+            current_task=name or "auto",
+            tool_call_history=[],
+            modified_files=[],
+            reasoning_summary=name or "checkpoint",
+            workdir=wd,  # type: ignore[arg-type]
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -850,7 +861,7 @@ def delegate(
     else:
         from src.tools.subagent_tools import delegate_task
 
-        return delegate_task(task=task, role=role or "coder", workdir=workdir)
+        return {"status": "ok", "output": delegate_task(role=role or "coder", subtask_description=task, working_dir=workdir)}
 
 
 # ---------------------------------------------------------------------------
@@ -873,17 +884,17 @@ def plan(
     op = (operation or "enter").lower()
 
     if op == "exit":
-        from src.tools.plan_mode_tools import exit_plan_mode
+        from src.tools.plan_mode_tools import plan_exit
 
-        return exit_plan_mode()
+        return plan_exit()
     elif op == "submit" and plan:
-        from src.tools.plan_mode_tools import submit_plan_for_review
+        from src.tools.interaction_tools import submit_plan_for_review
 
-        return submit_plan_for_review(plan=plan)
+        return submit_plan_for_review(plan_summary=plan, plan_steps=[plan])
     else:
-        from src.tools.plan_mode_tools import enter_plan_mode
+        from src.tools.plan_mode_tools import plan_enter
 
-        return enter_plan_mode()
+        return plan_enter()
 
 
 # ---------------------------------------------------------------------------

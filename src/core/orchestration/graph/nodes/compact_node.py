@@ -253,6 +253,19 @@ async def _compact_node_impl(state: StateLike, config: RunnableConfig) -> Dict[s
         initial_len,
         len(compacted),
     )
+    try:
+        from src.core.orchestration.graph.nodes.node_utils import _resolve_orchestrator
+        from src.core.inference.kv_cache_governor import reset_governor_for_orchestrator
+
+        orch = _resolve_orchestrator(state, config)
+        if orch is not None:
+            reset_governor_for_orchestrator(orch)
+            try:
+                orch._kv_governor_compactions = compactions_taken
+            except Exception:
+                pass
+    except Exception:
+        pass
     run_state["status"] = "running"
     run_state["outcome"] = "continue"
 

@@ -83,10 +83,11 @@ class RevertConfirmScreen(ModalScreen[bool]):
     def compose(self) -> ComposeResult:
         with Container(id="confirm_dialog"):
             yield Label(
-                f"⚠ Revert working directory to git snapshot [bold]{self._sha[:12]}[/bold]?\n\n"
+                f"⚠ Revert working directory to git snapshot {self._sha[:12]}?\n\n"
                 f"  Directory: {self._working_dir}\n\n"
                 "  Uncommitted changes will be stashed. This cannot be undone easily.",
                 id="confirm_message",
+                markup=False,
             )
             with Horizontal(id="confirm_buttons"):
                 yield Button("Revert", id="btn_confirm", variant="error")
@@ -214,41 +215,58 @@ class SessionScreen(SessionListScreen):
     def _do_revert(self, git_sha: str, working_dir: str) -> None:
         """Execute the git revert after user confirmation."""
         import re
+        import threading
 
         if not re.match(r"^[0-9a-fA-F]{4,40}$", git_sha):
             self.app.notify("Invalid git SHA format.", severity="error")
             return
-        try:
-            cwd = Path(working_dir)
-            if not cwd.is_dir():
-                raise RuntimeError(f"Working directory not found: {working_dir}")
-            # Stash any local changes first so the checkout doesn't fail
-            stash_result = subprocess.run(
-                ["git", "stash", "--include-untracked"],
-                cwd=str(cwd),
-                capture_output=True,
-                text=True,
-                timeout=15,
-            )
-            if stash_result.returncode != 0:
-                stash_err = (stash_result.stderr or "").strip()[:120]
-                _log.warning("git stash failed (proceeding anyway): %s", stash_err)
-            result = subprocess.run(
-                ["git", "checkout", git_sha],
-                cwd=str(cwd),
-                capture_output=True,
-                text=True,
-                timeout=15,
-            )
-            if result.returncode == 0:
-                self.app.notify(f"Reverted to snapshot {git_sha[:8]}")
-            else:
-                err = (result.stderr or "").strip()[:120]
-                self.app.notify(f"git checkout failed: {err}", severity="error")
-        except FileNotFoundError:
-            self.app.notify("git not found in PATH.", severity="error")
-        except Exception as exc:
-            self.app.notify(f"Revert failed: {exc}", severity="error")
+
+        def _worker() -> None:
+            try:
+                cwd = Path(working_dir)
+                if not cwd.is_dir():
+                    raise RuntimeError(f"Working directory not found: {working_dir}")
+                # Stash any local changes first so the checkout doesn't fail
+                stash_result = subprocess.run(
+                    ["git", "stash", "--include-untracked"],
+                    cwd=str(cwd),
+                    capture_output=True,
+                    text=True,
+                    timeout=15,
+                )
+                if stash_result.returncode != 0:
+                    stash_err = (stash_result.stderr or "").strip()[:120]
+                    _log.warning("git stash failed (proceeding anyway): %s", stash_err)
+                result = subprocess.run(
+                    ["git", "checkout", git_sha],
+                    cwd=str(cwd),
+                    capture_output=True,
+                    text=True,
+                    timeout=15,
+                )
+                if result.returncode == 0:
+                    try:
+                        self.app.call_from_thread(self.app.notify, f"Reverted to snapshot {git_sha[:8]}")
+                    except Exception:
+                        pass
+                else:
+                    err = (result.stderr or "").strip()[:120]
+                    try:
+                        self.app.call_from_thread(self.app.notify, f"git checkout failed: {err}", severity="error")
+                    except Exception:
+                        pass
+            except FileNotFoundError:
+                try:
+                    self.app.call_from_thread(self.app.notify, "git not found in PATH.", severity="error")
+                except Exception:
+                    pass
+            except Exception as exc:
+                try:
+                    self.app.call_from_thread(self.app.notify, f"Revert failed: {exc}", severity="error")
+                except Exception:
+                    pass
+
+        threading.Thread(target=_worker, daemon=True).start()
         self.dismiss()
 
     # ------------------------------------------------------------------

@@ -68,8 +68,17 @@ class ModelProfile:
         bytes_per_param = bits_per_param / 8
         return self.params_total * bytes_per_param
 
-    def compute_kv_cache_gb(self, tokens: int) -> float:
-        return (tokens / 1000) * self.kv_per_token_mb / 1024
+    def compute_kv_cache_gb(self, tokens: int, kv_cache_quant: bool | str = False) -> float:
+        base_gb = (tokens / 1000) * self.kv_per_token_mb / 1024
+        if isinstance(kv_cache_quant, str):
+            q = kv_cache_quant.strip().lower()
+            if q in ("q4", "q4_0", "4bit"):
+                return base_gb * 0.25
+            if q in ("q8", "q8_0", "8bit", "true", "1"):
+                return base_gb * 0.5
+        elif kv_cache_quant:
+            return base_gb * 0.5
+        return base_gb
 
     def estimate_safe_context(self, vram_gb: float, overhead_gb: float = 1.5) -> int:
         available = vram_gb - self.compute_weights_gb() - overhead_gb

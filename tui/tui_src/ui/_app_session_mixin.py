@@ -9,6 +9,7 @@ from __future__ import annotations
 import os
 import time
 from pathlib import Path
+from rich.markup import escape
 from textual import on
 from textual.widgets import Static
 
@@ -68,6 +69,22 @@ class AppSessionMixin(AgentAppProtocol):
             turn_count = self._bridge.get_turn_count()
             input_tokens, output_tokens = self._bridge.get_usage_totals()
             created_at = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+            wd_str = self._bridge.working_dir or str(os.getcwd())
+            git_sha: str | None = None
+            try:
+                import subprocess
+
+                res = subprocess.run(
+                    ["git", "rev-parse", "HEAD"],
+                    cwd=wd_str,
+                    capture_output=True,
+                    text=True,
+                    timeout=1.5,
+                )
+                if res.returncode == 0 and res.stdout.strip():
+                    git_sha = res.stdout.strip()
+            except Exception:
+                pass
             payload = {
                 "version": 1,
                 "session_id": self._session_id,
@@ -79,7 +96,8 @@ class AppSessionMixin(AgentAppProtocol):
                 "input_tokens": input_tokens,
                 "output_tokens": output_tokens,
                 "messages": [{"role": r, "content": t} for r, t in history],
-                "working_dir": self._bridge.working_dir or str(os.getcwd()),
+                "working_dir": wd_str,
+                **({"git_sha": git_sha} if git_sha else {}),
             }
             try:
                 from src.core.security.redaction import redact_data
@@ -173,7 +191,11 @@ class AppSessionMixin(AgentAppProtocol):
             if not content:
                 continue
             if role == "user":
-                w = Static(f"[bold #3b82f6]User:[/] {content}", classes="user_msg")
+                w = Static(
+                    f"[bold #3b82f6]User:[/] {escape(str(content))}",
+                    classes="user_msg",
+                    markup=True,
+                )
                 await self._mount_chat_widget(w)
             elif role == "assistant":
                 art = AgentArtifact(content=content, title="Response", kind="markdown")

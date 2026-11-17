@@ -124,6 +124,7 @@ def _check_command_denylist(cmd: str) -> Optional[str]:
 
 
 _SPAWNED_BG_PIDS: Set[int] = set()
+_SPAWNED_BG_PROCS: Dict[int, tuple[Any, Optional[str]]] = {}
 
 _DANGEROUS_GIT_FLAGS: frozenset[str] = frozenset(
     {
@@ -378,7 +379,8 @@ def _check_shell_flags(cmd_parts: list, first_cmd: str) -> Optional[Dict[str, An
             }
         # Block env VAR=val cmd — environment variable injection can bypass
         # security controls via LD_PRELOAD, PYTHONPATH, PATH, etc.
-        for _part in cmd_parts[1:]:
+        sub_idx = None
+        for idx, _part in enumerate(cmd_parts[1:], 1):
             if _part.startswith("-"):
                 continue  # skip env flags (e.g., -u, --unset)
             if "=" in _part:
@@ -390,22 +392,68 @@ def _check_shell_flags(cmd_parts: list, first_cmd: str) -> Optional[Dict[str, An
                         "can bypass security controls."
                     ),
                 }
-            break  # first non-flag, non-assignment token is the sub-command; stop
-    elif first_cmd == "xargs":
-        # Block xargs when it would invoke a code-execution interpreter with inline
-        # -c/-e flags, bypassing Gate 3 (CODE_EXEC_INTERPRETERS check).
-        for _i, _part in enumerate(cmd_parts[1:], 1):
-            if _part in CODE_EXEC_INTERPRETERS:
-                _remaining = cmd_parts[_i + 1 :]
-                if any(_f in CODE_EXEC_FLAGS for _f in _remaining):
+            sub_idx = idx
+            break  # first non-flag, non-assignment token is the sub-command
+        if sub_idx is not None:
+            _SHELL_NAMES = {"sh", "bash", "zsh", "ksh", "fish", "dash", "csh", "tcsh"}
+            sub_parts = cmd_parts[sub_idx:]
+            inner_cmd = Path(sub_parts[0]).name.lower()
+            if inner_cmd in _SHELL_NAMES:
+                return {
+                    "status": "error",
+                    "error": f"env with shell '{inner_cmd}' is not allowed.",
+                }
+            if inner_cmd in _COMMAND_DENYLIST:
+                return {
+                    "status": "error",
+                    "error": f"env with '{inner_cmd}' is not allowed (command denylist).",
+                }
+            for _tok in sub_parts[1:]:
+                if _is_code_exec_flag(inner_cmd, _tok):
                     return {
                         "status": "error",
                         "error": (
-                            f"xargs with '{_part}' and inline execution flags is not allowed: "
+                            f"env with '{inner_cmd} {_tok}' is not allowed: "
+                            "inline code execution flags are blocked."
+                        ),
+                    }
+            nested_err = _check_shell_flags(sub_parts, inner_cmd)
+            if nested_err is not None:
+                return nested_err
+    elif first_cmd == "xargs":
+        # Block xargs invoking shells, denylisted binaries, or code-execution
+        # interpreters (including versioned/path-qualified binaries like
+        # /usr/bin/python3 or python3.11) with inline code flags (-c/-Bc/-e/-r).
+        _SHELL_NAMES = {"sh", "bash", "zsh", "ksh", "fish", "dash", "csh", "tcsh"}
+        for _i, _part in enumerate(cmd_parts[1:], 1):
+            if _part.startswith("-"):
+                continue
+            _bin = Path(_part).name.lower()
+            if _bin in _SHELL_NAMES:
+                return {
+                    "status": "error",
+                    "error": f"xargs with shell '{_bin}' is not allowed.",
+                }
+            if _bin in _COMMAND_DENYLIST:
+                return {
+                    "status": "error",
+                    "error": f"xargs with '{_bin}' is not allowed (command denylist).",
+                }
+            _remaining = cmd_parts[_i + 1 :]
+            for _f in _remaining:
+                if _is_code_exec_flag(_part, _f):
+                    return {
+                        "status": "error",
+                        "error": (
+                            f"xargs with '{_part}' and inline execution flag '{_f}' is not allowed: "
                             "xargs can be used to invoke code-execution interpreters and "
                             "bypass the inline-code guard."
                         ),
                     }
+            nested_err = _check_shell_flags(cmd_parts[_i:], _bin)
+            if nested_err is not None:
+                return nested_err
+            break
     elif first_cmd == "find":
         # Block find -exec / -execdir / -ok with shell or code-exec interpreters.
         _FIND_EXEC_FLAGS = {"-exec", "-execdir", "-ok"}
@@ -446,6 +494,40 @@ def _check_shell_flags(cmd_parts: list, first_cmd: str) -> Optional[Dict[str, An
                             f"find {_part} with '{_exec_binary}' is not allowed: "
                             f"'{_exec_binary}' is in the command denylist."
                         ),
+                    }
+    return None
+
+
+def _check_secret_path_args(
+    cmd_parts: list, workdir: Path
+) -> Optional[Dict[str, Any]]:
+    """Block access to secret/protected files referenced in command arguments."""
+    for token in cmd_parts[1:]:
+        candidates: list[str] = []
+        if not token.startswith("-"):
+            candidates.append(token)
+        elif "=" in token:
+            candidates.append(token.split("=", 1)[1])
+        for cand in candidates:
+            if not cand:
+                continue
+            try:
+                candidate = Path(cand)
+                candidate_resolved = (
+                    (workdir / candidate).resolve()
+                    if not candidate.is_absolute()
+                    else candidate.resolve()
+                )
+                if is_secret_path(candidate) or is_secret_path(candidate_resolved):
+                    return {
+                        "status": "error",
+                        "error": f"Access to secret/protected path is blocked: {cand}",
+                    }
+            except Exception:
+                if is_secret_path(cand):
+                    return {
+                        "status": "error",
+                        "error": f"Access to secret/protected path is blocked: {cand}",
                     }
     return None
 
@@ -661,6 +743,11 @@ def bash(
     if _approval_result is not None:
         return _approval_result
 
+    # Gate 6: Block access to secret/protected files in arguments
+    _secret_err = _check_secret_path_args(cmd_parts, Path(workdir))
+    if _secret_err is not None:
+        return _secret_err
+
     # MC-6: per-tool network policy — bash() denies outbound network.  Refuse
     # network-capable commands when the sandbox cannot enforce the deny and
     # enforcement is required; warn (and proceed) otherwise.
@@ -675,6 +762,9 @@ def bash(
     if run_in_background:
         _bg_sandbox_prefix = _build_background_sandbox(cmd_parts, Path(workdir))
         _bg_cmd = _bg_sandbox_prefix + cmd_parts if _bg_sandbox_prefix else cmd_parts
+        _sb_profile_path: Optional[str] = None
+        if _bg_sandbox_prefix and len(_bg_sandbox_prefix) >= 3 and _bg_sandbox_prefix[-2] == "-f":
+            _sb_profile_path = str(_bg_sandbox_prefix[-1])
         if _bg_sandbox_prefix is None:
             try:
                 _enforce = bool(_sandbox._enforcement_required())
@@ -712,6 +802,7 @@ def bash(
                 stdin=subprocess.DEVNULL,
             )
             _SPAWNED_BG_PIDS.add(proc.pid)
+            _SPAWNED_BG_PROCS[proc.pid] = (proc, _sb_profile_path)
             return {
                 "status": "ok",
                 "command": command,
@@ -905,26 +996,9 @@ def bash_readonly(
         return _flag_err
 
     # Gate 6: Block access to secret/protected files in arguments
-    for token in cmd_parts[1:]:
-        if not token.startswith("-"):
-            try:
-                candidate = Path(token)
-                candidate_resolved = (
-                    (workdir / candidate).resolve()
-                    if not candidate.is_absolute()
-                    else candidate.resolve()
-                )
-                if is_secret_path(candidate) or is_secret_path(candidate_resolved):
-                    return {
-                        "status": "error",
-                        "error": f"Access to secret/protected path is blocked: {token}",
-                    }
-            except Exception:
-                if is_secret_path(token):
-                    return {
-                        "status": "error",
-                        "error": f"Access to secret/protected path is blocked: {token}",
-                    }
+    _secret_err = _check_secret_path_args(cmd_parts, workdir)
+    if _secret_err is not None:
+        return _secret_err
 
     # Execute inside sandbox (network disabled) — prevents exfiltration even for
     # read-only commands. Falls back to plain subprocess when bwrap unavailable.
@@ -1016,11 +1090,27 @@ def check_background_task(
             "error": f"Invalid task_id: {task_id!r} — expected a PID string.",
         }
 
-    if pid not in _SPAWNED_BG_PIDS:
+    if pid not in _SPAWNED_BG_PIDS and pid not in _SPAWNED_BG_PROCS:
         return {
             "status": "error",
             "error": f"Unknown or untracked background task ID: {task_id}. Only processes started with bash(run_in_background=True) in this session can be checked.",
         }
+
+    tracked = _SPAWNED_BG_PROCS.get(pid)
+    if tracked is not None:
+        proc, sb_path = tracked
+        rc = proc.poll()
+        if rc is None:
+            return {"status": "ok", "pid": pid, "running": True, "exit_code": None}
+        # Reap completed process & clean up temporary .sb Seatbelt profile if any
+        _SPAWNED_BG_PROCS.pop(pid, None)
+        _SPAWNED_BG_PIDS.discard(pid)
+        if sb_path:
+            try:
+                Path(sb_path).unlink(missing_ok=True)
+            except Exception:
+                pass
+        return {"status": "ok", "pid": pid, "running": False, "exit_code": rc}
 
     try:
         # os.kill(pid, 0) succeeds if the process exists; raises OSError if not.

@@ -18,6 +18,7 @@ def build_context_controller_descriptors(
                 "content": content,
                 "line_count": len(content.splitlines()),
                 "estimated_tokens": max(1, len(content) // 4),
+                "relevance": float(snippet.get("relevance") or snippet.get("score") or 0.0),
             }
         )
     return descriptors

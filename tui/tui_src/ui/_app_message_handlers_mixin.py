@@ -6,6 +6,7 @@ AgentApp to a ≤400-line core.
 
 from __future__ import annotations
 
+from rich.markup import escape
 from textual import on
 from textual.containers import Horizontal, VerticalScroll
 from textual.widgets import Button, Label, Static
@@ -173,35 +174,42 @@ class AppMessageHandlersMixin(AgentAppProtocol):
     @on(ToolPermissionEvent)
     async def handle_tool_permission(self: AgentAppProtocol, event) -> None:
         logger.warning(f"Tool permission required: {event.tool}  id={event.tool_id}")
+        from ._app_tool_handlers_mixin import AppToolHandlersMixin, _fmt_args
+
+        raw_tid = str(event.tool_id)
+        safe_tid = AppToolHandlersMixin._safe_dom_id(raw_tid)
         if not hasattr(self, "_perm_tool_names"):
             self._perm_tool_names: dict[str, str] = {}
-        self._perm_tool_names[event.tool_id] = event.tool
-        if event.tool in self._allow_always_tools:
+        self._perm_tool_names[raw_tid] = event.tool
+        self._perm_tool_names[safe_tid] = event.tool
+        if not hasattr(self, "_perm_raw_ids") or not isinstance(getattr(self, "_perm_raw_ids", None), dict):
+            self._perm_raw_ids = {}  # type: ignore[attr-defined]
+        self._perm_raw_ids[safe_tid] = raw_tid
+        if event.tool != "delete_file" and event.tool in self._allow_always_tools:
             logger.info(f"Auto-approving {event.tool} (allow-always)")
-            self._bridge.publish("tool.permission_granted", {"tool_id": event.tool_id})
-            self.post_message(ToolPermissionApproved(tool_id=event.tool_id))
+            self._bridge.publish("tool.permission_granted", {"tool_id": raw_tid})
+            self.post_message(ToolPermissionApproved(tool_id=raw_tid))
             return
         self._update_perm_badge(+1)
-        from ._app_tool_handlers_mixin import _fmt_args
 
         args_fmt = _fmt_args(event.args)
         chat_log = self.query_one("#chat_log", VerticalScroll)
         warn = Static(
-            f"[bold #facc15]⚠ Permission required:[/] [bold]{event.tool}[/]  {args_fmt}",
+            f"[bold #facc15]⚠ Permission required:[/] [bold]{escape(str(event.tool))}[/]  {escape(args_fmt)}",
             classes="retry_msg",
             markup=True,
         )
         await chat_log.mount(warn)
-        tid = event.tool_id
-        row = Horizontal(id=f"tool_perm_{tid}", classes="approval_row")
+        row = Horizontal(id=f"tool_perm_{safe_tid}", classes="approval_row")
         await chat_log.mount(row)
         await row.mount(
-            Button("Allow", id=f"btn_tool_perm_allow_{tid}", variant="success")
+            Button("Allow", id=f"btn_tool_perm_allow_{safe_tid}", variant="success")
         )
-        await row.mount(Button("Deny", id=f"btn_tool_perm_deny_{tid}", variant="error"))
-        await row.mount(
-            Button("Allow Always", id=f"btn_tool_perm_always_{tid}", variant="warning")
-        )
+        await row.mount(Button("Deny", id=f"btn_tool_perm_deny_{safe_tid}", variant="error"))
+        if event.tool != "delete_file":
+            await row.mount(
+                Button("Allow Always", id=f"btn_tool_perm_always_{safe_tid}", variant="warning")
+            )
         chat_log.scroll_end(animate=False)
         self._prune_chat_log()
 
@@ -210,21 +218,27 @@ class AppMessageHandlersMixin(AgentAppProtocol):
         logger.warning(
             f"Spawn permission required: {event.role} tool={event.tool} id={event.tool_id}"
         )
+        from ._app_tool_handlers_mixin import AppToolHandlersMixin
+
+        raw_tid = str(event.tool_id)
+        safe_tid = AppToolHandlersMixin._safe_dom_id(raw_tid)
+        if not hasattr(self, "_perm_raw_ids") or not isinstance(getattr(self, "_perm_raw_ids", None), dict):
+            self._perm_raw_ids = {}  # type: ignore[attr-defined]
+        self._perm_raw_ids[safe_tid] = raw_tid
         self._update_perm_badge(+1)
         chat_log = self.query_one("#chat_log", VerticalScroll)
         role_label = event.role or "unknown"
-        task_desc = f" ({event.task})" if event.task else ""
+        task_desc = f" ({escape(str(event.task))})" if event.task else ""
         warn = Static(
-            f"[bold #facc15]⚠ Spawn permission required:[/] Subagent [bold]{role_label}[/]{task_desc}",
+            f"[bold #facc15]⚠ Spawn permission required:[/] Subagent [bold]{escape(role_label)}[/]{task_desc}",
             classes="retry_msg",
             markup=True,
         )
         await chat_log.mount(warn)
-        tid = event.tool_id
-        row = Horizontal(id=f"spawn_perm_{tid}", classes="approval_row")
+        row = Horizontal(id=f"spawn_perm_{safe_tid}", classes="approval_row")
         await chat_log.mount(row)
-        await row.mount(Button("Allow", id=f"btn_spawn_allow_{tid}", variant="success"))
-        await row.mount(Button("Deny", id=f"btn_spawn_deny_{tid}", variant="error"))
+        await row.mount(Button("Allow", id=f"btn_spawn_allow_{safe_tid}", variant="success"))
+        await row.mount(Button("Deny", id=f"btn_spawn_deny_{safe_tid}", variant="error"))
         chat_log.scroll_end(animate=False)
         self._prune_chat_log()
 
@@ -266,7 +280,7 @@ class AppMessageHandlersMixin(AgentAppProtocol):
                 else raw_val[:200] + f"… ({len(raw_val)} chars)"
             )
             q_widget = Static(
-                f"[bold #3b82f6]You:[/] {display_val_q}  [bold #a78bfa reverse] INJECTING [/]",
+                f"[bold #3b82f6]You:[/] {escape(display_val_q)}  [bold #a78bfa reverse] INJECTING [/]",
                 classes="user_msg",
                 markup=True,
             )
@@ -293,7 +307,7 @@ class AppMessageHandlersMixin(AgentAppProtocol):
             pass
 
         widget = Label(
-            f"[bold #3b82f6]You:[/] {display_val}", classes="user_msg", markup=True
+            f"[bold #3b82f6]You:[/] {escape(display_val)}", classes="user_msg", markup=True
         )
         await self._mount_chat_widget(widget)
 

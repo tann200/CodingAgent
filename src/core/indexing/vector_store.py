@@ -178,12 +178,21 @@ def _get_cached_embedding(text: str, dim: int = 8) -> List[float]:
 
 def clear_embedding_cache() -> None:
     """Clear the embedding cache (call after memory pressure)."""
-    _EMBEDDING_CACHE.clear()
+    with _EMBEDDING_CACHE_LOCK:
+        _EMBEDDING_CACHE.clear()
 
 
 def get_embedding_cache_size() -> int:
     """Return number of cached embeddings."""
-    return len(_EMBEDDING_CACHE)
+    with _EMBEDDING_CACHE_LOCK:
+        return len(_EMBEDDING_CACHE)
+
+
+def _embed_model_tag(model: Any) -> str:
+    if isinstance(model, _DummyModel) or model is None:
+        return "stub-sha256-8d"
+    name = getattr(model, "model_name", None) or getattr(type(model), "__name__", None)
+    return str(name or "sentence-transformers")
 
 
 class _DummyModel:
@@ -276,11 +285,42 @@ class VectorStore:
         base.mkdir(parents=True, exist_ok=True)
 
         if isinstance(repo_index, list):
-            symbols = repo_index
+            symbols = [dict(s) if isinstance(s, dict) else s for s in repo_index]
         elif isinstance(repo_index, dict):
-            symbols = repo_index.get("symbols", [])
+            symbols = [dict(s) if isinstance(s, dict) else s for s in repo_index.get("symbols", [])]
         else:
             symbols = []
+
+        # Persist embeddings + embed_model/dim metadata on indexed code symbols
+        st_active = _get_st_model_ready()
+        embedder = st_active if st_active is not None else getattr(self, "_model", None)
+        if embedder is not None and symbols:
+            try:
+                model_tag = _embed_model_tag(embedder)
+                texts = [
+                    " ".join(
+                        filter(
+                            None,
+                            [
+                                s.get("symbol_name") or s.get("name"),
+                                s.get("file_path"),
+                                s.get("docstring") or s.get("summary"),
+                            ],
+                        )
+                    )
+                    or str(s.get("file_path") or "")
+                    for s in symbols
+                    if isinstance(s, dict)
+                ]
+                if texts:
+                    vecs = embedder.encode(texts)
+                    for sym, vec in zip((s for s in symbols if isinstance(s, dict)), vecs):
+                        vec_list = list(vec)
+                        sym["vector"] = vec_list
+                        sym["embed_dim"] = len(vec_list)
+                        sym["embed_model"] = model_tag
+            except Exception:
+                pass
         try:
             symbols_path = base / "symbols.json"
             symbols_path.parent.mkdir(parents=True, exist_ok=True)
@@ -340,14 +380,22 @@ class VectorStore:
                 import math
 
                 q_vec = st.encode([query])[0]
+                q_dim = len(q_vec)
+                st_tag = _embed_model_tag(st)
                 q_norm = math.sqrt(sum(x * x for x in q_vec)) or 1.0
 
-                # Pre-filter: collect symbols that need on-demand embedding, then
-                # batch-encode them to avoid O(N) individual encode() calls (P2-5).
+                # Collect symbols missing an embedding OR carrying a mismatched
+                # stub/legacy embedding dimension/model, and batch-encode them.
                 needs_embed: List[int] = []
                 texts_to_embed: List[str] = []
                 for i, sym in enumerate(symbols):
-                    if not sym.get("vector"):
+                    s_vec = sym.get("vector") or []
+                    s_model = sym.get("embed_model")
+                    if (
+                        not s_vec
+                        or len(s_vec) != q_dim
+                        or (s_model and s_model != st_tag)
+                    ):
                         text = " ".join(filter(None, [
                             sym.get("symbol_name") or sym.get("name"),
                             sym.get("file_path"),
@@ -359,13 +407,16 @@ class VectorStore:
                 if texts_to_embed:
                     batch_vecs = st.encode(texts_to_embed)
                     for idx, vec in zip(needs_embed, batch_vecs):
+                        vec_list = list(vec)
                         symbols[idx] = dict(symbols[idx])
-                        symbols[idx]["vector"] = list(vec)
+                        symbols[idx]["vector"] = vec_list
+                        symbols[idx]["embed_dim"] = len(vec_list)
+                        symbols[idx]["embed_model"] = st_tag
 
                 scored: List[tuple[float, Dict[str, Any]]] = []
                 for sym in symbols:
                     s_vec = sym.get("vector") or []
-                    if not s_vec:
+                    if not s_vec or len(s_vec) != q_dim:
                         continue
                     s_norm = math.sqrt(sum(x * x for x in s_vec)) or 1.0
                     cosine = sum(a * b for a, b in zip(q_vec, s_vec)) / (q_norm * s_norm)
@@ -517,7 +568,12 @@ class VectorStore:
         }
         # Embed the text for semantic recall (real ST model or SHA-256 stub).
         try:
-            record["vector"] = list(self._model.encode([clean_text])[0])
+            st_active = _get_st_model_ready()
+            embedder = st_active if st_active is not None else self._model
+            vec_list = list(embedder.encode([clean_text])[0])
+            record["vector"] = vec_list
+            record["embed_dim"] = len(vec_list)
+            record["embed_model"] = _embed_model_tag(embedder)
         except Exception:
             pass
 
@@ -561,16 +617,25 @@ class VectorStore:
                 import math as _math
 
                 q_vec = st.encode([query])[0]
+                q_dim = len(q_vec)
+                st_tag = _embed_model_tag(st)
                 q_norm = _math.sqrt(sum(x * x for x in q_vec)) or 1.0
                 scored: List[tuple[float, Dict[str, Any]]] = []
                 for r in recs:
                     r_vec = r.get("vector") or []
-                    if not r_vec:
-                        # On-demand embedding for records saved without one.
+                    r_model = r.get("embed_model")
+                    if (
+                        not r_vec
+                        or len(r_vec) != q_dim
+                        or (r_model and r_model != st_tag)
+                    ):
+                        # Re-embed with active ST model so mismatched stub dimensions are never dot-producted.
                         try:
                             r_vec = st.encode([str(r.get("text", ""))])[0]
                         except Exception:
                             continue
+                    if len(r_vec) != q_dim:
+                        continue
                     s_norm = _math.sqrt(sum(x * x for x in r_vec)) or 1.0
                     cosine = sum(a * b for a, b in zip(q_vec, r_vec)) / (
                         q_norm * s_norm

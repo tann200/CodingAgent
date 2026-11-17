@@ -30,6 +30,7 @@ def _make_session_screen() -> "SessionScreen":
     mock_app = SimpleNamespace(
         notify=MagicMock(),
         push_screen=MagicMock(),
+        call_from_thread=lambda fn, *a, **kw: fn(*a, **kw),
     )
     object.__setattr__(screen, "_filtered", [])
     object.__setattr__(screen, "_selected", 0)
@@ -129,19 +130,19 @@ class TestDoRevert:
         screen.dismiss = MagicMock()
         return screen
 
-    def test_success_notifies_sha_prefix(self, tmp_path: Path) -> None:
+    def test_success_notifies_sha_prefix(self, tmp_path: Path, sync_threads) -> None:
         screen = self._screen_with_dismiss()
         mock_result = MagicMock()
         mock_result.returncode = 0
 
-        with patch("subprocess.run", return_value=mock_result) as mock_run:
+        with patch("subprocess.run", return_value=mock_result):
             screen._do_revert("abc123456789", str(tmp_path))
 
         screen.app.notify.assert_called_once()
         msg = screen.app.notify.call_args[0][0]
         assert "abc12345" in msg  # first 8 chars of sha
 
-    def test_git_checkout_failure_notifies_error(self, tmp_path: Path) -> None:
+    def test_git_checkout_failure_notifies_error(self, tmp_path: Path, sync_threads) -> None:
         screen = self._screen_with_dismiss()
 
         def _side_effect(cmd, **kw):
@@ -161,14 +162,14 @@ class TestDoRevert:
         call_kw = screen.app.notify.call_args[1]
         assert call_kw.get("severity") == "error"
 
-    def test_git_not_found_notifies_error(self, tmp_path: Path) -> None:
+    def test_git_not_found_notifies_error(self, tmp_path: Path, sync_threads) -> None:
         screen = self._screen_with_dismiss()
         with patch("subprocess.run", side_effect=FileNotFoundError):
             screen._do_revert("abc123", str(tmp_path))
         msg = screen.app.notify.call_args[0][0]
         assert "git not found" in msg.lower()
 
-    def test_missing_working_dir_notifies_error(self) -> None:
+    def test_missing_working_dir_notifies_error(self, sync_threads) -> None:
         screen = self._screen_with_dismiss()
         screen._do_revert("abc123", "/nonexistent/path/that/does/not/exist")
         screen.app.notify.assert_called_once()

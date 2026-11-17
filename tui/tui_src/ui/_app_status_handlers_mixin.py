@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, cast
 
+from rich.markup import escape
 from textual import on
 from textual.widgets import Static
 
@@ -148,7 +149,7 @@ class AppStatusHandlersMixin(AgentAppProtocol):
             "info": "information",
         }
         sev = severity_map.get(event.level, "information")
-        self.notify(event.message, severity=cast("SeverityLevel", sev), timeout=5)
+        self.notify(str(event.message), severity=cast("SeverityLevel", sev), timeout=5, markup=False)
 
     # ── Session health ────────────────────────────────────────────────────
 
@@ -162,7 +163,7 @@ class AppStatusHandlersMixin(AgentAppProtocol):
     def handle_status(self: AgentAppProtocol, event) -> None:
         logger.info(f"Status: {event.message}")
         self._update_status_text(event.message)
-        self.notify(event.message, timeout=3)
+        self.notify(str(event.message), timeout=3, markup=False)
 
     @on(RoleTransitionEvent)
     async def handle_role_transition(self: AgentAppProtocol, event) -> None:
@@ -256,7 +257,7 @@ class AppStatusHandlersMixin(AgentAppProtocol):
     async def handle_task_escalated(self: AgentAppProtocol, event) -> None:
         logger.warning(f"Task escalated: {event.task_id} - {event.reason}")
         widget = Static(
-            f"[bold #ff5555]Escalation:[/] Task {event.task_id} — {event.reason} (retry {event.retry_count})",
+            f"[bold #ff5555]Escalation:[/] Task {escape(str(event.task_id))} — {escape(str(event.reason))} (retry {event.retry_count})",
             classes="error_msg",
             markup=True,
         )

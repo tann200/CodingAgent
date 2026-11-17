@@ -70,28 +70,19 @@ def _get_hf_tokenizer(model_hint: Optional[str]) -> Optional[Any]:
     if m in _HF_TOKENIZERS:
         return _HF_TOKENIZERS[m]
 
-    # Try to load
+    # Try to load strictly from local cache only (never execute remote code or
+    # block on HuggingFace Hub downloads).
     tokenizer = None
     try:
         from transformers import AutoTokenizer  # type: ignore[import]
 
         try:
             tokenizer = AutoTokenizer.from_pretrained(
-                f"models/{model_hint}",  # Local model path
+                f"models/{model_hint}",
                 local_files_only=True,
             )
         except Exception:
             pass
-
-        if tokenizer is None:
-            # Try from HuggingFace Hub (requires internet)
-            try:
-                tokenizer = AutoTokenizer.from_pretrained(
-                    _hf_model_name(model_hint),
-                    trust_remote_code=True,
-                )
-            except Exception:
-                pass
     except Exception:
         pass
 

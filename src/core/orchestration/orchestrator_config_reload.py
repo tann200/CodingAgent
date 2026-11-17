@@ -113,6 +113,23 @@ def _on_config_reloaded(orch: Any, changed_paths: Optional[set]) -> None:
                                 asyncio.run(res)
                     except Exception as mcp_exc:
                         guilogger.debug("MCP tools re-registration failed: %s", mcp_exc)
+
+                # Re-apply active CLI permission context, bind orchestrator, and update execution service
+                try:
+                    from src.tools.permission_context import _ACTIVE_CONTEXT as _pctx
+                    from src.core.orchestration.tool_registry import ToolRegistry as _CoreTR
+
+                    if _pctx is not None and not _pctx.is_empty():
+                        _filtered = _pctx.filter_registry(orch.tool_registry)
+                        if isinstance(_filtered, _CoreTR):
+                            orch.tool_registry = _filtered
+                except Exception:
+                    pass
+                if hasattr(orch.tool_registry, "set_orchestrator"):
+                    orch.tool_registry.set_orchestrator(orch)
+                _tes = getattr(orch, "tool_execution_service", None)
+                if _tes is not None and hasattr(_tes, "_registry"):
+                    _tes._registry = orch.tool_registry
         except Exception:
             guilogger.warning(
                 "Failed to rebuild tool registry during config reload"

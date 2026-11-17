@@ -101,6 +101,7 @@ TYPED_EVENT_ROUTING: list[tuple[str, str]] = [
     ("McpServerStatus", "_on_mcp_server_status"),
     ("ToolPermissionRequired", "_on_tool_permission_required"),
     ("SpawnPermissionRequired", "_on_spawn_permission_required"),
+    ("BashApprovalRequired", "_on_bash_approval_required"),
     ("UsageTurnSummary", "_on_usage_turn_summary"),
     ("UsageSubagentCost", "_on_subagent_cost"),
     ("ToolDoomLoopDetected", "_on_doom_loop_detected"),

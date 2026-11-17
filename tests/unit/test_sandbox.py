@@ -100,6 +100,7 @@ class TestRunSandboxedRouting:
         # Just verify the function runs without error when sandbox-exc is available
         with patch.object(sbox, "_bwrap_available", return_value=False), \
              patch.object(sbox, "_sandbox_exec_available", return_value=True), \
+             patch.object(sbox, "sandbox_exec_enforced", return_value=True), \
              patch.object(sbox, "_write_sandbox_exc_profile", return_value=fake_profile), \
              patch("src.tools.sandbox.subprocess.run", side_effect=_mock_success):
             # Should not raise

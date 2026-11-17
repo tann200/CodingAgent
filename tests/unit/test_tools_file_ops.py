@@ -43,6 +43,7 @@ def test_edit_file(tmp_path):
 
 
 def test_get_git_diff_mock(monkeypatch):
+    monkeypatch.setenv("CODINGAGENT_SANDBOX_ALLOW_UNENFORCED", "1")
     # monkeypatch subprocess.run used in system_tools.get_git_diff to avoid depending on local git state
     class DummyProc:
         def __init__(self):

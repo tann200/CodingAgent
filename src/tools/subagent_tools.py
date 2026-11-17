@@ -506,11 +506,10 @@ def delegate_task(
     if _input_err:
         return _input_err
 
-    workdir = working_dir or "."
-    workdir_path = Path(workdir).resolve()
-
     parent_orchestrator = _PARENT_ORCHESTRATOR_VAR.get(None)
     _parent_wd_raw = getattr(parent_orchestrator, "working_dir", None)
+    workdir = working_dir or (str(_parent_wd_raw) if _parent_wd_raw else ".")
+    workdir_path = Path(workdir).resolve()
     if parent_orchestrator is not None and isinstance(_parent_wd_raw, (str, Path)) and _parent_wd_raw:
         parent_wd = Path(_parent_wd_raw).resolve()
         if not workdir_path.is_relative_to(parent_wd):
@@ -622,7 +621,6 @@ def delegate_task(
                         allowed_tools=_effective_allowed,
                         denied_tools=_effective_denied,
                     )
-                    parent_orchestrator.active_agent = _child_agent
                     _agent_token = _ACTIVE_AGENT_CTX.set(_child_agent)
                 _active_orchestrator = parent_orchestrator
             except Exception as _e:
@@ -803,10 +801,6 @@ def delegate_task(
                     _ACTIVE_AGENT_CTX.reset(_agent_token)
                 except Exception:
                     pass
-            # FAULT-07 fix: reset active_agent on parent orchestrator if it still matches this child agent
-            if _use_full_pipeline and parent_orchestrator is not None:
-                if getattr(parent_orchestrator, "active_agent", None) is _child_agent:
-                    parent_orchestrator.active_agent = None
 
         # SPAWN-W3: Persist child session in SessionStore so it's queryable later.
         if parent_session_id is not None:

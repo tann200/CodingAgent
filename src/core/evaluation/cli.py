@@ -261,6 +261,7 @@ def _cmd_run(args: argparse.Namespace) -> int:
         )
         print("\nBaseline comparison:")
         print(f"  regressed: {comparison['regressed'] or 'none'}")
+        print(f"  missing  : {comparison.get('missing') or 'none'}")
         print(f"  improved : {comparison['improved'] or 'none'}")
         if comparison["got_regressions"]:
             print("  -> REGRESSION DETECTED (exit 1)")
@@ -375,6 +376,7 @@ def _cmd_swebench(args: argparse.Namespace) -> int:
         comparison = regression.compare_baseline(baseline, results)
         print("\nBaseline comparison:")
         print(f"  regressed: {comparison['regressed'] or 'none'}")
+        print(f"  missing  : {comparison.get('missing') or 'none'}")
         print(f"  improved : {comparison['improved'] or 'none'}")
         if comparison["got_regressions"]:
             print("  -> REGRESSION DETECTED (exit 1)")

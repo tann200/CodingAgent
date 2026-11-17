@@ -923,7 +923,7 @@ class ProviderManager(ProviderManagerProtocol):
             lock=_providers_json_lock,  # type: ignore[arg-type]
         )
 
-    async def initialize(self, force: bool = False):
+    async def initialize(self, force: bool = False, probe: bool = True):
         if self._initialized and not force:
             return
         with self._init_lock:
@@ -947,6 +947,7 @@ class ProviderManager(ProviderManagerProtocol):
 
                 raw = json.loads(cfg.read_text(encoding="utf-8"))
                 providers = _load_provider_entries(raw)
+                self._last_loaded_providers = providers
                 _load_registered_providers(
                     providers=providers,
                     providers_map=self._providers,
@@ -967,46 +968,58 @@ class ProviderManager(ProviderManagerProtocol):
                     logger=guilogger,
                 )
 
-                _run_provider_probe_cycle(
-                    providers=providers,
-                    providers_map=self._providers,
-                    provider_models_cache=self._models_cache,
-                    module_models_cache=_MODEL_CACHE,
-                    module_models_cache_time=_MODEL_CACHE_TIME,
-                    model_cache_lock=_MODEL_CACHE_LOCK,  # type: ignore[arg-type]
-                    now=time.time,
-                    event_bus=self._event_bus,
-                    canonical_provider=canonical_provider,
-                    should_probe_provider_fn=_should_probe_provider,
-                    determine_explicit_status_fn=_determine_explicit_status,
-                    probe_adapter_models_fn=lambda **kwargs: _probe_adapter_models(
-                        extract_models_from_api_response=lambda response: _extract_models_from_api_response(
-                            response,
-                            valid_str=_valid_str,
-                        ),
-                        normalize_lmstudio_models=lambda items: [
-                            _lmstudio_full_id(x) for x in items
-                        ],
-                        **kwargs,
-                    ),
-                    cache_probed_models_fn=_cache_probed_models,
-                    publish_provider_probe_events_fn=_publish_provider_probe_events,
-                    publish_unknown_provider_status_fn=_publish_unknown_provider_status,
-                    logger=guilogger,
-                    get_loaded_context_length_fn=lambda adapter, active_model: adapter.get_loaded_context_length(
-                        active_model
-                    )
-                    if hasattr(adapter, "get_loaded_context_length")
-                    else None,
-                    set_active_context_length_fn=lambda context_length, provider_key="": _set_active_context_length_lazy(context_length, provider_key),
-                    is_active_provider_fn=lambda provider_key, provider_config: bool(
-                        provider_config and provider_config.get("active")
-                    ),
-                )
+                if probe:
+                    self.probe_providers(providers)
 
             except Exception as e:
                 guilogger.error(f"ProviderManager.initialize error: {e}")
             self._initialized = True
+
+    def probe_providers(self, providers: Optional[List[Dict[str, Any]]] = None) -> None:
+        """Run the HTTP probe cycle for loaded providers (safe to run in a worker thread)."""
+        entries = providers if providers is not None else getattr(self, "_last_loaded_providers", None)
+        if entries is None:
+            cfg = resolve_config_path(self.providers_config_path)
+            if not cfg.exists():
+                return
+            raw = json.loads(cfg.read_text(encoding="utf-8"))
+            entries = _load_provider_entries(raw)
+        _run_provider_probe_cycle(
+            providers=entries,
+            providers_map=self._providers,
+            provider_models_cache=self._models_cache,
+            module_models_cache=_MODEL_CACHE,
+            module_models_cache_time=_MODEL_CACHE_TIME,
+            model_cache_lock=_MODEL_CACHE_LOCK,  # type: ignore[arg-type]
+            now=time.time,
+            event_bus=self._event_bus,
+            canonical_provider=canonical_provider,
+            should_probe_provider_fn=_should_probe_provider,
+            determine_explicit_status_fn=_determine_explicit_status,
+            probe_adapter_models_fn=lambda **kwargs: _probe_adapter_models(
+                extract_models_from_api_response=lambda response: _extract_models_from_api_response(
+                    response,
+                    valid_str=_valid_str,
+                ),
+                normalize_lmstudio_models=lambda items: [
+                    _lmstudio_full_id(x) for x in items
+                ],
+                **kwargs,
+            ),
+            cache_probed_models_fn=_cache_probed_models,
+            publish_provider_probe_events_fn=_publish_provider_probe_events,
+            publish_unknown_provider_status_fn=_publish_unknown_provider_status,
+            logger=guilogger,
+            get_loaded_context_length_fn=lambda adapter, active_model: adapter.get_loaded_context_length(
+                active_model
+            )
+            if hasattr(adapter, "get_loaded_context_length")
+            else None,
+            set_active_context_length_fn=lambda context_length, provider_key="": _set_active_context_length_lazy(context_length, provider_key),
+            is_active_provider_fn=lambda provider_key, provider_config: bool(
+                provider_config and provider_config.get("active")
+            ),
+        )
 
     async def reload(self) -> None:
         """Force reloading providers.json even if already initialized."""
@@ -1045,7 +1058,7 @@ _INIT_TASK: "asyncio.Task | None" = None  # held so GC cannot collect it (NEW-11
 _INIT_TASK_LOCK = _threading.Lock()
 
 
-def _ensure_provider_manager_initialized_sync():
+def _ensure_provider_manager_initialized_sync(probe: bool = True):
     global _INIT_TASK
     # BUG-FIX #1: check already initialized before spawning task
     if _provider_manager._initialized:
@@ -1062,7 +1075,12 @@ def _ensure_provider_manager_initialized_sync():
                 return
             # Store the task so it is not garbage-collected before it completes.
             # Exceptions are logged via the done-callback.
-            _INIT_TASK = asyncio.create_task(_provider_manager.initialize())
+            _init_coro = (
+                _provider_manager.initialize()
+                if probe
+                else _provider_manager.initialize(probe=False)
+            )
+            _INIT_TASK = asyncio.create_task(_init_coro)
 
         def _log_init_exc(t: "asyncio.Task") -> None:
             if not t.cancelled() and t.exception():
@@ -1082,7 +1100,12 @@ def _ensure_provider_manager_initialized_sync():
         _INIT_TASK.add_done_callback(_clear_init_task)
     else:
         try:
-            asyncio.run(_provider_manager.initialize())
+            _init_coro = (
+                _provider_manager.initialize()
+                if probe
+                else _provider_manager.initialize(probe=False)
+            )
+            asyncio.run(_init_coro)
         except Exception:
             pass
 
@@ -1270,9 +1293,9 @@ class CircuitBreaker:
             return False
 
     def is_open(self) -> bool:
-        """Return True when the breaker will reject the next call."""
+        """Return True when the breaker will reject the next call (read-only)."""
         with self._lock:
-            return self._current_state() == self.OPEN
+            return self._current_state() == self.OPEN or self._probe_in_flight
 
     def record_success(self) -> None:
         with self._lock:
@@ -1291,13 +1314,10 @@ class CircuitBreaker:
     # -- internal -----------------------------------------------------------
 
     def _current_state(self) -> str:
+        """Return logical circuit state without mutating _state or _probe_in_flight."""
         if self._state == self.OPEN:
             if time.time() - self._opened_at >= self.recovery_timeout:
-                if not self._probe_in_flight:
-                    self._state = self.HALF_OPEN
-                    self._probe_in_flight = True
-                    return self.HALF_OPEN
-                return self.OPEN
+                return self.HALF_OPEN
         return self._state
 
 
@@ -1363,6 +1383,7 @@ def _consume_sse_stream(raw_response: Any, model: Optional[str] = None) -> str:
 
     turn_acc = StreamedTurnAccumulator()
     utf8_carry = bytearray()
+    tag_buffer: List[str] = []
 
     def _publish_chunk(chunk: str, is_reasoning: bool) -> None:
         if is_reasoning and chunk:
@@ -1399,6 +1420,7 @@ def _consume_sse_stream(raw_response: Any, model: Optional[str] = None) -> str:
                     inside_think=_inside_think,
                     tag_split_enabled=_tag_split_enabled,
                     publish_chunk=_publish_chunk,
+                    tag_buffer=tag_buffer,
                 )
                 if prepublished_text:
                     accumulated.extend(prepublished_text)
@@ -1420,6 +1442,15 @@ def _consume_sse_stream(raw_response: Any, model: Optional[str] = None) -> str:
             if token_text:
                 accumulated.append(token_text)
                 _publish_chunk(token_text, False)
+        if tag_buffer:
+            trailing = "".join(tag_buffer)
+            tag_buffer.clear()
+            if trailing:
+                if _inside_think:
+                    _publish_chunk(trailing, True)
+                else:
+                    accumulated.append(trailing)
+                    _publish_chunk(trailing, False)
     except Exception as e:
         guilogger.warning(f"_consume_sse_stream: stream iteration error: {e}")
 

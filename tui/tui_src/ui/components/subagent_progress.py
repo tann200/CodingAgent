@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from rich.markup import escape
 from textual.message import Message
 from textual.widgets import Static
 
@@ -59,7 +60,7 @@ class SubagentProgress(Static):
 
     def _render_frame(self) -> str:
         frame = _FRAMES[self._frame_idx % len(_FRAMES)]
-        return f"[bold #a78bfa]{frame} {self._role}[/] — {self._task_preview}"
+        return f"[bold #a78bfa]{frame} {escape(self._role)}[/] — {escape(self._task_preview)}"
 
     def _tick(self) -> None:
         if self._finished:
@@ -81,7 +82,7 @@ class SubagentProgress(Static):
         self.add_class(css_class)
         hint = "  [dim](click to view)[/]" if self._child_session_id else ""
         self.update(
-            f"[bold {color}]{icon} {self._role}[/] — {self._task_preview}{hint}"
+            f"[bold {color}]{icon} {escape(self._role)}[/] — {escape(self._task_preview)}{hint}"
         )
 
     def on_click(self) -> None:

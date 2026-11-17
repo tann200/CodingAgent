@@ -55,6 +55,7 @@ import time
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from rich.markup import escape
 from textual.containers import Horizontal, VerticalScroll
 from textual.widgets import Button, Static
 
@@ -108,9 +109,18 @@ class ChatDisplayMixin(AgentAppProtocol):
         await container.mount(widget)
         container.scroll_end(animate=False)
 
-    def _finalize_stream(self: AgentAppProtocol) -> None:
+    def _finalize_stream(self: AgentAppProtocol, *, detach: bool = False) -> None:
         """Tear down the current stream widget and update the status bar."""
         if self._current_stream is not None:
+            stream_view = self._current_stream
+            if detach:
+                stream_view._detached = True
+                try:
+                    stream_view.remove()
+                except Exception:
+                    pass
+                if getattr(self, "_active_stream_view", None) is stream_view:
+                    self._active_stream_view = None
             self._current_stream = None
             self.is_streaming = False
             self._update_status_bar()  # provided by StatusBarMixin at runtime
@@ -139,7 +149,14 @@ class ChatDisplayMixin(AgentAppProtocol):
 
     def _clear_chat_panel(self: AgentAppProtocol) -> None:
         """Clear the stream, tool widget caches, and all chat log children."""
-        self._finalize_stream()
+        self._finalize_stream(detach=True)
+        if getattr(self, "_active_stream_view", None) is not None:
+            try:
+                self._active_stream_view._detached = True
+                self._active_stream_view.remove()
+            except Exception:
+                pass
+            self._active_stream_view = None
         self._tool_widgets = {}
         self._tool_args = {}
         try:
@@ -166,6 +183,10 @@ class ChatDisplayMixin(AgentAppProtocol):
             wd = Path(target_wd)
             all_files: list[str] = []
             for root, dirs, fnames in os.walk(str(wd)):
+                rel_root = os.path.relpath(root, str(wd))
+                if rel_root != "." and rel_root.count(os.sep) >= 6:
+                    dirs[:] = []
+                    continue
                 dirs[:] = [d for d in dirs if d not in _AT_SKIP_DIRS]
                 for fname in fnames:
                     all_files.append(
@@ -193,14 +214,13 @@ class ChatDisplayMixin(AgentAppProtocol):
 
             if not self._at_file_cache:
                 try:
-                    self._at_file_cache = _scan_files(wd_path)
-                    self._at_file_cache_ts = now
+                    self._at_file_cache = sorted([
+                        p.name for p in Path(wd_path).iterdir()
+                        if p.name not in _AT_SKIP_DIRS and not p.name.startswith(".")
+                    ])
                 except Exception:
                     self._at_file_cache = []
-                finally:
-                    self._at_file_scanning = False
-            else:
-                threading.Thread(target=_bg_worker, args=(wd_path,), daemon=True).start()
+            threading.Thread(target=_bg_worker, args=(wd_path,), daemon=True).start()
 
         if not query:
             return self._at_file_cache[:max_results]
@@ -356,11 +376,11 @@ class ChatDisplayMixin(AgentAppProtocol):
         await self._mount_chat_widget(artifact)
 
     async def _chat_handle_error(self: AgentAppProtocol, event) -> None:
+        self._finalize_stream(detach=True)
         self._active_stream_view = None
-        self._finalize_stream()
         logger.error(f"Worker error: {event.message}")
         widget = Static(
-            f"[bold red]✗ Error:[/] {event.message}",
+            f"[bold red]✗ Error:[/] {escape(str(event.message))}",
             classes="error_msg",
             markup=True,
         )
@@ -377,7 +397,7 @@ class ChatDisplayMixin(AgentAppProtocol):
             return
         footer_text = "  ".join(parts)
         widget = Static(
-            f"[dim #555555]  ↳ {footer_text}[/]",
+            f"[dim #555555]  ↳ {escape(footer_text)}[/]",
             classes="usage_footer",
             markup=True,
         )
@@ -385,25 +405,31 @@ class ChatDisplayMixin(AgentAppProtocol):
 
     async def _chat_handle_doom_loop(self: AgentAppProtocol, event) -> None:
         """Show a confirmation dialog when the agent is stuck in a repeating loop."""
+        from tui.tui_src.ui._app_tool_handlers_mixin import AppToolHandlersMixin
+
         logger.warning(
             f"Doom-loop detected: tool={event.tool_name!r}  count={event.count}"
         )
         chat_log = self.query_one("#chat_log", VerticalScroll)
         warn = Static(
-            f"[bold #ff5555]⚠ Loop detected:[/] [bold]{event.tool_name}[/] "
+            f"[bold #ff5555]⚠ Loop detected:[/] [bold]{escape(str(event.tool_name))}[/] "
             f"called {event.count}× with identical arguments.",
             classes="retry_msg",
             markup=True,
         )
         await chat_log.mount(warn)
-        tid = event.tool_id or f"doom_{event.fingerprint[:8]}"
-        row = Horizontal(id=f"doom_row_{tid}", classes="approval_row")
+        raw_tid = str(event.tool_id or f"doom_{event.fingerprint[:8]}")
+        safe_tid = AppToolHandlersMixin._safe_dom_id(raw_tid)
+        if not hasattr(self, "_perm_raw_ids") or not isinstance(getattr(self, "_perm_raw_ids", None), dict):
+            self._perm_raw_ids = {}  # type: ignore[attr-defined]
+        self._perm_raw_ids[safe_tid] = raw_tid
+        row = Horizontal(id=f"doom_row_{safe_tid}", classes="approval_row")
         await chat_log.mount(row)
         await row.mount(
-            Button("Continue anyway", id=f"btn_doom_allow_{tid}", variant="warning")
+            Button("Continue anyway", id=f"btn_doom_allow_{safe_tid}", variant="warning")
         )
         await row.mount(
-            Button("Stop agent", id=f"btn_doom_deny_{tid}", variant="error")
+            Button("Stop agent", id=f"btn_doom_deny_{safe_tid}", variant="error")
         )
         chat_log.scroll_end(animate=False)
         self._prune_chat_log()
@@ -452,7 +478,7 @@ class ChatDisplayMixin(AgentAppProtocol):
         color_map = {"error": "#ff5555", "warning": "#facc15", "info": "#3b82f6"}
         color = color_map.get(event.level, "#888888")
         widget = Static(
-            f"[bold {color}]⚠ {event.title}:[/] {event.message}",
+            f"[bold {color}]⚠ {escape(str(event.title))}:[/] {escape(str(event.message))}",
             classes="retry_msg",
             markup=True,
         )
@@ -469,9 +495,9 @@ class ChatDisplayMixin(AgentAppProtocol):
 
     async def _chat_handle_context_degraded(self: AgentAppProtocol, event) -> None:
         logger.warning(f"Context degraded: {event.reason}")
-        self.notify(f"Context degraded: {event.reason}", severity="warning")
+        self.notify(f"Context degraded: {event.reason}", severity="warning", markup=False)
         w = Static(
-            f"[bold #facc15]⚠ Context degraded:[/] {event.reason}"
+            f"[bold #facc15]⚠ Context degraded:[/] {escape(str(event.reason))}"
             + (
                 f"  (target window: {event.target_window:,})"
                 if event.target_window
@@ -486,10 +512,10 @@ class ChatDisplayMixin(AgentAppProtocol):
         logger.warning(
             f"Retry {event.attempt_number}/{event.max_attempts}: {event.error_type}"
         )
-        prov = f"  [{event.provider}]" if event.provider else ""
+        prov = f"  [{escape(str(event.provider))}]" if event.provider else ""
         w = Static(
             f"[bold #facc15]↻ Retry {event.attempt_number}/{event.max_attempts}:[/] "
-            f"{event.error_type}{prov}",
+            f"{escape(str(event.error_type))}{prov}",
             classes="retry_msg",
             markup=True,
         )
@@ -497,7 +523,7 @@ class ChatDisplayMixin(AgentAppProtocol):
 
     async def _chat_handle_retry_succeeded(self: AgentAppProtocol, event) -> None:
         logger.info(f"Retry succeeded on attempt {event.attempt_number}")
-        prov = f"  [{event.provider}]" if event.provider else ""
+        prov = f"  [{escape(str(event.provider))}]" if event.provider else ""
         w = Static(
             f"[bold #22c55e]✓ Retry succeeded[/] on attempt {event.attempt_number}{prov}",
             classes="retry_msg",
@@ -507,11 +533,11 @@ class ChatDisplayMixin(AgentAppProtocol):
 
     async def _chat_handle_retry_failed(self: AgentAppProtocol, event) -> None:
         logger.error(f"All retries failed: {event.error_type}")
-        self.notify("All retry attempts failed", severity="error")
-        prov = f"  [{event.provider}]" if event.provider else ""
+        self.notify("All retry attempts failed", severity="error", markup=False)
+        prov = f"  [{escape(str(event.provider))}]" if event.provider else ""
         w = Static(
             f"[bold #ff5555]✗ All {event.total_attempts} retries failed:[/] "
-            f"{event.error_type}{prov}",
+            f"{escape(str(event.error_type))}{prov}",
             classes="retry_msg",
             markup=True,
         )

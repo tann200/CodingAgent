@@ -24,6 +24,17 @@ def inc_corrective_prompt_counter(reason: str | None, model_tier: str | None) ->
         _CORRECTIVE_PROMPT_COUNTERS[key] = _CORRECTIVE_PROMPT_COUNTERS.get(key, 0) + 1
 
 
+def _escape_prom_label(value: object) -> str:
+    """Escape backslashes, quotes, and newlines for Prometheus label values."""
+    return (
+        str(value)
+        .replace("\\", "\\\\")
+        .replace('"', '\\"')
+        .replace("\n", "\\n")
+        .replace("\r", "\\r")
+    )
+
+
 def format_metrics_text() -> str:
     lines = [
         "# HELP codingagent_corrective_prompts_total Total corrective prompts issued",
@@ -34,8 +45,8 @@ def format_metrics_text() -> str:
         items = list(_CORRECTIVE_PROMPT_COUNTERS.items())
     for (reason, tier), val in items:
         total += val
-        reason_s = str(reason).replace('"', '\\"')
-        tier_s = str(tier).replace('"', '\\"')
+        reason_s = _escape_prom_label(reason)
+        tier_s = _escape_prom_label(tier)
         lines.append(
             f'codingagent_corrective_prompts_total{{reason="{reason_s}",model_tier="{tier_s}"}} {val}'
         )
@@ -51,7 +62,7 @@ def format_metrics_text() -> str:
     dropped_total = 0
     for ename, val in dropped_items:
         dropped_total += val
-        ename_s = str(ename).replace('"', '\\"')
+        ename_s = _escape_prom_label(ename)
         lines.append(f'codingagent_sse_events_dropped_total{{event="{ename_s}"}} {val}')
     lines.append(f"codingagent_sse_events_dropped_total {dropped_total}")
 
@@ -63,8 +74,8 @@ def format_metrics_text() -> str:
     with _METRICS_LOCK:
         client_items = list(_CLIENT_DROPPED_EVENT_COUNTERS.items())
     for (sid, ename), val in client_items:
-        sid_s = str(sid).replace('"', '\\"')
-        ename_s = str(ename).replace('"', '\\"')
+        sid_s = _escape_prom_label(sid)
+        ename_s = _escape_prom_label(ename)
         lines.append(
             f'codingagent_sse_events_dropped_per_client_total{{session_id="{sid_s}",event="{ename_s}"}} {val}'
         )
@@ -77,7 +88,7 @@ def format_metrics_text() -> str:
     with _METRICS_LOCK:
         a_items = list(_ADMIN_AUTH_COUNTERS.items())
     for k, v in a_items:
-        k_s = str(k).replace('"', '\\"')
+        k_s = _escape_prom_label(k)
         lines.append(f'codingagent_admin_auth_total{{type="{k_s}"}} {v}')
     total_auth = sum(v for _, v in a_items)
     lines.append(f"codingagent_admin_auth_total {total_auth}")

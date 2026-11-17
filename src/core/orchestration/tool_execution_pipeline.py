@@ -305,8 +305,9 @@ def _check_read_before_write(
                 "last_result": {"ok": False, "error": err_msg},
                 "next_action": None,
             }
-    except Exception:
-        pass
+    except Exception as exc:
+        logger.error("read-before-write security check failed for %r: %s", name, exc)
+        return {"ok": False, "error": f"Security check (read-before-write) failed closed: {exc}"}
     return None
 
 
@@ -376,8 +377,9 @@ def _check_workspace_scope_guard(
                     "Use ask_user to confirm expanding the scope."
                 ),
             }
-    except Exception:
-        pass
+    except Exception as exc:
+        logger.error("workspace scope security check failed for %r: %s", name, exc)
+        return {"ok": False, "error": f"Security check (workspace-scope) failed closed: {exc}"}
     return None
 
 
@@ -401,8 +403,9 @@ def _check_plan_mode_guard(orch: Any, name: str) -> Optional[Dict[str, Any]]:
                         "approved yet. Await user approval before making file changes."
                     ),
                 }
-    except Exception:
-        pass
+    except Exception as exc:
+        logger.error("plan mode security check failed for %r: %s", name, exc)
+        return {"ok": False, "error": f"Security check (plan-mode) failed closed: {exc}"}
     return None
 
 
@@ -423,8 +426,9 @@ def _check_explore_mode_guard(orch: Any, name: str) -> Optional[Dict[str, Any]]:
                     "find_symbol, bash, etc.) are allowed in explore mode."
                 ),
             }
-    except Exception:
-        pass
+    except Exception as exc:
+        logger.error("explore mode security check failed for %r: %s", name, exc)
+        return {"ok": False, "error": f"Security check (explore-mode) failed closed: {exc}"}
     return None
 
 
@@ -462,8 +466,9 @@ def _check_permission_mode_guard(orch: Any, name: str) -> Optional[Dict[str, Any
                         f"but active permission mode is '{active_mode.value}'."
                     ),
                 }
-    except Exception:
-        pass
+    except Exception as exc:
+        logger.error("permission mode security check failed for %r: %s", name, exc)
+        return {"ok": False, "error": f"Security check (permission-mode) failed closed: {exc}"}
     return None
 
 
@@ -505,11 +510,6 @@ def _check_workdir_confinement(orch: Any, name: str, args: dict) -> bool:
         if wd_key in args and args[wd_key]:
             if not _inside(args[wd_key]):
                 return True
-
-    if name in ("bash", "run_tests", "run_bash"):
-        if _inside(args.get("workdir", workdir_path)):
-            return False
-        return True
 
     if name == "delete_file":
         # HS-5 / SEC-8: deletion is irreversible, so it must NEVER be blindly
@@ -557,8 +557,18 @@ def _run_preflight_and_lookup(
             None,
         )
 
-    # E-05: 'name' was already validated above; re-fetching from tool_call is a
-    # no-op and could silently swap the name after guard checks ran against it.
+    if isinstance(preflight, dict):
+        corrected = preflight.get("corrected_name")
+        if isinstance(corrected, str) and corrected and corrected != name:
+            try:
+                from src.tools.tools_config import resolve_tool_alias
+
+                corrected = resolve_tool_alias(corrected)
+            except Exception:
+                pass
+            name = corrected
+            tool_call["_resolved_name"] = corrected
+
     tool = orch.tool_registry.get(name)
     if not tool:
         return {"ok": False, "error": f"Tool '{name}' not found."}, None
@@ -689,12 +699,16 @@ def _run_sandbox_and_snapshot(
                 elif p_str.endswith((".js", ".mjs", ".cjs")):
                     import subprocess as _sp
                     import tempfile as _tf
+                    from src.tools.sandbox import run_sandboxed as _run_sandboxed
 
                     try:
-                        node = _sp.run(
+                        _wd = Path(getattr(orch, "working_dir", None) or ".")
+                        node = _run_sandboxed(
                             ["node", "--version"],
+                            cwd=_wd,
                             capture_output=True,
                             timeout=3,
+                            network=False,
                         )
                         if node.returncode == 0:
                             tmp_path = None
@@ -707,11 +721,13 @@ def _run_sandbox_and_snapshot(
                                 tmp.write(new_content)
                                 tmp_path = tmp.name
                             try:
-                                check = _sp.run(
+                                check = _run_sandboxed(
                                     ["node", "--check", tmp_path],
+                                    cwd=Path(tmp_path).parent,
                                     capture_output=True,
                                     text=True,
                                     timeout=10,
+                                    network=False,
                                 )
                                 if check.returncode != 0:
                                     err = (
@@ -738,8 +754,8 @@ def _run_sandbox_and_snapshot(
                     # SPEC-P1.1: Validate TypeScript only if tsc is directly available on PATH;
                     # do NOT force node --check with .js suffix which fails on valid TS types/interfaces.
                     import shutil as _shutil
-                    import subprocess as _sp
                     import tempfile as _tf
+                    from src.tools.sandbox import run_sandboxed as _run_sandboxed
 
                     tsc_bin = _shutil.which("tsc")
                     if tsc_bin:
@@ -754,7 +770,7 @@ def _run_sandbox_and_snapshot(
                             ) as tmp:
                                 tmp.write(new_content)
                                 tmp_path = tmp.name
-                            check = _sp.run(
+                            check = _run_sandboxed(
                                 [
                                     tsc_bin,
                                     "--noEmit",
@@ -763,9 +779,11 @@ def _run_sandbox_and_snapshot(
                                     "es2020",
                                     tmp_path,
                                 ],
+                                cwd=Path(tmp_path).parent,
                                 capture_output=True,
                                 text=True,
                                 timeout=10,
+                                network=False,
                             )
                             if check.returncode != 0:
                                 err = (check.stdout or check.stderr or "syntax error").strip()
@@ -1166,11 +1184,16 @@ def _run_post_execution(
     try:
         schema = get_tool_contract(name)
         if schema and isinstance(res, dict):
+            output_schema = (
+                getattr(schema, "output_model", schema)
+                if isinstance(schema, type)
+                else schema
+            )
             try:
-                schema.model_validate(res)
+                output_schema.model_validate(res)
             except ValidationError:
                 try:
-                    schema.model_validate(res.get("result") or {})
+                    output_schema.model_validate(res.get("result") or {})
                 except ValidationError as ve:
                     return {
                         "ok": False,
@@ -1470,6 +1493,19 @@ def execute_tool_impl(orch: Any, tool_call: Dict[str, Any]) -> Dict[str, Any]:
     if preflight_err is not None:
         return preflight_err
 
+    resolved_name = tool_call.pop("_resolved_name", None) if isinstance(tool_call, dict) else None
+    if isinstance(resolved_name, str) and resolved_name and resolved_name != name:
+        name = resolved_name
+        for _guard in (
+            _check_read_before_write(orch, name, args, WRITE_TOOLS_REQUIRING_READ),
+            _check_workspace_scope_guard(orch, name, args, WRITE_TOOLS_REQUIRING_READ),
+            _check_plan_mode_guard(orch, name),
+            _check_explore_mode_guard(orch, name),
+            _check_permission_mode_guard(orch, name),
+        ):
+            if _guard is not None:
+                return _guard
+
     try:
         _write_permission_audit(
             orch.working_dir, name, args, "allow", "passed_all_gates"
@@ -1490,8 +1526,13 @@ def execute_tool_impl(orch: Any, tool_call: Dict[str, Any]) -> Dict[str, Any]:
     try:
         contract = get_tool_contract(name)
         if contract is not None:
+            input_contract = (
+                getattr(contract, "input_model", contract)
+                if isinstance(contract, type)
+                else contract
+            )
             try:
-                contract.model_validate(args)
+                input_contract.model_validate(args)
             except ValidationError as ve:
                 return {
                     "ok": False,
@@ -1539,9 +1580,13 @@ def execute_tool_impl(orch: Any, tool_call: Dict[str, Any]) -> Dict[str, Any]:
     try:
         hook_runner = getattr(orch, "_tool_hook_runner", None)
         if hook_runner is None:
+            from src.core.orchestration.deferred_init import is_trusted
             from src.core.orchestration.tool_hooks import ToolHookRunner
 
-            hook_runner = ToolHookRunner(working_dir=orch.working_dir)
+            hook_runner = ToolHookRunner(
+                working_dir=orch.working_dir,
+                trusted=is_trusted(orch),
+            )
             orch._tool_hook_runner = hook_runner
         hook_result = hook_runner.run_pre(name, args)
         if not hook_result.allowed:
@@ -1710,11 +1755,22 @@ def _run_permission_gate(
     try:
         gate_event = register_tool_gate(tool_call_id)
         if name == "delegate_task":
-            try:
-                orch.event_bus.publish_typed(SpawnPermissionRequired(tool=name, role=args.get("role", ""), task=str(args.get("subtask_description", ""))[:200], tool_id=tool_call_id))
-            except Exception:
-                pass
-        orch.event_bus.publish_typed(ToolPermissionRequired(tool=name, args={k: str(v)[:200] for k, v in args.items() if k != "content"}, tool_id=tool_call_id))
+            orch.event_bus.publish_typed(
+                SpawnPermissionRequired(
+                    tool=name,
+                    role=args.get("role", ""),
+                    task=str(args.get("subtask_description", ""))[:200],
+                    tool_id=tool_call_id,
+                )
+            )
+        else:
+            orch.event_bus.publish_typed(
+                ToolPermissionRequired(
+                    tool=name,
+                    args={k: str(v)[:200] for k, v in args.items() if k != "content"},
+                    tool_id=tool_call_id,
+                )
+            )
     except Exception as perm_exc:
         guilogger.error(f"Permission gate error for '{name}' (fail-closed): {perm_exc}")
         return {"ok": False, "error": f"Permission gate unavailable for '{name}'."}

@@ -74,6 +74,18 @@ logger = logging.getLogger(__name__)
 _ROTATION_BYTES: int = 256 * 1024  # 256 KB
 
 
+_SESSION_ID_RE = re.compile(r"^[A-Za-z0-9._-]+$")
+
+
+def _validate_session_id(session_id: str) -> str:
+    """Validate session_id to prevent path traversal outside sessions directory."""
+    if not session_id:
+        return "unknown"
+    if not isinstance(session_id, str) or ".." in session_id or not _SESSION_ID_RE.match(session_id):
+        raise ValueError(f"Invalid session_id: {session_id!r}")
+    return session_id
+
+
 def _utc_now() -> str:
     """Return the current UTC timestamp as an ISO-8601 string."""
     return datetime.now(timezone.utc).isoformat()
@@ -147,10 +159,11 @@ class JsonlSessionStore:
 
     def _session_lock(self, session_id: str) -> threading.Lock:
         """Return (creating if necessary) the per-session write lock."""
+        sid = _validate_session_id(session_id)
         with self._locks_lock:
-            if session_id not in self._locks:
-                self._locks[session_id] = threading.Lock()
-            return self._locks[session_id]
+            if sid not in self._locks:
+                self._locks[sid] = threading.Lock()
+            return self._locks[sid]
 
     def _session_files(self, session_id: str) -> List[Path]:
         """Return all JSONL files for *session_id* in chronological order.
@@ -161,13 +174,14 @@ class JsonlSessionStore:
           - …
           - ``{session_id}.jsonl``  (current / active)
         """
+        sid = _validate_session_id(session_id)
         sessions_dir = self._get_sessions_dir()
-        base = sessions_dir / f"{session_id}.jsonl"
+        base = sessions_dir / f"{sid}.jsonl"
         rotated: List[Tuple[int, Path]] = []
         if sessions_dir.exists():
-            for p in sessions_dir.glob(f"{session_id}.*.jsonl"):
+            for p in sessions_dir.glob(f"{sid}.*.jsonl"):
                 # Extract rotation index from the stem: session_id.N.jsonl
-                stem = p.name[len(session_id) + 1 : -len(".jsonl")]
+                stem = p.name[len(sid) + 1 : -len(".jsonl")]
                 try:
                     rotated.append((int(stem), p))
                 except ValueError:
@@ -180,9 +194,10 @@ class JsonlSessionStore:
 
     def _active_file(self, session_id: str) -> Path:
         """Return the path of the current (writable) JSONL file."""
+        sid = _validate_session_id(session_id)
         sessions_dir = self._get_sessions_dir()
         sessions_dir.mkdir(parents=True, exist_ok=True)
-        return sessions_dir / f"{session_id}.jsonl"
+        return sessions_dir / f"{sid}.jsonl"
 
     def _rotate_if_needed(self, session_id: str) -> None:
         """If the active file exceeds ``_rotation_bytes``, rotate it.
@@ -416,24 +431,25 @@ class JsonlSessionStore:
         If the snapshot references a rotated file that has since been replaced,
         the revert silently becomes a no-op (the data is already gone).
         """
-        snap = self.get_snapshot(session_id, snapshot_id)
-        if snap is None:
-            logger.warning(
-                "JsonlSessionStore.revert_session: snapshot '%s' not found for '%s'",
-                snapshot_id,
-                session_id,
-            )
-            return
+        sid = _validate_session_id(session_id)
+        with self._session_lock(sid):
+            snap = self.get_snapshot(sid, snapshot_id)
+            if snap is None:
+                logger.warning(
+                    "JsonlSessionStore.revert_session: snapshot '%s' not found for '%s'",
+                    snapshot_id,
+                    sid,
+                )
+                return
 
-        try:
-            target_file, target_offset = decode_snapshot_reference(snap)
-        except Exception as exc:
-            logger.warning(
-                "JsonlSessionStore.revert_session: bad snapshot metadata: %s", exc
-            )
-            return
+            try:
+                target_file, target_offset = decode_snapshot_reference(snap)
+            except Exception as exc:
+                logger.warning(
+                    "JsonlSessionStore.revert_session: bad snapshot metadata: %s", exc
+                )
+                return
 
-        with self._session_lock(session_id):
             sessions_dir = self._get_sessions_dir().resolve()
             try:
                 resolved_target = target_file.resolve()
@@ -446,9 +462,9 @@ class JsonlSessionStore:
                 return
 
             valid_name = (
-                resolved_target.name == f"{session_id}.jsonl"
+                resolved_target.name == f"{sid}.jsonl"
                 or (
-                    resolved_target.name.startswith(f"{session_id}.")
+                    resolved_target.name.startswith(f"{sid}.")
                     and resolved_target.name.endswith(".jsonl")
                 )
             )
@@ -462,11 +478,23 @@ class JsonlSessionStore:
             try:
                 with resolved_target.open("r+b") as f:
                     f.truncate(target_offset)
-                # If the active file has been rotated since the snapshot,
-                # truncating the old (rotated) file is not enough — the
-                # current active file also needs to be reset so subsequent
-                # appends don't mix old + new data.
-                active = self._active_file(session_id)
+                # Delete any newer rotated files created after resolved_target
+                if resolved_target.name != f"{sid}.jsonl":
+                    stem = resolved_target.name[len(sid) + 1 : -len(".jsonl")]
+                    try:
+                        target_idx = int(stem)
+                    except ValueError:
+                        target_idx = -1
+                    for fpath in list(self._session_files(sid)):
+                        if fpath.name == f"{sid}.jsonl":
+                            continue
+                        f_stem = fpath.name[len(sid) + 1 : -len(".jsonl")]
+                        try:
+                            if target_idx >= 0 and int(f_stem) > target_idx:
+                                fpath.unlink(missing_ok=True)
+                        except (ValueError, OSError):
+                            pass
+                active = self._active_file(sid)
                 if active.resolve() != resolved_target:
                     logger.info(
                         "JsonlSessionStore: file rotated since snapshot; "
@@ -477,7 +505,7 @@ class JsonlSessionStore:
                         f.truncate(0)
                 logger.info(
                     "JsonlSessionStore: reverted '%s' to offset %d in %s",
-                    session_id,
+                    sid,
                     target_offset,
                     resolved_target.name,
                 )
@@ -502,7 +530,9 @@ class JsonlSessionStore:
 
     def _snapshot_path(self, session_id: str, snapshot_id: str) -> Path:
         """Path to the sidecar file for a specific snapshot."""
-        return self._snapshot_dir() / f"{session_id}.{snapshot_id}.json"
+        sid = _validate_session_id(session_id)
+        safe_snap = _validate_session_id(snapshot_id)
+        return self._snapshot_dir() / f"{sid}.{safe_snap}.json"
 
     def save_snapshot(self, session_id: str, state_json: str) -> Optional[str]:
         """Persist a snapshot of *state_json* and return the snapshot ID, or
@@ -768,15 +798,52 @@ class JsonlSessionStore:
         ]
 
     def add_plan(self, session_id: str, plan: Any, status: str = "active") -> None:
+        clean_plan = (
+            redact_secrets(plan)
+            if isinstance(plan, str)
+            else redact_data(plan)
+        )
         self._append(
             session_id,
             {
                 "type": "plan",
-                "plan": plan,
+                "plan": clean_plan,
                 "status": status,
                 "ts": _utc_now(),
             },
         )
+
+    def save_plan(self, session_id: str, plan: list, task: str, step: int) -> None:
+        """Persist the current plan for cross-session resumption (SQLite parity)."""
+        sid = _validate_session_id(session_id)
+        snap_dir = self._snapshot_dir()
+        snap_dir.mkdir(parents=True, exist_ok=True)
+        plan_file = snap_dir / f"{sid}.plan.json"
+        payload = {
+            "plan": redact_data(plan),
+            "task": redact_secrets(task or ""),
+            "current_step": int(step),
+            "saved_at": _utc_now(),
+        }
+        atomic_write_json_with_fallback(plan_file, payload, logger=logger)
+
+    def load_plan(self, session_id: str) -> Optional[Dict[str, Any]]:
+        """Load the most recently saved plan for cross-session resumption."""
+        sid = _validate_session_id(session_id)
+        plan_file = self._snapshot_dir() / f"{sid}.plan.json"
+        if not plan_file.exists():
+            return None
+        try:
+            data = json.loads(plan_file.read_text(encoding="utf-8"))
+            if isinstance(data, dict) and "plan" in data:
+                return {
+                    "plan": data["plan"],
+                    "task": data.get("task", ""),
+                    "current_step": data.get("current_step", 0),
+                }
+        except Exception:
+            pass
+        return None
 
     def get_plans(self, session_id: str) -> List[Dict[str, Any]]:
         return [
@@ -790,13 +857,15 @@ class JsonlSessionStore:
         error_message: str,
         context: Optional[str] = None,
     ) -> None:
+        clean_err = redact_secrets(str(error_message))
+        clean_ctx = redact_secrets(str(context)) if context is not None else None
         self._append(
             session_id,
             {
                 "type": "error",
                 "error_type": error_type,
-                "error_message": error_message,
-                "context": context,
+                "error_message": clean_err,
+                "context": clean_ctx,
                 "ts": _utc_now(),
             },
         )
@@ -1159,7 +1228,10 @@ class JsonlSessionStore:
             : max(0, int(limit))
         ]
         return [
-            {"session_id": sid, "summary": self.get_session_summary(sid)}
+            {
+                "session_id": sid,
+                "summary": self.get_session_summary(sid),
+            }
             for sid in ordered
         ]
 

@@ -82,26 +82,26 @@ Graph checkpoints can persist and rehydrate graph state. They improve crash reco
 
 - `src/core/context/` constructs prompts from task messages, tool descriptions, skills, optional prior-session context, LSP context, and retrieved snippets.
 - `src/core/memory/` provides JSONL and SQLite session stores, summaries/distillation, compaction, snapshots, and sidecar diagnostics.
-- `src/core/indexing/` extracts symbols and maintains a repository index, with optional embedding support. Current fallback retrieval is symbol and path oriented rather than a complete semantic code-chunk index.
+- `src/core/indexing/` extracts symbols via `SymbolGraph` (with PageRank importance and call-graph context), maintains a repository index, wires live `LSPClient` `didChange` diagnostics into `ContextBuilder`, and tags optional `VectorStore` embeddings with model and dimension metadata.
 - `src/config/agent-brain/roles/` and `src/config/agent-brain/skills/` supply prompt-time role and internal skill content. Reusable agent skills packaged for external agent runners (Agensi, Claude Code, Cursor) reside in `src/config/skills/<skill>/SKILL.md`.
 
 ### Providers And Evaluation
 
-- `src/core/inference/` manages provider discovery, capability profiles, routing, token counting, streaming, retries, fallback, telemetry, and adapters. Anthropic adapter maps natively to `/v1/messages` with prompt-cache boundary support, required token budgeting, tool schema conversion, and response normalization.
-- `src/config/providers.json` contains provider definitions.
-- `src/core/evaluation/` includes scenario, regression, comparison, and SWE-bench-oriented utilities. CI runs deterministic and mock-backed coverage by default; live-provider checks are scheduled or manually enabled.
+- `src/core/inference/` manages provider discovery, capability profiles, `KVCacheGovernor` calibration (including Apple Silicon headroom, `num_ctx`, `kv_cache_quant`, and MoE KV scaling), routing, token counting, streaming, retries, fallback, telemetry, and adapters (`AnthropicAdapter`, `OllamaAdapter`, `OpenAICompatAdapter`, `MlxAdapter`, `LlamaServerAdapter`). Anthropic and OpenAI/local adapters support prompt-cache prefix stability via `system_prompt_dynamic_boundary`.
+- `src/config/providers.json` contains provider definitions (with inactive presets for local `mlx` and `llama_server`).
+- `src/core/evaluation/` includes 23 executable-verified scenarios, regression comparisons (failing on dropped baseline scenarios), comparison utilities, and SWE-bench grading harnesses. CI runs deterministic, acceptance, and mock-backed coverage by default; live-provider checks are scheduled or manually enabled.
 
 ### Events, Observability, And Server
 
-- `src/core/messaging/` is the typed asynchronous event layer used by the UI bridge and server delivery.
-- `src/core/telemetry/`, `src/core/observability/`, and `src/core/logger.py` collect traces, metrics, and logs. OpenTelemetry support is optional.
-- `src/server/` contains an optional FastAPI application for task submission, SSE, WebSockets, scheduler endpoints, and metrics. It is started only when `CODINGAGENT_HTTP_SERVER=true` and defaults to loopback.
+- `src/core/messaging/` is the typed asynchronous event layer used by the UI bridge and server delivery (`BashApprovalRequired`, `SpawnPermissionRequired`, `ToolExecute*`).
+- `src/core/telemetry/`, `src/core/observability/`, and `src/core/logger.py` collect traces (`OtelExporter` and `tracer.py` sharing a single `TracerProvider` and redacting secrets), metrics, and logs. OpenTelemetry support is optional.
+- `src/server/` contains an optional FastAPI application for task submission, SSE, WebSockets, scheduler endpoints, and metrics. It is started only when `CODINGAGENT_HTTP_SERVER=true`, defaults to loopback, enforces startup exposure validation, WebSocket Origin validation, and constant-time metrics auth.
 
 ## State And Data
 
 Project-local runtime configuration is read from `.codingAgent/`. User-level preferences, provider credentials, session history, checkpoints, indexes, summaries, metrics, and audit/trace records are managed by their respective core services. Never assume session data is safe to expose to an LLM or remote client without redaction.
 
-Project-local configuration is resolved from `.codingAgent/config.json`. `codingagent init`, `codingagent mcp add`, and active configuration resolution all use that directory; the legacy `.agent` and `.localAgent` names are not used.
+Project-local configuration merges `.codingAgent/config.json` / `.codingAgent/config.local.json` and `.codingAgent/settings.json` / `.codingAgent/settings.local.json` (in that order). `codingagent init`, `codingagent mcp add`, and active configuration resolution all use `.codingAgent/`; the legacy `.agent` and `.localAgent` names are not used.
 
 ## Trust Boundaries
 

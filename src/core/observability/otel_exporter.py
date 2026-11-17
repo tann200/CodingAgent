@@ -58,6 +58,9 @@ class OtelExporter:
         self._init_opentelemetry()
         if not self._tracer:
             return
+        event_bus.subscribe("tool.execute.start", self._on_tool_start)
+        event_bus.subscribe("tool.execute.finish", self._on_tool_finish)
+        event_bus.subscribe("tool.execute.error", self._on_tool_error)
         event_bus.subscribe("tool.call.start", self._on_tool_start)
         event_bus.subscribe("tool.call.finish", self._on_tool_finish)
         event_bus.subscribe("tool.call.error", self._on_tool_error)
@@ -79,6 +82,11 @@ class OtelExporter:
             from opentelemetry.sdk.trace import TracerProvider  # type: ignore[import-not-found]
             from opentelemetry.sdk.trace.export import BatchSpanProcessor  # type: ignore[import-not-found]
 
+            existing = trace.get_tracer_provider()
+            if hasattr(existing, "add_span_processor"):
+                self._tracer = trace.get_tracer(__name__)
+                return
+
             resource = Resource.create(
                 {"service.name": self._service_name}
             )
@@ -91,26 +99,43 @@ class OtelExporter:
         except Exception:
             pass
 
+    @staticmethod
+    def _extract_tool_name(payload: Any) -> str:
+        if isinstance(payload, dict):
+            return str(
+                payload.get("tool_name")
+                or payload.get("tool")
+                or payload.get("title")
+                or payload.get("name")
+                or ""
+            )
+        return str(payload)
+
+    @staticmethod
+    def _redact(text: str) -> str:
+        try:
+            from src.core.security.redaction import redact_secrets
+
+            return redact_secrets(text)
+        except Exception:
+            return text
+
     # ── Event handlers ─────────────────────────────────────────────────────
 
     def _on_tool_start(self, payload: Any) -> None:
         if not self._enabled or self._tracer is None:
             return
         try:
-            tool_name = (
-                payload.get("tool_name")
-                if isinstance(payload, dict)
-                else str(payload)
-            )
+            tool_name = self._extract_tool_name(payload)
             span = self._tracer.start_span(f"tool.{tool_name}")
             span.set_attribute("tool.name", tool_name)
             corr_id = (
-                payload.get("correlation_id")
+                payload.get("correlation_id") or payload.get("tool_call_id")
                 if isinstance(payload, dict)
                 else None
             )
             if corr_id:
-                span.set_attribute("correlation_id", corr_id)
+                span.set_attribute("correlation_id", str(corr_id))
             key = f"tool:{tool_name}:{time.monotonic_ns()}"
             with self._lock:
                 self._active_spans[key] = span
@@ -121,11 +146,7 @@ class OtelExporter:
         if not self._enabled or self._tracer is None:
             return
         try:
-            tool_name = (
-                payload.get("tool_name")
-                if isinstance(payload, dict)
-                else ""
-            ) or ""
+            tool_name = self._extract_tool_name(payload) if isinstance(payload, dict) else ""
             # Match the most recent active span for this tool
             key = self._find_tool_span_key(tool_name)
             if key is None:
@@ -137,9 +158,14 @@ class OtelExporter:
                     duration = payload.get("duration_ms")
                     if duration is not None:
                         span.set_attribute("tool.duration_ms", duration)
-                    result = payload.get("result", "")
+                    result = (
+                        payload.get("result")
+                        or payload.get("raw_output")
+                        or payload.get("rawOutput")
+                        or ""
+                    )
                     if result:
-                        span.set_attribute("tool.result", str(result)[:200])
+                        span.set_attribute("tool.result", self._redact(str(result))[:200])
                 span.end()
         except Exception:
             pass
@@ -148,11 +174,7 @@ class OtelExporter:
         if not self._enabled or self._tracer is None:
             return
         try:
-            tool_name = (
-                payload.get("tool_name")
-                if isinstance(payload, dict)
-                else ""
-            ) or ""
+            tool_name = self._extract_tool_name(payload) if isinstance(payload, dict) else ""
             key = self._find_tool_span_key(tool_name)
             if key is None:
                 return
@@ -162,7 +184,7 @@ class OtelExporter:
                 error = (
                     payload.get("error") if isinstance(payload, dict) else str(payload)
                 )
-                span.set_attribute("error", str(error)[:500])
+                span.set_attribute("error", self._redact(str(error))[:500])
                 span.set_attribute("tool.success", False)
                 span.end()
         except Exception:

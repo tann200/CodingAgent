@@ -62,7 +62,14 @@ def _candidate_settings_files_for_workdir(workdir: Path) -> list[Path]:
 
     candidate = Path(ctx_name)
     # The caller will resolve relative to the provided base workdir.
-    return [candidate / "settings.json", candidate / "settings.local.json"]
+    # Unify `.codingAgent/config.json` (created by `codingagent init`) and
+    # `.codingAgent/settings.json` (later wins).
+    return [
+        candidate / "config.json",
+        candidate / "config.local.json",
+        candidate / "settings.json",
+        candidate / "settings.local.json",
+    ]
 
 
 # Mapping from the JSON ``permissionMode`` string to CodingAgent's

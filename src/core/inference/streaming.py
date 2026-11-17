@@ -270,15 +270,20 @@ def decode_sse_line(
         line = raw_line
     else:
         # C-01: prepend any leftover bytes from previous chunk, then try to
-        # decode.  If the sequence is still incomplete, stash the tail in
-        # *carry* and return None so the caller waits for the next chunk.
+        # decode the full SSE line cleanly before emitting anything.
         buf = (carry + raw_line) if carry is not None else bytearray(raw_line)
         try:
             line = buf.decode("utf-8")
             if carry is not None:
                 carry.clear()
         except UnicodeDecodeError as exc:
-            # Keep the incomplete tail for the next chunk.
+            if carry is not None and exc.reason == "unexpected end of data":
+                # Incomplete UTF-8 multi-byte sequence at end of line chunk:
+                # buffer the entire incomplete line until the remaining bytes arrive.
+                carry.clear()
+                carry.extend(buf)
+                return None
+            # Malformed byte inside line: salvage valid prefix if any and advance
             tail = buf[exc.start :]
             if carry is not None:
                 carry.clear()
@@ -362,48 +367,95 @@ def publish_stream_chunk(*, bus: Any, chunk: str, is_reasoning: bool) -> None:
         pass
 
 
+def _hold_partial_tag_suffix(text: str, tag: str) -> Tuple[str, str]:
+    """If *text* ends with a non-empty strict prefix of *tag*, split (head, held_suffix)."""
+    max_len = min(len(text), len(tag) - 1)
+    for k in range(max_len, 0, -1):
+        if text.endswith(tag[:k]):
+            return text[:-k], text[-k:]
+    return text, ""
+
+
 def split_thinking_content(
     *,
     content_delta: str,
     inside_think: bool,
     tag_split_enabled: bool,
     publish_chunk: Callable[[str, bool], None],
+    tag_buffer: Optional[List[str]] = None,
 ) -> Tuple[str, str, bool, List[str], bool]:
     reasoning_delta = ""
     text_parts: List[str] = []
     consumed_original = False
 
-    if not tag_split_enabled or not content_delta:
+    if not tag_split_enabled:
         return reasoning_delta, content_delta, inside_think, text_parts, consumed_original
 
-    if "<think>" in content_delta and not inside_think:
-        before, _, rest = content_delta.partition("<think>")
-        inside_think = True
-        consumed_original = True
-        if before:
-            publish_chunk(before, False)
-            text_parts.append(before)
-        if "</think>" in rest:
-            think_part, _, after = rest.partition("</think>")
-            inside_think = False
-            if think_part:
-                publish_chunk(think_part, True)
-            content_delta = after
+    if tag_buffer is not None and tag_buffer:
+        content_delta = "".join(tag_buffer) + (content_delta or "")
+        tag_buffer.clear()
+
+    if not content_delta:
+        return reasoning_delta, content_delta, inside_think, text_parts, consumed_original
+
+    # Handle full and rolling <think> / </think> tags across chunks
+    entered_think_this_call = False
+    while content_delta:
+        if not inside_think:
+            if "<think>" in content_delta:
+                before, _, rest = content_delta.partition("<think>")
+                inside_think = True
+                entered_think_this_call = True
+                consumed_original = True
+                if before:
+                    publish_chunk(before, False)
+                    text_parts.append(before)
+                content_delta = rest
+                continue
+            if tag_buffer is not None:
+                head, held = _hold_partial_tag_suffix(content_delta, "<think>")
+                if held:
+                    tag_buffer.append(held)
+                    consumed_original = True
+                    if head:
+                        publish_chunk(head, False)
+                        text_parts.append(head)
+                    content_delta = ""
+                    break
+            break
         else:
-            if rest:
-                publish_chunk(rest, True)
+            if "</think>" in content_delta:
+                think_part, _, after = content_delta.partition("</think>")
+                inside_think = False
+                entered_think_this_call = False
+                consumed_original = True
+                if think_part:
+                    publish_chunk(think_part, True)
+                content_delta = after
+                if not after:
+                    break
+                if "<think>" in content_delta or (tag_buffer is not None):
+                    continue
+                break
+            if tag_buffer is not None:
+                head, held = _hold_partial_tag_suffix(content_delta, "</think>")
+                if held:
+                    tag_buffer.append(held)
+                    consumed_original = True
+                    if head:
+                        if entered_think_this_call:
+                            publish_chunk(head, True)
+                        else:
+                            reasoning_delta = head
+                    content_delta = ""
+                    break
+            if entered_think_this_call:
+                publish_chunk(content_delta, True)
+            else:
+                reasoning_delta = content_delta
             content_delta = ""
-    elif "</think>" in content_delta and inside_think:
-        think_part, _, after = content_delta.partition("</think>")
-        inside_think = False
-        consumed_original = True
-        if think_part:
-            publish_chunk(think_part, True)
-        content_delta = after
-    elif inside_think:
-        reasoning_delta = content_delta
-        content_delta = ""
-        consumed_original = True
+            consumed_original = True
+            break
 
     return reasoning_delta, content_delta, inside_think, text_parts, consumed_original
 
@@ -420,9 +472,14 @@ def finalize_stream(*, bus: Any, accumulated: List[str]) -> str:
     return full_text
 
 
-def consume_generator_stream(gen: Any, model: Optional[str] = None) -> dict[str, Any]:
+def consume_generator_stream(
+    gen: Any,
+    model: Optional[str] = None,
+    provider: str = "ollama",
+) -> dict[str, Any]:
     """Iterate a generator of chunks (e.g. from OllamaAdapter), publish events, and return result."""
     accumulated_content: List[str] = []
+    accumulated_reasoning: List[str] = []
     p_tokens = 0
     c_tokens = 0
     role = "assistant"
@@ -438,7 +495,20 @@ def consume_generator_stream(gen: Any, model: Optional[str] = None) -> dict[str,
 
     for chunk in gen:
         if isinstance(chunk, dict):
+            if chunk.get("error"):
+                return {
+                    "ok": False,
+                    "provider": provider or "ollama",
+                    "model": model or "unknown",
+                    "error": str(chunk["error"]),
+                    "choices": [],
+                    "streamed": True,
+                }
             msg = chunk.get("message") or {}
+            think_delta = msg.get("thinking") or chunk.get("thinking") or ""
+            if think_delta:
+                accumulated_reasoning.append(str(think_delta))
+                publish_stream_chunk(bus=bus, chunk=str(think_delta), is_reasoning=True)
             delta_text = msg.get("content") or ""
             if not delta_text and "response" in chunk:
                 delta_text = chunk.get("response") or ""
@@ -491,13 +561,15 @@ def consume_generator_stream(gen: Any, model: Optional[str] = None) -> dict[str,
         },
         "finish_reason": "tool_calls" if normalized_tool_calls and finish_reason == "stop" else finish_reason,
     }
+    if accumulated_reasoning:
+        choice["message"]["reasoning_content"] = "".join(accumulated_reasoning)
     if normalized_tool_calls:
         choice["tool_calls"] = normalized_tool_calls
         choice["message"]["tool_calls"] = normalized_tool_calls
 
     return {
         "ok": True,
-        "provider": "ollama",
+        "provider": provider or "ollama",
         "model": model or "unknown",
         "latency": 0.0,
         "prompt_tokens": p_tokens,

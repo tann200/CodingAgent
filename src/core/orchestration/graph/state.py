@@ -94,7 +94,6 @@ from typing import (  # noqa: E402
     Dict,
     Any,
     Annotated,
-    Mapping,
     TYPE_CHECKING,
 )
 
@@ -402,6 +401,7 @@ class _AgentStateSpec(TypedDict, total=False):
     # ── Control flow ───────────────────────────────────────────────────────
     cancel_event: Any | None
     modified_files: List[str] | None
+    _verified_file_hashes: Dict[str, str] | None
     retrieved_snippets: List[Dict[str, Any]] | None
     _frontier_loop_turns: int | None
 
@@ -422,11 +422,6 @@ if TYPE_CHECKING:
 else:
     StateLike = Dict[str, Any]
 
-# ---------------------------------------------------------------------------
-# State validation — call at node entry to catch corrupted state early.
-# Does NOT raise: logs and returns a list of issues so a bad field doesn't
-# crash a live run.
-# ---------------------------------------------------------------------------
 
 _INT_OR_NONE_FIELDS: tuple[str, ...] = (
     "rounds",
@@ -449,59 +444,3 @@ _INT_OR_NONE_FIELDS: tuple[str, ...] = (
     "max_turns",
     "seed",
 )
-
-
-def validate_state(state: Mapping[str, Any]) -> list[str]:
-    """Validate AgentState invariants.
-
-    Returns a (possibly empty) list of human-readable issue strings.
-    Call at the entry of each graph node — log the issues but do not raise.
-
-    Checks:
-    - Numeric fields are ``int | None``, not strings or other types.
-    - ``current_step`` is within bounds of ``current_plan`` when both are set.
-    - ``turn_count <= max_turns`` when both are set.
-    """
-    issues: list[str] = []
-
-    # 1. Numeric field type checks
-    for field in _INT_OR_NONE_FIELDS:
-        val = state.get(field)  # type: ignore[call-overload]
-        if val is not None and not isinstance(val, int):
-            issues.append(
-                f"AgentState.{field} should be int | None but got {type(val).__name__!r}: {val!r}"
-            )
-
-    # 2. current_step within bounds of current_plan
-    current_step = state.get("current_step")  # type: ignore[call-overload]
-    current_plan = state.get("current_plan")  # type: ignore[call-overload]
-    if (
-        current_step is not None
-        and isinstance(current_step, int)
-        and current_plan is not None
-        and isinstance(current_plan, list)
-        and current_step >= len(current_plan)
-    ):
-        issues.append(
-            f"AgentState.current_step={current_step} is out of bounds for "
-            f"current_plan of length {len(current_plan)}"
-        )
-
-    # 3. turn_count <= max_turns
-    turn_count = state.get("turn_count")  # type: ignore[call-overload]
-    max_turns = state.get("max_turns")  # type: ignore[call-overload]
-    if (
-        turn_count is not None
-        and isinstance(turn_count, int)
-        and max_turns is not None
-        and isinstance(max_turns, int)
-        and turn_count > max_turns
-    ):
-        issues.append(
-            f"AgentState.turn_count={turn_count} exceeds max_turns={max_turns}"
-        )
-
-    if issues:
-        _logger.warning("validate_state: %d issue(s) detected: %s", len(issues), issues)
-
-    return issues

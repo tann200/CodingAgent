@@ -39,6 +39,29 @@ SWEBENCH_REQUIRED_FIELDS = (
 )
 
 
+def _parse_test_list(raw: Any) -> List[str]:
+    """Parse SWE-bench FAIL_TO_PASS / PASS_TO_PASS lists (handling JSON-encoded strings)."""
+    if not raw:
+        return []
+    if isinstance(raw, str):
+        text = raw.strip()
+        if not text:
+            return []
+        if text.startswith("[") or text.startswith('"'):
+            try:
+                parsed = json.loads(text)
+                if isinstance(parsed, list):
+                    return [str(x) for x in parsed if str(x)]
+                if isinstance(parsed, str):
+                    return [parsed] if parsed else []
+            except Exception:
+                pass
+        return [text]
+    if isinstance(raw, (list, tuple)):
+        return [str(x) for x in raw if str(x)]
+    return list(raw)
+
+
 @dataclass
 class SWEBenchInstance:
     """A single SWE-bench style problem instance."""
@@ -60,6 +83,8 @@ class SWEBenchInstance:
             value = data.get(key)
             if value is None or str(value) == "":
                 raise ValueError(f"SWE-bench instance missing required field {key!r}")
+        raw_f2p = data.get("fail_to_pass") if data.get("fail_to_pass") is not None else data.get("FAIL_TO_PASS")
+        raw_p2p = data.get("pass_to_pass") if data.get("pass_to_pass") is not None else data.get("PASS_TO_PASS")
         return cls(
             instance_id=str(data["instance_id"]),
             repo=str(data["repo"]),
@@ -67,8 +92,8 @@ class SWEBenchInstance:
             problem_statement=str(data["problem_statement"]),
             patch=data.get("patch"),
             test_patch=data.get("test_patch"),
-            fail_to_pass=list(data.get("fail_to_pass") or data.get("FAIL_TO_PASS") or []),
-            pass_to_pass=list(data.get("pass_to_pass") or data.get("PASS_TO_PASS") or []),
+            fail_to_pass=_parse_test_list(raw_f2p),
+            pass_to_pass=_parse_test_list(raw_p2p),
             test_command=data.get("test_command"),
             environment_setup_commit=data.get("environment_setup_commit"),
         )
@@ -195,12 +220,15 @@ class GradeResult:
 def _extract_patch(repo_dir: Path) -> Tuple[str, Optional[str]]:
     """Return ``(patch, error)`` for the agent's working-tree changes."""
     staged = subprocess.run(
-        ["git", "add", "-N", "."], capture_output=True, text=True, cwd=str(repo_dir)
+        ["git", "add", "-N", "--", ".", ":(exclude).codingAgent"],
+        capture_output=True,
+        text=True,
+        cwd=str(repo_dir),
     )
     if staged.returncode != 0:
         return "", staged.stderr
     diff = subprocess.run(
-        ["git", "diff", "--binary", "HEAD"],
+        ["git", "diff", "--binary", "HEAD", "--", ".", ":(exclude).codingAgent"],
         capture_output=True,
         text=True,
         cwd=str(repo_dir),
@@ -239,7 +267,7 @@ def _run_tests(repo_dir: Path, instance: SWEBenchInstance, timeout: int) -> Tupl
             cmd[0] = sys.executable
     else:
         test_ids = list(dict.fromkeys(instance.fail_to_pass + instance.pass_to_pass))
-        cmd = [sys.executable, "-m", "pytest", "-q", "--no-header", "--tb=short"]
+        cmd = [sys.executable, "-m", "pytest", "-v", "-rA", "--no-header", "--tb=short"]
         cmd.extend(test_ids)
     try:
         result = subprocess.run(

@@ -1,5 +1,6 @@
 import logging
 import sys
+import threading
 from collections import deque
 from pathlib import Path
 from typing import Callable, Optional
@@ -29,14 +30,17 @@ MAX_BUFFER_LINES = 500
 class InMemoryHandler(logging.Handler):
     def __init__(self, maxlen: int = MAX_BUFFER_LINES):
         super().__init__()
+        self._lock = threading.RLock()
         self.buffer: deque[str] = deque(maxlen=maxlen)
         self._callbacks: list[Callable[[str], None]] = []
 
     def emit(self, record: logging.LogRecord) -> None:
         try:
             msg = self.format(record)
-            self.buffer.append(msg)
-            for cb in list(self._callbacks):
+            with self._lock:
+                self.buffer.append(msg)
+                callbacks = list(self._callbacks)
+            for cb in callbacks:
                 try:
                     cb(msg)
                 except Exception as _cb_err:
@@ -47,16 +51,19 @@ class InMemoryHandler(logging.Handler):
             self.handleError(record)
 
     def register_callback(self, cb: Callable[[str], None]) -> None:
-        self._callbacks.append(cb)
+        with self._lock:
+            self._callbacks.append(cb)
 
     def unregister_callback(self, cb: Callable[[str], None]) -> None:
-        try:
-            self._callbacks.remove(cb)
-        except ValueError:
-            pass
+        with self._lock:
+            try:
+                self._callbacks.remove(cb)
+            except ValueError:
+                pass
 
     def get_lines(self) -> list[str]:
-        return list(self.buffer)
+        with self._lock:
+            return list(self.buffer)
 
 
 _memory_handler: Optional[InMemoryHandler] = None
@@ -95,14 +102,17 @@ def setup_logging(level: int = logging.DEBUG) -> logging.Logger:
     except Exception:
         # Fall back to legacy TUI location if the loader cannot be used.
         log_dir = Path.home() / ".agent_tui"
-    log_dir.mkdir(parents=True, exist_ok=True)
-    LOG_DIR = log_dir
-    LOG_FILE = LOG_DIR / "agent.log"
+    try:
+        log_dir.mkdir(parents=True, exist_ok=True)
+        LOG_DIR = log_dir
+        LOG_FILE = LOG_DIR / "agent.log"
 
-    file_handler = logging.FileHandler(LOG_FILE, mode="a", encoding="utf-8")
-    file_handler.setLevel(logging.DEBUG)
-    file_handler.setFormatter(fmt)
-    _logger.addHandler(file_handler)
+        file_handler = logging.FileHandler(LOG_FILE, mode="a", encoding="utf-8")
+        file_handler.setLevel(logging.DEBUG)
+        file_handler.setFormatter(fmt)
+        _logger.addHandler(file_handler)
+    except OSError:
+        pass
 
     _memory_handler = InMemoryHandler(maxlen=MAX_BUFFER_LINES)
     _memory_handler.setLevel(logging.DEBUG)
