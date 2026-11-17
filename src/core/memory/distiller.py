@@ -108,16 +108,34 @@ def _call_llm_sync(messages: list, format_json: bool = False, **kwargs) -> str:
     """
     from src.core.inference.llm_manager import call_model
 
-    # SM-1: inject small_model when not explicitly overridden by caller
-    if "model" not in kwargs:
-        try:
-            from src.core.config_loader import get_small_model as _gsm
+    _rt_ctx = None
+    try:
+        from src.core.inference.llm_manager import get_active_runtime_context
 
-            _sm = _gsm()
-            if _sm:
-                kwargs["model"] = _sm
-        except Exception:
-            pass
+        _rt_ctx = get_active_runtime_context()
+    except Exception:
+        _rt_ctx = None
+
+    if "provider" not in kwargs and isinstance(_rt_ctx, dict):
+        _rt_prov = _rt_ctx.get("provider")
+        if isinstance(_rt_prov, str) and _rt_prov.strip():
+            kwargs["provider"] = _rt_prov.strip()
+
+    # SM-1: inject small_model when not explicitly overridden by caller
+    # (unless an active orchestrator runtime context already pins the loaded model).
+    if "model" not in kwargs:
+        _rt_model = _rt_ctx.get("model") if isinstance(_rt_ctx, dict) else None
+        if isinstance(_rt_model, str) and _rt_model.strip():
+            kwargs["model"] = _rt_model.strip()
+        else:
+            try:
+                from src.core.config_loader import get_small_model as _gsm
+
+                _sm = _gsm()
+                if _sm:
+                    kwargs["model"] = _sm
+            except Exception:
+                pass
 
     try:
         candidate = call_model(
@@ -562,12 +580,13 @@ def distill_context(
     # Also attempt to produce a lightweight repo_memory.json summarizing modules if repo_index is available
     try:
         if working_dir:
+            _wd_path = Path(working_dir)
             try:
                 from src.tools.tools_config import agent_context_path
 
-                _agent_ctx = agent_context_path(working_dir)
+                _agent_ctx = agent_context_path(_wd_path)
             except Exception:
-                _agent_ctx = working_dir / ".codingAgent"
+                _agent_ctx = _wd_path / ".codingAgent"
 
             index_path = _agent_ctx / "repo_index.json"
             if index_path.exists():
@@ -596,7 +615,7 @@ def distill_context(
                         rel_path = fdata.get("path")
                         if not rel_path or is_secret_path(rel_path):
                             continue
-                        p = working_dir / rel_path
+                        p = _wd_path / rel_path
                         if is_secret_path(p):
                             continue
                         if p.exists() and p.is_file():

@@ -567,6 +567,8 @@ class OpenAICompatibleAdapter(LLMClient):
         if not model_name:
             if isinstance(self.models, list) and self.models:
                 model_name = self.models[0]
+            elif isinstance(self.default_model, str) and self.default_model:
+                model_name = self.default_model
             else:
                 return {
                     "error": "no_model_configured",

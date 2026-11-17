@@ -148,6 +148,13 @@ def _print_report(report: Dict[str, Any], samples: int) -> None:
     print(f"  failed  : {summary['failed']}")
     print(f"  errors  : {summary['errors']}")
     print(f"  pass rate: {summary['pass_rate']:.1%}")
+    print(
+        f"  metrics : edit_accuracy={summary.get('edit_accuracy', 0):.1%}, "
+        f"malformed_tool_rate={summary.get('malformed_tool_call_rate', 0):.1%}, "
+        f"verify_pass_rate={summary.get('verification_pass_rate', 0):.1%}, "
+        f"tokens=({summary.get('total_prompt_tokens', 0)}p/{summary.get('total_completion_tokens', 0)}c), "
+        f"avg_prefill_ms={summary.get('avg_prefill_latency_ms', 0):.1f}"
+    )
     if samples > 1:
         print("  pass@k  :")
         for entry in report["passatk"]:

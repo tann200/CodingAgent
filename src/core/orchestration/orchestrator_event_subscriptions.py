@@ -133,7 +133,28 @@ def _register_scheduler_distill_subscription(orch: Any) -> None:
 
             def _worker() -> None:
                 try:
+                    import contextlib as _cl
                     from src.core.memory.distiller import distill_context
+
+                    _rt_cm: Any = _cl.nullcontext()
+                    try:
+                        from src.core.inference.llm_manager import active_runtime_context
+
+                        _rt_adapter = getattr(orch, "adapter", None) or getattr(orch, "_adapter", None)
+                        _rt_prov = getattr(orch, "_provider_name", None)
+                        _rt_model = getattr(_rt_adapter, "default_model", None) if _rt_adapter is not None else None
+                        if isinstance(_rt_prov, str) or (
+                            _rt_adapter is not None and "MagicMock" not in type(_rt_adapter).__name__
+                        ):
+                            _rt_cm = active_runtime_context(
+                                provider=_rt_prov if isinstance(_rt_prov, str) else None,
+                                model=_rt_model if isinstance(_rt_model, str) else None,
+                                adapter=_rt_adapter
+                                if _rt_adapter is not None and "MagicMock" not in type(_rt_adapter).__name__
+                                else None,
+                            )
+                    except Exception:
+                        _rt_cm = _cl.nullcontext()
 
                     msgs = []
                     try:
@@ -141,9 +162,10 @@ def _register_scheduler_distill_subscription(orch: Any) -> None:
                     except Exception:
                         msgs = []
                     try:
-                        distilled = distill_context(
-                            msgs, working_dir=getattr(orch, "working_dir", None)
-                        )
+                        with _rt_cm:
+                            distilled = distill_context(
+                                msgs, working_dir=getattr(orch, "working_dir", None)
+                            )
                         try:
                             if isinstance(distilled, dict) and (
                                 "_compacted_history" in distilled

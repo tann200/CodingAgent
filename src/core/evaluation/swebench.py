@@ -442,7 +442,19 @@ class SWEBenchRunner:
 def _ensure_working_dir(agent: Any, repo_dir: Path) -> None:
     if hasattr(agent, "working_dir"):
         try:
-            setattr(agent, "working_dir", str(repo_dir))
+            current = getattr(agent, "working_dir")
+            aligned = repo_dir if isinstance(current, Path) or current is None else str(repo_dir)
+            setattr(agent, "working_dir", aligned)
+            rb = getattr(agent, "rollback_manager", None)
+            if rb is not None and hasattr(rb, "workdir"):
+                try:
+                    from src.tools.tools_config import agent_context_path
+
+                    rb.workdir = Path(repo_dir)
+                    rb.snapshot_dir = agent_context_path(rb.workdir) / "snapshots"
+                    rb.snapshot_dir.mkdir(parents=True, exist_ok=True)
+                except Exception:
+                    pass
         except Exception:
             pass
     ensure = getattr(agent, "_ensure_working_dir", None)

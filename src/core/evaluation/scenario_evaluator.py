@@ -28,6 +28,16 @@ def _align_agent_working_dir(agent: Any, scenario_dir: Path) -> None:
         current = getattr(agent, "working_dir")
         aligned = scenario_dir if isinstance(current, Path) or current is None else str(scenario_dir)
         setattr(agent, "working_dir", aligned)
+        rb = getattr(agent, "rollback_manager", None)
+        if rb is not None and hasattr(rb, "workdir"):
+            try:
+                from src.tools.tools_config import agent_context_path
+
+                rb.workdir = Path(scenario_dir)
+                rb.snapshot_dir = agent_context_path(rb.workdir) / "snapshots"
+                rb.snapshot_dir.mkdir(parents=True, exist_ok=True)
+            except Exception:
+                pass
     except Exception:
         return
     try:
@@ -105,6 +115,14 @@ class ScenarioResult:
     files_modified: List[str] = field(default_factory=list)
     error: Optional[str] = None
     verification_output: Optional[str] = None
+    tool_calls_total: int = 0
+    malformed_tool_calls: int = 0
+    edit_accurate: bool = False
+    verification_attempted: bool = False
+    verification_passed: bool = False
+    prompt_tokens: int = 0
+    completion_tokens: int = 0
+    prefill_latency_ms: float = 0.0
 
 
 class ScenarioEvaluator:
@@ -185,25 +203,26 @@ class ScenarioEvaluator:
 
         return scenario_dir
 
-    def _verify_scenario(
+    def _verify_scenario_detailed(
         self, scenario: Scenario, scenario_dir: Path
-    ) -> tuple[bool, str]:
-        """Verify scenario results."""
+    ) -> tuple[bool, str, bool, bool, bool]:
+        """Verify scenario results and return ``(passed, output, edit_ok, verify_ran, verify_ok)``."""
         output = ""
-
         _wd = self.workdir.resolve()
-        # Check expected files exist with correct content
+
+        edit_ok = True
         for filename, expected_content in scenario.expected_files.items():
             filepath = (scenario_dir / filename).resolve()
             filepath.relative_to(_wd)  # fails if traversal escapes workdir
             if not filepath.exists():
-                return False, f"Expected file not found: {filename}"
+                return False, f"Expected file not found: {filename}", False, False, False
 
             actual_content = filepath.read_text()
             if expected_content.strip() not in actual_content.strip():
-                return False, f"File content mismatch: {filename}"
+                return False, f"File content mismatch: {filename}", False, False, False
 
-        # Run test command if provided (shell=False for security — C11 fix)
+        verify_ran = bool(scenario.test_command)
+        verify_ok = False
         if scenario.test_command:
             try:
                 cmd_parts = shlex.split(scenario.test_command)
@@ -219,13 +238,21 @@ class ScenarioEvaluator:
                 )
                 output = result.stdout + result.stderr
                 if result.returncode != 0:
-                    return False, f"Test command failed: {output}"
+                    return False, f"Test command failed: {output}", edit_ok, True, False
+                verify_ok = True
             except subprocess.TimeoutExpired:
-                return False, "Test command timed out"
+                return False, "Test command timed out", edit_ok, True, False
             except Exception as e:
-                return False, f"Test command error: {str(e)}"
+                return False, f"Test command error: {str(e)}", edit_ok, True, False
 
-        return True, output
+        return True, output, edit_ok, verify_ran, verify_ok
+
+    def _verify_scenario(
+        self, scenario: Scenario, scenario_dir: Path
+    ) -> tuple[bool, str]:
+        """Verify scenario results."""
+        passed, output, _, _, _ = self._verify_scenario_detailed(scenario, scenario_dir)
+        return passed, output
 
     def run_scenario(
         self,
@@ -236,6 +263,14 @@ class ScenarioEvaluator:
         start_time = datetime.now()
         scenario_dir = None
         agent = None
+        metrics: Dict[str, Any] = {
+            "tool_calls_total": 0,
+            "malformed_tool_calls": 0,
+            "prompt_tokens": 0,
+            "completion_tokens": 0,
+            "prefill_latency_ms": 0.0,
+        }
+        subscriptions: list[tuple[Any, str, Callable]] = []
 
         try:
             # Setup
@@ -244,6 +279,54 @@ class ScenarioEvaluator:
             # Run agent on task (C7 fix — agent_factory result is now actually invoked)
             logger.info(f"Running scenario: {scenario.name}")
             agent = agent_factory()
+
+            bus = getattr(agent, "event_bus", None) if agent is not None else None
+            if bus is not None and hasattr(bus, "subscribe"):
+                def _on_tool_start(payload: Any) -> None:
+                    metrics["tool_calls_total"] += 1
+
+                def _on_tool_error(payload: Any) -> None:
+                    err = str(payload.get("error", "") if isinstance(payload, dict) else payload).lower()
+                    if any(
+                        tok in err
+                        for tok in ("malformed", "invalid argument", "validation", "missing required", "json", "unknown tool")
+                    ):
+                        metrics["malformed_tool_calls"] += 1
+
+                def _on_model_response(payload: Any) -> None:
+                    if isinstance(payload, dict):
+                        metrics["prompt_tokens"] += int(payload.get("prompt_tokens") or 0)
+                        metrics["completion_tokens"] += int(payload.get("completion_tokens") or 0)
+                        if metrics["prefill_latency_ms"] == 0.0 and payload.get("latency"):
+                            metrics["prefill_latency_ms"] = float(payload["latency"]) * 1000.0
+
+                def _on_usage_turn_summary(payload: Any) -> None:
+                    if isinstance(payload, dict) and metrics["prompt_tokens"] == 0 and metrics["completion_tokens"] == 0:
+                        metrics["prompt_tokens"] += int(payload.get("prompt_tokens") or 0)
+                        metrics["completion_tokens"] += int(payload.get("completion_tokens") or 0)
+
+                for topic, fn in (
+                    ("tool.execute.start", _on_tool_start),
+                    ("tool.execute.error", _on_tool_error),
+                    ("model.response", _on_model_response),
+                    ("usage.turn_summary", _on_usage_turn_summary),
+                ):
+                    try:
+                        bus.subscribe(topic, fn)
+                        subscriptions.append((bus, topic, fn))
+                    except Exception:
+                        pass
+
+                try:
+                    from src.core.orchestration.event_bus import get_event_bus as _get_global_eb
+
+                    global_bus = _get_global_eb()
+                    if global_bus is not None and global_bus is not bus and hasattr(global_bus, "subscribe"):
+                        global_bus.subscribe("model.response", _on_model_response)
+                        subscriptions.append((global_bus, "model.response", _on_model_response))
+                except Exception:
+                    pass
+
             try:
                 _run_agent_for_scenario(agent, scenario, scenario_dir)
             except Exception as agent_err:
@@ -258,10 +341,13 @@ class ScenarioEvaluator:
                     end_time=end_time,
                     duration_seconds=(end_time - start_time).total_seconds(),
                     error=str(agent_err),
+                    **metrics,
                 )
 
             # Verify
-            passed, verification_output = self._verify_scenario(scenario, scenario_dir)
+            passed, verification_output, edit_ok, verify_ran, verify_ok = (
+                self._verify_scenario_detailed(scenario, scenario_dir)
+            )
 
             end_time = datetime.now()
             duration = (end_time - start_time).total_seconds()
@@ -273,6 +359,10 @@ class ScenarioEvaluator:
                 end_time=end_time,
                 duration_seconds=duration,
                 verification_output=verification_output,
+                edit_accurate=edit_ok,
+                verification_attempted=verify_ran,
+                verification_passed=verify_ok,
+                **metrics,
             )
 
         except Exception as e:
@@ -284,8 +374,15 @@ class ScenarioEvaluator:
                 end_time=end_time,
                 duration_seconds=(end_time - start_time).total_seconds(),
                 error=str(e),
+                **metrics,
             )
         finally:
+            for b, topic, fn in subscriptions:
+                if hasattr(b, "unsubscribe"):
+                    try:
+                        b.unsubscribe(topic, fn)
+                    except Exception:
+                        pass
             if agent is not None:
                 close_fn = getattr(agent, "close", None)
                 if callable(close_fn):
@@ -336,6 +433,14 @@ class ScenarioEvaluator:
         errors = sum(1 for r in results if r.status == "error")
 
         total_duration = sum(r.duration_seconds for r in results)
+        total_tool_calls = sum(getattr(r, "tool_calls_total", 0) for r in results)
+        total_malformed = sum(getattr(r, "malformed_tool_calls", 0) for r in results)
+        edit_accurate_count = sum(1 for r in results if getattr(r, "edit_accurate", False))
+        verify_attempted = [r for r in results if getattr(r, "verification_attempted", False)]
+        verify_passed_count = sum(1 for r in verify_attempted if getattr(r, "verification_passed", False))
+        total_prompt_tokens = sum(getattr(r, "prompt_tokens", 0) for r in results)
+        total_completion_tokens = sum(getattr(r, "completion_tokens", 0) for r in results)
+        latencies = [float(getattr(r, "prefill_latency_ms", 0.0)) for r in results if getattr(r, "prefill_latency_ms", 0.0) > 0]
 
         return {
             "total": len(results),
@@ -343,6 +448,19 @@ class ScenarioEvaluator:
             "failed": failed,
             "errors": errors,
             "pass_rate": passed / len(results) if results else 0,
+            "pass_at_1": passed / len(results) if results else 0.0,
+            "edit_accuracy": edit_accurate_count / len(results) if results else 0.0,
+            "malformed_tool_call_rate": (
+                total_malformed / total_tool_calls if total_tool_calls > 0 else 0.0
+            ),
+            "verification_pass_rate": (
+                verify_passed_count / len(verify_attempted) if verify_attempted else 0.0
+            ),
+            "total_prompt_tokens": total_prompt_tokens,
+            "total_completion_tokens": total_completion_tokens,
+            "avg_prefill_latency_ms": (
+                sum(latencies) / len(latencies) if latencies else 0.0
+            ),
             "total_duration_seconds": total_duration,
             "average_duration_seconds": total_duration / len(results) if results else 0,
         }

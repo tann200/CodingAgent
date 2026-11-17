@@ -103,40 +103,72 @@ class RollbackManager:
         """Compute a simple checksum for file content."""
         return hashlib.md5(content.encode()).hexdigest()
 
+    _SKIP_SNAPSHOT_DIRS = frozenset(
+        {
+            ".codingAgent",
+            ".agent-context",
+            ".git",
+            ".venv",
+            "venv",
+            "node_modules",
+            "__pycache__",
+        }
+    )
+    _MAX_SNAPSHOT_FILE_BYTES = 5 * 1024 * 1024
+
     def _snapshot_directory_children(self, dir_path: Path) -> List[FileSnapshot]:
-        """Recursively snapshot all items inside a directory."""
+        """Recursively snapshot all items inside a directory (excluding internal dirs/large files)."""
         snaps: List[FileSnapshot] = []
         try:
-            for child in sorted(dir_path.rglob("*")):
-                try:
-                    rel_p = str(child.relative_to(self.workdir))
-                except Exception:
-                    rel_p = str(child)
-                if child.is_dir():
-                    snaps.append(
-                        FileSnapshot(
-                            path=rel_p,
-                            content="__DIRECTORY__",
-                            timestamp=datetime.now().isoformat(),
-                            checksum="",
-                            exists=True,
-                        )
-                    )
-                elif child.is_file():
+            snap_root = self.snapshot_dir.resolve()
+        except Exception:
+            snap_root = self.snapshot_dir
+        try:
+            for root_str, dirnames, filenames in os.walk(dir_path):
+                dirnames[:] = sorted(
+                    d
+                    for d in dirnames
+                    if d not in self._SKIP_SNAPSHOT_DIRS
+                    and (Path(root_str) / d).resolve() != snap_root
+                )
+                for entry_name in dirnames + sorted(filenames):
+                    child = Path(root_str) / entry_name
                     try:
-                        child_content, child_enc, child_raw = _read_snapshot_payload(child)
+                        rel_p = str(child.relative_to(self.workdir))
+                    except Exception:
+                        rel_p = str(child)
+                    if child.is_dir():
                         snaps.append(
                             FileSnapshot(
                                 path=rel_p,
-                                content=child_content,
+                                content="__DIRECTORY__",
                                 timestamp=datetime.now().isoformat(),
-                                checksum=hashlib.sha256(child_raw).hexdigest()[:16],
+                                checksum="",
                                 exists=True,
-                                encoding=child_enc,
                             )
                         )
-                    except Exception as err:
-                        logger.warning(f"Failed to snapshot directory child {rel_p}: {err}")
+                    elif child.is_file():
+                        try:
+                            if child.stat().st_size > self._MAX_SNAPSHOT_FILE_BYTES:
+                                logger.debug(
+                                    "Skipping oversized file in snapshot (%d bytes): %s",
+                                    child.stat().st_size,
+                                    rel_p,
+                                )
+                                continue
+                            child_content, child_enc, child_raw = _read_snapshot_payload(child)
+                            snaps.append(
+                                FileSnapshot(
+                                    path=rel_p,
+                                    content=child_content,
+                                    timestamp=datetime.now().isoformat(),
+                                    checksum=hashlib.sha256(child_raw).hexdigest()[:16],
+                                    exists=True,
+                                    encoding=child_enc,
+                                )
+                            )
+                        except Exception as err:
+                            logger.warning(f"Failed to snapshot directory child {rel_p}: {err}")
         except Exception as e:
             logger.warning(f"Failed to scan directory {dir_path}: {e}")
         return snaps

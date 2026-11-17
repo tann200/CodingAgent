@@ -436,3 +436,22 @@ class TestRollbackTools:
             assert result["revertable"] is True
         finally:
             _PARENT_ORCHESTRATOR_VAR.reset(token)
+
+
+def test_snapshot_directory_skips_internal_dirs_and_oversized_files(tmp_path):
+    """Directory snapshots must not recurse into .codingAgent/.git/.venv or oversized files."""
+    from src.core.orchestration.rollback_manager import RollbackManager
+
+    (tmp_path / "src.py").write_text("print('ok')\n", encoding="utf-8")
+    (tmp_path / ".git").mkdir()
+    (tmp_path / ".git" / "config").write_text("gitcfg", encoding="utf-8")
+    (tmp_path / ".codingAgent" / "snapshots").mkdir(parents=True)
+    (tmp_path / ".codingAgent" / "snapshots" / "prev.json").write_text("{}", encoding="utf-8")
+    big = tmp_path / "huge.bin"
+    big.write_bytes(b"x" * (RollbackManager._MAX_SNAPSHOT_FILE_BYTES + 128))
+
+    mgr = RollbackManager(str(tmp_path))
+    snap_id = mgr.snapshot_files(["."])
+    paths = {s.path for s in mgr.snapshots[snap_id]}
+    assert "src.py" in paths
+    assert not any(".codingAgent" in p or ".git" in p or "huge.bin" in p for p in paths)

@@ -148,7 +148,7 @@ def _workspace_hooks_path(working_dir: Optional[Path]) -> Optional[Path]:
 
         ctx = _os.getenv("CODINGAGENT_CONTEXT_DIR") or ".codingAgent"
 
-    candidate = working_dir / ctx / "hooks.json"
+    candidate = Path(working_dir) / ctx / "hooks.json"
     if candidate.exists():
         return candidate
     return candidate

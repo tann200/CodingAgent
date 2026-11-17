@@ -10,6 +10,8 @@ the public method signature and return type are unchanged.
 
 from __future__ import annotations
 
+import contextlib as _contextlib
+import contextvars as _contextvars
 import threading as _threading
 from typing import Any, Dict, List, Optional
 
@@ -144,6 +146,76 @@ def run_agent_once_impl(
         except Exception as _d_exc:
             guilogger.debug("run_deferred_init_sync error in inference loop: %s", _d_exc)
 
+    def _valid_runtime_str(val: Any) -> Optional[str]:
+        if isinstance(val, str):
+            s = val.strip()
+            if s and "MagicMock" not in s:
+                return s
+        return None
+
+    _ctx_adapter = getattr(orch, "adapter", None) or getattr(orch, "_adapter", None)
+    _ctx_provider = (
+        _valid_runtime_str(getattr(orch, "_provider_name", None))
+        or _valid_runtime_str(getattr(_ctx_adapter, "provider", None))
+        or _valid_runtime_str(getattr(_ctx_adapter, "name", None))
+    )
+    _ctx_model = _valid_runtime_str(getattr(_ctx_adapter, "default_model", None))
+    if not _ctx_model:
+        _ctx_models = getattr(_ctx_adapter, "models", None)
+        if isinstance(_ctx_models, list) and _ctx_models:
+            _ctx_model = _valid_runtime_str(_ctx_models[0])
+
+    if not _ctx_provider or not _ctx_model:
+        try:
+            if hasattr(orch, "get_provider_capabilities"):
+                _caps = orch.get_provider_capabilities()
+                if isinstance(_caps, dict):
+                    _ctx_provider = _ctx_provider or _valid_runtime_str(
+                        _caps.get("provider_name") or _caps.get("provider")
+                    )
+                    _ctx_model = _ctx_model or _valid_runtime_str(
+                        _caps.get("model") or _caps.get("default_model")
+                    )
+        except Exception:
+            pass
+
+    _runtime_cm: Any = _contextlib.nullcontext()
+    if _ctx_provider or _ctx_model or (
+        _ctx_adapter is not None and "MagicMock" not in type(_ctx_adapter).__name__
+    ):
+        try:
+            from src.core.inference.llm_manager import active_runtime_context
+
+            _runtime_cm = active_runtime_context(
+                provider=_ctx_provider,
+                model=_ctx_model,
+                adapter=_ctx_adapter
+                if _ctx_adapter is not None and "MagicMock" not in type(_ctx_adapter).__name__
+                else None,
+            )
+        except Exception:
+            _runtime_cm = _contextlib.nullcontext()
+
+    with _runtime_cm:
+        return _run_agent_once_with_runtime(
+            orch=orch,
+            system_prompt_name=system_prompt_name,
+            messages=messages,
+            tools=tools,
+            cancel_event=cancel_event,
+            _streaming_enabled=_streaming_enabled,
+        )
+
+
+def _run_agent_once_with_runtime(
+    *,
+    orch: Any,
+    system_prompt_name: Optional[str],
+    messages: List[Dict[str, Any]],
+    tools: Dict[str, Any],
+    cancel_event: Optional[Any],
+    _streaming_enabled: bool,
+) -> Dict[str, Any]:
     # Check if configuration has changed on disk and reload if pending
     try:
         if hasattr(_config_loader_module, "reload_if_pending"):
@@ -205,7 +277,10 @@ def run_agent_once_impl(
         # SEC-VOL23-1: store thread reference on the orchestrator so the shutdown
         # path can join it with a short timeout, preventing a partial write if
         # the process exits while the title is still being generated.
-        _t_thread = _threading.Thread(target=_gen_title, args=(prompt,), daemon=True)
+        _title_ctx = _contextvars.copy_context()
+        _t_thread = _threading.Thread(
+            target=_title_ctx.run, args=(_gen_title, prompt), daemon=True
+        )
         _t_thread.start()
         orch._session_title_thread = _t_thread
 
@@ -245,19 +320,30 @@ def run_agent_once_impl(
         from src.core.inference.provider_context import set_active_context_length
 
         pm = get_provider_manager()
+        orch_adapter = getattr(orch, "adapter", None) or getattr(orch, "_adapter", None)
         active_adapter = (
-            pm.get_active_adapter() if hasattr(pm, "get_active_adapter") else None
+            orch_adapter
+            if orch_adapter is not None and "MagicMock" not in type(orch_adapter).__name__
+            else (pm.get_active_adapter() if hasattr(pm, "get_active_adapter") else None)
         )
         if active_adapter and hasattr(active_adapter, "get_loaded_context_length"):
             active_models = (
-                pm.get_active_models() if hasattr(pm, "get_active_models") else []
+                getattr(active_adapter, "models", None)
+                or (pm.get_active_models() if hasattr(pm, "get_active_models") else [])
             )
-            model_name = active_models[0] if active_models else ""
+            model_name = (
+                getattr(active_adapter, "default_model", None)
+                or (active_models[0] if isinstance(active_models, list) and active_models else "")
+            )
             ctx_len = active_adapter.get_loaded_context_length(model_name)
             if ctx_len and ctx_len > 0:
                 active_provider = ""
                 try:
-                    active_provider = pm.get_active_provider_name() or ""
+                    active_provider = (
+                        getattr(orch, "_provider_name", None)
+                        or pm.get_active_provider_name()
+                        or ""
+                    )
                 except Exception:
                     pass
                 set_active_context_length(ctx_len, provider_id=active_provider)

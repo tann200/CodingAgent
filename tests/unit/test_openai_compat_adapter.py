@@ -558,3 +558,18 @@ class TestExecuteWithRetry:
         with patch.object(adapter, "_safe_post", return_value=fake):
             r = adapter._execute_with_retry("http://x", {}, stream=True)
         assert r is fake
+
+    def test_chat_internal_falls_back_to_default_model_when_models_empty(self):
+        adapter = _make_adapter(models=[], default_model="fallback-local-model")
+        adapter.models = []
+        captured_payloads = []
+        ok_resp = _mock_response(_openai_chat_response())
+
+        def _fake_retry(ep, payload, stream, timeout=None):
+            captured_payloads.append(payload)
+            return ok_resp
+
+        with patch.object(adapter, "_execute_with_retry", side_effect=_fake_retry):
+            res = adapter._chat_internal([{"role": "user", "content": "hi"}])
+        assert "choices" in res
+        assert captured_payloads and captured_payloads[0]["model"] == "fallback-local-model"

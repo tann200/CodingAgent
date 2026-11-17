@@ -10,6 +10,7 @@ Design goals for tests:
 """
 
 import asyncio
+from contextlib import contextmanager
 import contextvars
 import functools
 import os
@@ -1015,7 +1016,7 @@ class ProviderManager(ProviderManagerProtocol):
             )
             if hasattr(adapter, "get_loaded_context_length")
             else None,
-            set_active_context_length_fn=lambda context_length, provider_key="": _set_active_context_length_lazy(context_length, provider_key),
+            set_active_context_length_fn=_set_active_context_length_lazy,
             is_active_provider_fn=lambda provider_key, provider_config: bool(
                 provider_config and provider_config.get("active")
             ),
@@ -1172,6 +1173,36 @@ async def get_structured_llm(
     return adapter, resolved
 
 
+_ACTIVE_RUNTIME_CONTEXT: contextvars.ContextVar[Optional[Dict[str, Any]]] = (
+    contextvars.ContextVar("_active_runtime_context", default=None)
+)
+
+
+@contextmanager
+def active_runtime_context(
+    provider: Optional[str] = None,
+    model: Optional[str] = None,
+    adapter: Any = None,
+):
+    """Bind the orchestrator's active provider/model/adapter for nested calls."""
+    token = _ACTIVE_RUNTIME_CONTEXT.set(
+        {
+            "provider": provider,
+            "model": model,
+            "adapter": adapter,
+        }
+    )
+    try:
+        yield
+    finally:
+        _ACTIVE_RUNTIME_CONTEXT.reset(token)
+
+
+def get_active_runtime_context() -> Optional[Dict[str, Any]]:
+    """Return the active orchestrator runtime provider/model context, if any."""
+    return _ACTIVE_RUNTIME_CONTEXT.get(None)
+
+
 async def _call_model_internal(
     messages: List[Dict[str, Any]],
     provider: Optional[str] = None,
@@ -1187,8 +1218,21 @@ async def _call_model_internal(
         # ensure provider manager initialized so mgr.get_provider works reliably
         if not mgr._initialized:
             await mgr.initialize()
+        _runtime_ctx = _ACTIVE_RUNTIME_CONTEXT.get(None)
+        if isinstance(_runtime_ctx, dict):
+            if provider is None and isinstance(_runtime_ctx.get("provider"), str) and _runtime_ctx["provider"].strip():
+                provider = _runtime_ctx["provider"].strip()
+            if model is None and isinstance(_runtime_ctx.get("model"), str) and _runtime_ctx["model"].strip():
+                model = _runtime_ctx["model"].strip()
         adapter = None
-        if provider:
+        if (
+            isinstance(_runtime_ctx, dict)
+            and _runtime_ctx.get("adapter") is not None
+        ):
+            _ctx_prov = _runtime_ctx.get("provider")
+            if not provider or not _ctx_prov or canonical_provider(provider) == canonical_provider(_ctx_prov):
+                adapter = _runtime_ctx["adapter"]
+        if adapter is None and provider:
             adapter = mgr.get_provider(canonical_provider(provider))
         if adapter is None:
             raw = load_provider(None)
@@ -1475,6 +1519,13 @@ async def call_model(
     session_id: Optional[str] = None,
     **kwargs,
 ) -> Any:
+    _runtime_ctx = _ACTIVE_RUNTIME_CONTEXT.get(None)
+    if isinstance(_runtime_ctx, dict):
+        if provider is None and isinstance(_runtime_ctx.get("provider"), str) and _runtime_ctx["provider"].strip():
+            provider = _runtime_ctx["provider"].strip()
+        if model is None and isinstance(_runtime_ctx.get("model"), str) and _runtime_ctx["model"].strip():
+            model = _runtime_ctx["model"].strip()
+
     # Log correlation ID so LLM calls can be traced back to the originating agent turn (#26)
     _cid = _get_correlation_id()
     if _cid:
