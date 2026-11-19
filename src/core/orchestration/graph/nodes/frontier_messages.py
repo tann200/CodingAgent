@@ -234,3 +234,29 @@ def _normalize_messages_for_native_tools(messages: list[dict]) -> list[dict]:
         _m.pop("_call_id", None)
 
     return normalized
+
+
+def apply_thinking_suppression(
+    messages: list[dict],
+    thinking_mode: str | None,
+    model_name: str | None,
+) -> list[dict]:
+    """Strip <think> mandate and append /no_think directive when thinking_mode=='off'."""
+    if thinking_mode != "off" or not messages:
+        return messages
+    try:
+        from src.core.inference.thinking_utils import supports_no_think
+
+        if isinstance(messages[0], dict) and messages[0].get("role") == "system":
+            sys_content = str(messages[0].get("content") or "")
+            sys_content = sys_content.replace(
+                "Think step-by-step inside `<think>` tags before every tool call. ", ""
+            ).replace(
+                "Think step-by-step inside `<think>` tags before every tool call.", ""
+            )
+            if model_name and supports_no_think(model_name) and "/no_think" not in sys_content:
+                sys_content = f"{sys_content.rstrip()}\n/no_think"
+            messages[0] = {**messages[0], "content": sys_content}
+    except Exception:
+        pass
+    return messages

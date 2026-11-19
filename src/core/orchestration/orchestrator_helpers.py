@@ -321,6 +321,19 @@ def rollback_step_transaction_impl(orch: Any) -> dict:
         return {"ok": False, "error": "No active step transaction"}
 
     snap_id = orch._step_snapshot_id
+    rb = getattr(orch, "rollback_manager", None)
+    if (
+        rb is not None
+        and snap_id not in getattr(rb, "snapshots", {})
+        and not (getattr(rb, "snapshot_dir", None) and (rb.snapshot_dir / f"{snap_id}.json").exists())
+    ):
+        guilogger.debug(
+            "rollback_step_transaction: no writes recorded for step %s — nothing to rollback",
+            snap_id,
+        )
+        orch._step_snapshot_id = None
+        return {"ok": True, "restored_files": [], "restored_count": 0}
+
     result = orch.rollback_manager.rollback(snap_id)
     if result.get("ok"):
         guilogger.info(

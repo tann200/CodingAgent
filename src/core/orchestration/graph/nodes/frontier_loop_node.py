@@ -33,17 +33,20 @@ from src.core.orchestration.graph.nodes.frontier_dispatch import (
     append_tool_result_to_history,
     build_native_assistant_message,
     capture_workspace_file_state,
+    check_repeat_block,
     compute_tool_call_signature,
     execute_raw_tool,
     is_tool_result_failure,
     normalize_tool_calls_with_ids,
     partition_tool_call_waves,
     record_bash_mutations,
+    update_failed_signature,
 )
 from src.core.orchestration.graph.nodes.frontier_messages import (
     _extract_content_text,
     _extract_tool_call_from_text,
     _normalize_messages_for_native_tools,
+    apply_thinking_suppression,
 )
 from src.core.orchestration.graph.nodes.frontier_toolcalls import (
     _append_tool_call_history,
@@ -128,6 +131,8 @@ async def _prepare_turn_messages(
     retrieved_snippets: "list | None" = None,
     role: str = "operational",
     runtime_policy: Any = None,
+    thinking_mode: "str | None" = None,
+    model_name: "str | None" = None,
 ) -> list:
     """Build the messages list for one LLM turn while preserving the KV-cache prefix."""
     try:
@@ -172,7 +177,7 @@ async def _prepare_turn_messages(
 
         if provider_caps.get("supports_native_tools") and tools_schema:
             messages = _normalize_messages_for_native_tools(messages)
-        return messages
+        return apply_thinking_suppression(messages, thinking_mode, model_name)
     except Exception as exc:
         logger.warning("frontier_loop_node: context build failed: %s", exc)
         return [
@@ -192,6 +197,7 @@ async def _call_llm_for_turn(
     model_tier: str = "frontier",
     role: str = "operational",
     runtime_policy: Any = None,
+    thinking_mode: "str | None" = None,
 ) -> "tuple[Any, str, list]":
     """Call the LLM and extract ``(response, content_text, tool_calls)``."""
     tools_schema = resolve_effective_tool_schemas(
@@ -208,15 +214,12 @@ async def _call_llm_for_turn(
     except Exception:
         pass
 
-    response = await asyncio.wait_for(
-        call_model(
-            messages=messages,
-            provider=provider_name,
-            model=model_name,
-            tools=tools_schema or None,
-        ),
-        timeout=_llm_timeout,
+    _call_kwargs: Dict[str, Any] = dict(
+        messages=messages, provider=provider_name, model=model_name, tools=tools_schema or None,
     )
+    if thinking_mode == "off":
+        _call_kwargs["disable_thinking"] = True
+    response = await asyncio.wait_for(call_model(**_call_kwargs), timeout=_llm_timeout)
 
     content_text = _extract_content_text(response)
 
@@ -307,6 +310,7 @@ async def _dispatch_tool_calls(
         active_items = wave_items[:remaining]
 
         if is_parallel and len(active_items) > 1:
+            was_repeat_blocked = False
             raw_results = await asyncio.gather(
                 *[
                     execute_raw_tool(
@@ -324,16 +328,10 @@ async def _dispatch_tool_calls(
             item = active_items[0]
             call_id, tool_name, tool_args, _ = item
             sig = compute_tool_call_signature(tool_name, tool_args)
-            if last_failed_sig and last_failed_sig[0] == sig:
-                raw_res = {
-                    "ok": False,
-                    "error": (
-                        f"Blocked identical repeat of failing tool call '{tool_name}' "
-                        "with unchanged arguments. Inspect the previous error and modify "
-                        "arguments or try an alternative approach."
-                    ),
-                }
-                iv_baseline = None
+            blocked_res = check_repeat_block(last_failed_sig, sig, tool_name)
+            was_repeat_blocked = blocked_res is not None
+            if blocked_res is not None:
+                raw_res, iv_baseline = blocked_res, None
             else:
                 if (
                     orchestrator
@@ -372,11 +370,13 @@ async def _dispatch_tool_calls(
                 last_tool_args_out.clear()
                 last_tool_args_out.update(tool_args)
 
-            if last_failed_sig is not None:
-                if is_tool_result_failure(tool_result):
-                    last_failed_sig[:] = [compute_tool_call_signature(tool_name, tool_args)]
-                else:
-                    last_failed_sig.clear()
+            update_failed_signature(
+                last_failed_sig,
+                was_repeat_blocked,
+                is_tool_result_failure(tool_result),
+                compute_tool_call_signature(tool_name, tool_args),
+                tool_result,
+            )
 
             try:
                 if bus:
@@ -437,9 +437,13 @@ async def frontier_loop_node(
         else None
     )
     max_tool_calls: int = int(
-        state.get("max_tool_calls")
-        or (runtime_policy.get("tool_limit") if isinstance(runtime_policy, dict) and runtime_policy.get("tool_limit") else None)
-        or 30
+        state.get("max_tool_calls") or 30
+    )
+    thinking_mode_val = state.get("thinking_mode")
+    thinking_mode_str: str | None = (
+        str(getattr(thinking_mode_val, "value", thinking_mode_val)).lower()
+        if thinking_mode_val is not None
+        else None
     )
     if _MAX_FRONTIER_TURNS != _DEFAULT_MAX_FRONTIER_TURNS:
         effective_max_turns = _MAX_FRONTIER_TURNS
@@ -646,6 +650,8 @@ async def frontier_loop_node(
                         turns_taken=turns_taken,
                         retrieved_snippets=retrieved_snippets,
                         role=role,
+                        thinking_mode=thinking_mode_str,
+                        model_name=model_name,
                     )
                 except TypeError:
                     messages = await _prepare_turn_messages(
@@ -667,6 +673,7 @@ async def frontier_loop_node(
                         model_tier=model_tier,
                         role=role,
                         runtime_policy=runtime_policy,
+                        thinking_mode=thinking_mode_str,
                     )
                 except TypeError:
                     response, content_text, tool_calls = await _call_llm_for_turn(
@@ -850,6 +857,13 @@ async def frontier_loop_node(
         _replan_trigger = compute_replan_trigger(result=batch_result or {})
         if _replan_trigger:
             replan_required = _replan_trigger.get("replan_required")
+            break
+
+        if len(last_failed_sig) > 2 and int(last_failed_sig[2]) >= 3:
+            replan_required = (
+                f"Blocked identical repeat of '{last_tool_name}' 3 times: "
+                f"{last_failed_sig[1] or 'change tool or arguments'}"
+            )
             break
 
         if tool_call_count >= max_tool_calls:

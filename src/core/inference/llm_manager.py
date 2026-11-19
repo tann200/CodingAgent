@@ -726,8 +726,13 @@ class ProviderManager(ProviderManagerProtocol):
             if isinstance(provider_attr, dict):
                 raw_name, raw_type = _extract_from_provider_attr(provider_attr)
                 capabilities["supports_native_tools"] = bool(
-                    provider_attr.get("supports_native_tools", False)
+                    provider_attr.get(
+                        "supports_native_tools",
+                        getattr(adapter, "supports_native_tools", False),
+                    )
                 )
+            elif getattr(adapter, "supports_native_tools", False) is True:
+                capabilities["supports_native_tools"] = True
 
             # Fall back to adapter.name when provider dict didn't supply a concrete name
             if not _valid_str(raw_name):
@@ -748,6 +753,9 @@ class ProviderManager(ProviderManagerProtocol):
                 "ollama": "local",
                 "lm_studio": "local",
                 "lmstudio": "local",
+                "llama_server": "local",
+                "mlx": "local",
+                "mlx_lm": "local",
                 "local": "local",
                 "mock": "mock",
             }

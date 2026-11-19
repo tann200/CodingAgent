@@ -46,6 +46,7 @@ class MlxAdapter(OpenAICompatibleAdapter):
     """Adapter for Apple Silicon ``mlx_lm.server`` OpenAI-compatible endpoint."""
 
     DEFAULT_TIMEOUT: float = 120.0
+    supports_native_tools: bool = True
 
     def __init__(
         self,

@@ -67,6 +67,7 @@ class LlamaServerAdapter(OpenAICompatibleAdapter):
     """Adapter for ``llama.cpp`` ``llama-server`` OpenAI-compatible endpoint."""
 
     DEFAULT_TIMEOUT: float = 120.0
+    supports_native_tools: bool = True
 
     def __init__(
         self,
@@ -103,8 +104,21 @@ class LlamaServerAdapter(OpenAICompatibleAdapter):
         model_name: str,
         kwargs: Dict[str, Any],
     ) -> tuple[Dict[str, Any], Optional[str]]:
-        payload, ep = super()._build_payload(messages, model_name, kwargs)
+        kw = dict(kwargs)
+        disable_thinking = bool(kw.pop("disable_thinking", False))
+        if not disable_thinking:
+            prov_cfg = getattr(self, "provider", None)
+            if isinstance(prov_cfg, dict):
+                disable_thinking = bool(prov_cfg.get("disable_thinking", False))
+        payload, ep = super()._build_payload(messages, model_name, kw)
         if isinstance(messages, (list, tuple)):
             # Enable llama.cpp KV prefix slot reuse for multi-turn coding loops
             payload.setdefault("cache_prompt", True)
+            if disable_thinking:
+                ctk = payload.get("chat_template_kwargs")
+                if isinstance(ctk, dict):
+                    ctk.setdefault("enable_thinking", False)
+                elif ctk is None:
+                    payload["chat_template_kwargs"] = {"enable_thinking": False}
+                payload.setdefault("think", False)
         return payload, ep

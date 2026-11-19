@@ -342,7 +342,9 @@ class OpenAICompatibleAdapter(LLMClient):
             (payload, endpoint) — endpoint is None when no URL is resolvable.
         """
         filtered = {
-            k: v for k, v in kwargs.items() if k not in ("num_ctx", "kv_cache_quant")
+            k: v
+            for k, v in kwargs.items()
+            if k not in ("num_ctx", "kv_cache_quant", "disable_thinking")
         }
         if isinstance(messages, (list, tuple)):
             payload: Dict[str, Any] = {

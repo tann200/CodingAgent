@@ -7,7 +7,6 @@ function ``execute_tool_impl(orch, tool_call)``.
 from __future__ import annotations
 
 import datetime
-import json
 import logging
 import os
 import signal
@@ -289,21 +288,6 @@ def _check_read_before_write(
             return {
                 "ok": False,
                 "error": err_msg,
-                "history": [
-                    {
-                        "role": "user",
-                        "content": json.dumps(
-                            {
-                                "tool_execution_result": {
-                                    "ok": False,
-                                    "error": err_msg,
-                                }
-                            }
-                        ),
-                    }
-                ],
-                "last_result": {"ok": False, "error": err_msg},
-                "next_action": None,
             }
     except Exception as exc:
         logger.error("read-before-write security check failed for %r: %s", name, exc)

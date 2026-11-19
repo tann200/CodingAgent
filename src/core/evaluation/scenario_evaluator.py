@@ -63,7 +63,7 @@ def _run_agent_for_scenario(agent: Any, scenario: "Scenario", scenario_dir: Path
     if hasattr(agent, "run_agent_once") and callable(getattr(agent, "run_agent_once")):
         tools = {}
         try:
-            tools = agent.get_tools_for_role("default")
+            tools = agent.get_tools_for_role("operational")
         except Exception:
             tools = getattr(agent, "tools", {}) or {}
 

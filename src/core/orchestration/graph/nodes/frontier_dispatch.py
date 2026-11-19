@@ -496,3 +496,41 @@ def append_tool_result_to_history(
         history.extend(
             build_tool_history_messages(result=tool_result, truncate_tool_output=truncate_fn)
         )
+
+
+def check_repeat_block(
+    last_failed_sig: "list[str] | None",
+    sig: str,
+    tool_name: str,
+) -> "Dict[str, Any] | None":
+    """Return a repeat-block error dict when *sig* matches the prior failing call."""
+    if not last_failed_sig or last_failed_sig[0] != sig:
+        return None
+    prev_err = last_failed_sig[1] if len(last_failed_sig) > 1 else ""
+    repeat_cnt = (int(last_failed_sig[2]) + 1) if len(last_failed_sig) > 2 else 1
+    last_failed_sig[:] = [sig, prev_err, str(repeat_cnt)]
+    detail = f" Previous error: {prev_err}" if prev_err else ""
+    return {
+        "ok": False,
+        "error": (
+            f"Blocked identical repeat (#{repeat_cnt}) of failing tool call '{tool_name}' "
+            f"with unchanged arguments.{detail} Inspect the error and use a different tool "
+            "or modified arguments."
+        ),
+    }
+
+
+def update_failed_signature(
+    last_failed_sig: "list[str] | None",
+    was_repeat_blocked: bool,
+    failed: bool,
+    sig: str,
+    tool_result: Dict[str, Any],
+) -> None:
+    """Record or clear the last failing tool signature without clobbering repeat counts."""
+    if last_failed_sig is None or was_repeat_blocked:
+        return
+    if failed:
+        last_failed_sig[:] = [sig, str(tool_result.get("error") or "")[:300], "0"]
+    else:
+        last_failed_sig.clear()

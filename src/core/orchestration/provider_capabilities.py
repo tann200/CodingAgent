@@ -23,6 +23,9 @@ _PROVIDER_FAMILY_MAP: Dict[str, str] = {
     "ollama": "local",
     "lm_studio": "local",
     "lmstudio": "local",
+    "llama_server": "local",
+    "mlx": "local",
+    "mlx_lm": "local",
     "local": "local",
     # Test mock
     "mock": "mock",
