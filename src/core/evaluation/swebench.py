@@ -219,8 +219,15 @@ class GradeResult:
 
 def _extract_patch(repo_dir: Path) -> Tuple[str, Optional[str]]:
     """Return ``(patch, error)`` for the agent's working-tree changes."""
+    exclusions = [
+        ":(exclude).codingAgent",
+        ":(exclude)__pycache__",
+        ":(exclude)*.pyc",
+        ":(exclude).pytest_cache",
+        ":(exclude).ruff_cache",
+    ]
     staged = subprocess.run(
-        ["git", "add", "-N", "--", ".", ":(exclude).codingAgent"],
+        ["git", "add", "-N", "--", ".", *exclusions],
         capture_output=True,
         text=True,
         cwd=str(repo_dir),
@@ -228,7 +235,7 @@ def _extract_patch(repo_dir: Path) -> Tuple[str, Optional[str]]:
     if staged.returncode != 0:
         return "", staged.stderr
     diff = subprocess.run(
-        ["git", "diff", "--binary", "HEAD", "--", ".", ":(exclude).codingAgent"],
+        ["git", "diff", "--binary", "HEAD", "--", ".", *exclusions],
         capture_output=True,
         text=True,
         cwd=str(repo_dir),

@@ -26,7 +26,7 @@ import threading
 import time
 from collections import Counter
 from dataclasses import dataclass
-from typing import Any, Dict, List, Optional, Protocol, Set, Type
+from typing import Any, Callable, Dict, List, Optional, Protocol, Set, Type
 
 from src.core.messaging.events import (
     Event,
@@ -301,15 +301,21 @@ class MessageBus:
             self._change_inflight(delivery_class, -1)
             semaphore.release()
 
+    async def _run_sync_delivery(self, fn: Callable[..., Any], *args: Any) -> None:
+        """Execute a synchronous delivery callback without failing on executor shutdown."""
+        try:
+            await asyncio.get_running_loop().run_in_executor(None, fn, *args)
+        except RuntimeError as exc:
+            if "shutdown" in str(exc).lower():
+                logger.debug("MessageBus: skipping delivery during executor shutdown: %s", exc)
+                return
+            raise
+
     async def _dispatch(self, item: Any) -> None:
         """Deliver a single item to handlers (runs as a one-shot task)."""
         if isinstance(item, _DeliveryItem):
             try:
-                await asyncio.get_event_loop().run_in_executor(
-                    None,
-                    self._deliver_to_handlers,
-                    item.event,
-                )
+                await self._run_sync_delivery(self._deliver_to_handlers, item.event)
             finally:
                 if self._enable_metrics:
                     delivery_class = get_event_delivery_policy(
@@ -324,16 +330,14 @@ class MessageBus:
                     item.delivered.set()
         elif callable(item):
             try:
-                await asyncio.get_event_loop().run_in_executor(None, item)
+                await self._run_sync_delivery(item)
             except Exception as e:
                 logger.error(
                     "MessageBus: sync delivery function failed: %s",
                     e, exc_info=True,
                 )
         else:
-            await asyncio.get_event_loop().run_in_executor(
-                None, self._deliver_to_handlers, item
-            )
+            await self._run_sync_delivery(self._deliver_to_handlers, item)
 
     async def _seq_put(self, item: Any, category: str) -> None:
         """Enqueue a sequenced event for ordered delivery within *category*.

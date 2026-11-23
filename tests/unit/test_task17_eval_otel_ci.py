@@ -123,15 +123,18 @@ def test_swebench_extract_patch_excludes_codingagent_dir(tmp_path: Path):
     subprocess.run(["git", "add", "-A"], cwd=tmp_path, check=True)
     subprocess.run(["git", "commit", "-qm", "init"], cwd=tmp_path, check=True)
 
-    # Modify tracked file AND write runtime file inside .codingAgent/
+    # Modify tracked file AND write runtime files inside .codingAgent/ and __pycache__/
     (tmp_path / "app.py").write_text("x = 2\n", encoding="utf-8")
     (tmp_path / ".codingAgent").mkdir()
     (tmp_path / ".codingAgent" / "trace.log").write_text("secret runtime log\n", encoding="utf-8")
+    (tmp_path / "__pycache__").mkdir()
+    (tmp_path / "__pycache__" / "app.cpython-311.pyc").write_bytes(b"\x00\x01\x02")
 
     patch_txt, err = _extract_patch(tmp_path)
     assert err is None
     assert "app.py" in patch_txt
     assert ".codingAgent" not in patch_txt
+    assert "__pycache__" not in patch_txt
 
 
 def test_swebench_run_tests_uses_verbose_report_flags(tmp_path: Path):

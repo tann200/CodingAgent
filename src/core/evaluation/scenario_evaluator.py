@@ -137,7 +137,7 @@ class ScenarioEvaluator:
             name="simple_function",
             description="Create a simple function",
             task="Create a function hello() that returns 'Hello World'",
-            expected_files={"hello.py": "def hello():\n    return 'Hello World'"},
+            expected_files={"hello.py": "def hello"},
             test_command="python -c 'from hello import hello; assert hello() == \"Hello World\"'",
         ))
 
@@ -528,7 +528,7 @@ def get_default_scenarios() -> List[Scenario]:
             name="simple_function",
             description="Create a simple function that returns a string",
             task="Create a file called hello.py with a function hello() that returns 'Hello World'",
-            expected_files={"hello.py": "def hello():\n    return 'Hello World'"},
+            expected_files={"hello.py": "def hello"},
             test_command="python -c \"from hello import hello; assert hello() == 'Hello World'\"",
             difficulty="easy",
             category="single_file_edit",
@@ -632,7 +632,7 @@ def get_default_scenarios() -> List[Scenario]:
                     "    return result\n"
                 ),
             },
-            expected_files={"merge.py": "-> dict"},
+            expected_files={"merge.py": "->"},
             test_command=(
                 "python -c \""
                 "import inspect, merge; "

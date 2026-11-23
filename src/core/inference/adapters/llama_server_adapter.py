@@ -121,4 +121,5 @@ class LlamaServerAdapter(OpenAICompatibleAdapter):
                 elif ctk is None:
                     payload["chat_template_kwargs"] = {"enable_thinking": False}
                 payload.setdefault("think", False)
+                payload.setdefault("reasoning_budget", 0)
         return payload, ep

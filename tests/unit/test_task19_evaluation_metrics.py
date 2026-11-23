@@ -125,6 +125,7 @@ def test_llama_server_native_tools_thinking_off_and_read_before_write_shape(tmp_
         {"disable_thinking": True},
     )
     assert payload.get("chat_template_kwargs") == {"enable_thinking": False}
+    assert payload.get("reasoning_budget") == 0
     assert "disable_thinking" not in payload
 
     base = OpenAICompatibleAdapter(
@@ -177,3 +178,22 @@ def test_compact_flat_tool_schemas_include_read_and_write_for_core_registry(tmp_
     schemas = resolve_effective_tool_schemas(orch, rt, active_role="operational")
     names = {s["function"]["name"] for s in schemas}
     assert {"read_file", "write_file", "edit_file_atomic", "grep", "run_tests"}.issubset(names)
+
+
+def test_message_bus_run_sync_delivery_handles_executor_shutdown():
+    import asyncio
+    from unittest.mock import patch
+
+    from src.core.messaging.bus import MessageBus
+
+    bus = MessageBus()
+
+    async def _run():
+        with patch.object(
+            asyncio.get_running_loop(),
+            "run_in_executor",
+            side_effect=RuntimeError("cannot schedule new futures after shutdown"),
+        ):
+            await bus._run_sync_delivery(lambda: None)
+
+    asyncio.run(_run())
