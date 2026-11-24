@@ -117,7 +117,7 @@ class TestTask08PlanModeAndApprovalNode:
             "digest": compute_action_digest("write_file", {"path": "a.py"}),
         }
         with patch(
-            "src.core.orchestration.graph.nodes.approval_node.wait_for_user_node",
+            "src.core.orchestration.graph.nodes.approval_node._wait_for_user",
             new=AsyncMock(return_value={"preview_confirmed": False, "awaiting_user_input": False}),
         ):
             res_preview = await _approval_node_impl(

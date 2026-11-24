@@ -116,20 +116,6 @@ _NODE_OUTPUT_SCHEMAS: dict[str, NodeOutputSchema] = {
     "agent_loop": NodeOutputSchema(_CANONICAL_LOOP_KEYS, core_keys=()),
     "frontier_loop": NodeOutputSchema(_CANONICAL_LOOP_KEYS, core_keys=()),
     "approval": NodeOutputSchema(_CANONICAL_APPROVAL_KEYS, core_keys=()),
-    "wait_for_user": NodeOutputSchema(
-        frozenset(
-            {
-                "awaiting_plan_approval",
-                "awaiting_user_input",
-                "plan_mode_approved",
-                "plan_mode_blocked_tool",
-                "last_result",
-                "preview_confirmed",
-                "pending_preview_id",
-            }
-        ),
-        core_keys=("awaiting_user_input",),
-    ),
     "verify": NodeOutputSchema(_CANONICAL_VERIFY_KEYS, core_keys=()),
     "verification": NodeOutputSchema(
         frozenset(
@@ -152,9 +138,6 @@ _NODE_OUTPUT_SCHEMAS: dict[str, NodeOutputSchema] = {
                 "_should_distill",
                 "_force_compact",
                 "_compacted_history",
-                "last_compact_turn",
-                "last_compact_at",
-                "context_degradation_detected",
             }
         ),
         core_keys=(),
@@ -172,10 +155,6 @@ _NODE_OUTPUT_SCHEMAS: dict[str, NodeOutputSchema] = {
             }
         ),
         core_keys=(),
-    ),
-    "memory_sync": NodeOutputSchema(
-        frozenset({"_force_compact", "errors", "analysis_summary", "history"}),
-        core_keys=("_force_compact", "errors"),
     ),
 }
 

@@ -97,10 +97,6 @@ from typing import (  # noqa: E402
     TYPE_CHECKING,
 )
 
-# Import the authoritative PlanDAG from dag_parser — state.py previously had
-# an incompatible duplicate dataclass definition (different fields) which
-# caused AttributeErrors at runtime when code mixed both.
-from src.core.orchestration.dag_parser import PlanDAG  # noqa: F401, E402
 from src.core.orchestration.graph.policy import (  # noqa: F401, E402
     LastAction,
     PendingAction,
@@ -143,50 +139,17 @@ def replace_state_list(items: list[Any] | None) -> ReplaceList:
     return ReplaceList(items or [])
 
 
-# P2-4: plan_history needs a capped-append reducer so LangGraph appends
-# entries rather than replacing the whole list on each state update.
-# Cap at 10 to prevent unbounded growth across many replan cycles.
-_PLAN_HISTORY_CAP = 10
-
-
-def _append_plan_history(
-    left: List[Dict[str, Any]] | None,
-    right: List[Dict[str, Any]] | None,
-) -> List[Dict[str, Any]]:
-    """Append new plan-history entries from *right* onto *left*, capped at
-    _PLAN_HISTORY_CAP.  When *right* is a ReplaceList it replaces *left*.
-    """
-    if isinstance(right, ReplaceList):
-        result = list(right)
-    else:
-        result = list(left or []) + list(right or [])
-    # Keep only the most recent entries.
-    if len(result) > _PLAN_HISTORY_CAP:
-        result = result[-_PLAN_HISTORY_CAP:]
-    return result
-
 # ---------------------------------------------------------------------------
-# AgentState — shared state of the LangGraph cognitive pipeline.
+# AgentState — shared state of the cognitive pipeline (TASK-25 slimmed).
 # All Optional[X] annotations are written as X | None (Python 3.10+ union
 # syntax) for consistency with the rest of the codebase.
 # ---------------------------------------------------------------------------
 
 
 class _AgentStateSpec(TypedDict, total=False):
-    """Shared state of the LangGraph cognitive pipeline.
-
-    Fields are organized into logical sections with section-comment headers
-    (P4-T5). LangGraph requires a flat TypedDict — nested sub-states are NOT
-    used as they break the reducer. Section comments are documentation only.
-    """
+    """Shared state of the 6-node canonical cognitive pipeline."""
 
     # ── Core task ──────────────────────────────────────────────────────────
-    # LIFECYCLE: Set by orchestrator_bootstrap / builder; read by every node.
-    #   task, original_task, working_dir — immutable after bootstrap
-    #   session_id, parent_session_id — set once by bootstrap
-    #   turn_count, max_turns — incremented by perception_node, read by loop_guards
-    #   rounds — incremented by frontier_loop_node
-    #   agent_mode, model_tier, deterministic, seed — set by workflow_selector
     task: str
     original_task: str | None
     working_dir: str
@@ -211,93 +174,32 @@ class _AgentStateSpec(TypedDict, total=False):
     workflow_config: Any | None
 
     # ── Conversation history ───────────────────────────────────────────────
-    # LIFECYCLE: Written by perception_node, execution_node; read by all nodes.
-    #   history — primary message list; appended by perception & execution
-    #   verified_reads — written by verification_node
-    #   task_history — snapshot by memory_sync_node
-    #   recent_tool_calls — updated by execution_node, read by loop_guards
-    #   errors — appended by any node on failure; cleared on new turn
     history: Annotated[List[Dict[str, Any]], merge_or_replace_list]
     verified_reads: Annotated[List[str], merge_or_replace_list]
     task_history: List[Dict[str, Any]] | None
-    recent_tool_calls: List[str] | None
     errors: List[str]
 
     # ── Plan & step ────────────────────────────────────────────────────────
-    # LIFECYCLE: Written by planning_node, plan_validator; read by execution_node.
-    #   current_plan, plan_dag — set by planning_node
-    #   current_step — incremented by execution_node step completion
-    #   plan_completed — set by frontier_loop_node when the loop covered the
-    #     whole plan and the model declared done; read by evaluation_node and
-    #     persisted so a finished plan is not regenerated next turn (P3.3)
-    #   planned_action — set during plan breakdown
-    #   plan_progress — updated by execution_node
-    #   execution_waves, current_wave — set by planner, read by execution
-    #   plan_attempts, replan_attempts — incremented on replan
-    #   replan_required — set by execution_node when stuck
-    #   plan_resumed, last_plan_hash — set on session resume
-    #   task_decomposed, task_complexity — set by planning_node
-    #   step_retry_counts — dict keyed by step index; updated by execution
-    #   no_plan_fail_count — incremented on consecutive no-plan failures
-    #   step_lint_warnings — set by linter after tool execution
-    #   affected_files — aggregated by execution_node
     current_plan: List[Dict[str, Any]] | None
     current_step: int | None
     plan_completed: bool | None
-    step_description: str | None
     planned_action: Dict[str, Any] | None
-    plan_progress: Dict[str, Any] | None
-    plan_dag: Dict[str, Any] | None
-    execution_waves: List[List[str]] | None
-    current_wave: int | None
-    plan_attempts: int | None
-    replan_attempts: int | None
     replan_required: str | None
-    plan_resumed: bool | None
-    last_plan_hash: str | None
-    task_decomposed: bool | None
-    task_complexity: str | None
     step_retry_counts: Dict[str, int] | None
     no_plan_fail_count: int | None
-    # P3-4 / P2-4: Plan versioning — list of previous plan snapshots with timestamps.
-    # Uses _append_plan_history reducer so LangGraph appends rather than replaces.
-    # Each entry: {"timestamp": ISO8601, "plan": [...], "reason": str}
-    plan_history: Annotated[List[Dict[str, Any]], _append_plan_history] | None
-    step_lint_warnings: List[str] | None
     affected_files: List[str] | None
 
     # ── Plan approval / preview ────────────────────────────────────────────
-    # LIFECYCLE: Written by plan_mode, preview_service; read by execution_node.
-    #   plan_validation — set by plan_validator
-    #   plan_enforce_warnings, plan_strict_mode — config flags, immutable
-    #   plan_mode_enabled, awaiting_plan_approval — managed by plan_mode
-    #   plan_mode_approved — set true on user approval
-    #   plan_mode_blocked_tool — set when tool blocked in plan mode
-    #   pending_preview_id — set by preview_service on /preview
-    #   preview_mode_enabled, preview_confirmed — toggle flags
-    #   awaiting_user_input — set by any node needing user input
     plan_validation: Dict[str, Any] | None
     plan_enforce_warnings: bool | None
-    plan_strict_mode: bool | None
-    plan_mode_enabled: bool | None
     awaiting_plan_approval: bool | None
     plan_mode_approved: bool | None
     plan_mode_blocked_tool: str | None
     pending_preview_id: str | None
-    preview_mode_enabled: bool | None
     preview_confirmed: bool | None
     awaiting_user_input: bool | None
 
     # ── Tool execution ─────────────────────────────────────────────────────
-    # LIFECYCLE: Written by execution_node / frontier_loop_node; read by verification_node, loop_guards.
-    #   next_action — the pending tool call (set then consumed each iteration)
-    #   last_result — outcome of last tool call
-    #   last_tool_name — name of last executed tool
-    #   action_failed — bool flag for recovery branching
-    #   tool_call_count, max_tool_calls — counter / cap for tool loop
-    #   tool_last_used — dict[user_tool_name -> turn_number] for throttling
-    #   files_read — tracking for read-before-write guard
-    #   snapshots — fork snapshot IDs created during session
     next_action: Dict[str, Any] | None
     last_result: Dict[str, Any] | None
     last_tool_name: str | None
@@ -309,84 +211,37 @@ class _AgentStateSpec(TypedDict, total=False):
     snapshots: List[str] | None
 
     # ── Debug & recovery ───────────────────────────────────────────────────
-    # LIFECYCLE: Written by recovery_node / loop_guards; read by perception_node, execution_node.
-    #   debug_attempts, max_debug_attempts — incrementing loop counter / cap
-    #   total_debug_attempts — lifetime counter (never reset)
-    #   last_debug_error_type, total_recovery_attempts — diagnostic fields
-    #   last_error_code — set on tool failure; cleared on success
-    #   needs_clarification — set when user clarification required
     debug_attempts: int | None
     max_debug_attempts: int | None
     total_debug_attempts: int | None
-    last_debug_error_type: str | None
-    total_recovery_attempts: int | None
     last_error_code: str | None
     needs_clarification: bool | None
 
     # ── Verification ───────────────────────────────────────────────────────
-    # LIFECYCLE: Written by verification_node; read by evaluation_node, memory_sync_node.
-    #   verification_passed, verification_result — linter/check verification
-    #   evaluation_result — overall pass/fail from LLM evaluator
-    #   evaluation_llm_verdict, evaluation_llm_reason — LLM rationale
-    #   inline_verification_failures — P3.1 per-step checkpoint failures from
-    #     frontier_loop_node; the failures are also injected into history so the
-    #     model can self-correct within the loop.
     verification_passed: bool | None
     verification_result: Dict[str, Any] | None
     inline_verification_failures: List[Dict[str, Any]] | None
     evaluation_result: str | None
-    evaluation_llm_verdict: str | None
-    evaluation_llm_reason: str | None
 
     # ── Analysis & context ─────────────────────────────────────────────────
-    # LIFECYCLE: Written by analysis_node, analyst_delegation_node; read by planning_node, execution_node.
-    #   analysis_summary — LLM distillation of repo context
-    #   relevant_files, key_symbols — file/symbol lists from repo analysis
-    #   analyst_findings — free-text findings from analyst subagent
-    #   repo_summary_data — cached repo structure overview
-    #   call_graph, test_map — dependency graphs from analysis_node
-    #   step_controller_enabled — config flag for step-by-step mode
-    #   empty_response_count — counter for LLM returning empty responses
     analysis_summary: str | None
     relevant_files: List[str] | None
-    key_symbols: List[str] | None
     analyst_findings: str | None
     repo_summary_data: str | None
-    call_graph: Dict[str, Any] | None
-    test_map: Dict[str, Any] | None
-    step_controller_enabled: bool | None
-    empty_response_count: int | None
 
     # ── Delegation ─────────────────────────────────────────────────────────
-    # LIFECYCLE: Written by delegation_node / analyst_delegation_node; read by wait_for_delegations.
-    #   delegation_results — merged results after all sub-delegations complete
-    #   delegations — list of pending delegation tasks
-    #   delegation_depth — current nesting depth (prevents infinite recursion)
     delegation_results: Dict[str, Any] | None
     delegations: List[Dict[str, Any]] | None
     delegation_depth: int | None
 
     # ── Memory / distillation ──────────────────────────────────────────────
-    # LIFECYCLE: Written by perception_node, memory_sync_node; read by perception_node.
-    #   _should_distill — set when context budget exceeds threshold
-    #   _force_compact — set true by /compact command
-    #   _budget_compaction — set when token budget is tight
-    #   _compacted_history — result of last compaction
-    #   _compaction_last_round — turn number of last compaction
-    #   last_compact_at, last_compact_turn — diagnostic timestamps
-    #   context_degradation_detected — set when compaction quality is low
     _should_distill: bool | None
     _force_compact: bool | None
     _budget_compaction: bool | None
     _compacted_history: List[Dict[str, Any]] | None
     _compaction_last_round: int | None
-    last_compact_at: Any | None
-    last_compact_turn: int | None
-    context_degradation_detected: bool | None
 
     # ── Cost & telemetry ───────────────────────────────────────────────────
-    # LIFECYCLE: Written by evaluation_node / memory_sync_node; read by TUI bridge.
-    #   session_cost_usd — cumulative cost accumulator
     session_cost_usd: float | None
 
     # ── Internal / private ─────────────────────────────────────────────────
@@ -394,7 +249,6 @@ class _AgentStateSpec(TypedDict, total=False):
     _file_lock_manager: Any | None
     _write_queue: List[Dict[str, Any]] | None
     _agent_session_manager: Any | None
-    _agent_messages: List[Dict[str, Any]] | None
     _context_controller: Any | None
     _pending_injections_source: Any | None
 
@@ -406,7 +260,6 @@ class _AgentStateSpec(TypedDict, total=False):
     _frontier_loop_turns: int | None
 
     # ── Target State Contract (Engineering Audit §Appendix) ────────────────
-    # Target 7-node architecture: runtime, run, pending_action, last_action, verification.
     runtime: Dict[str, Any] | None
     run: Dict[str, Any] | None
     pending_action: Dict[str, Any] | None
@@ -433,13 +286,7 @@ _INT_OR_NONE_FIELDS: tuple[str, ...] = (
     "tool_call_count",
     "max_tool_calls",
     "tool_limit",
-    "context_limit",
-    "empty_response_count",
     "no_plan_fail_count",
-    "current_wave",
-    "last_compact_turn",
-    "plan_attempts",
-    "replan_attempts",
     "turn_count",
     "max_turns",
     "seed",

@@ -152,11 +152,9 @@ class TestMemoryUpdateNodeAppliesCompactedHistory:
             "session_id": "test",
         }
 
-    def test_memory_update_node_returns_compacted_history(self, tmp_path):
-        """memory_update_node must return compacted history when CompactionService compacts."""
-        from src.core.orchestration.graph.nodes.memory_update_node import (
-            memory_update_node,
-        )
+    def test_finalize_node_returns_compacted_history(self, tmp_path):
+        """finalize_node must return compacted history when CompactionService compacts."""
+        from src.core.orchestration.graph.nodes.finalize_node import finalize_node
         from src.core.memory.compaction_service import CompactionResult
 
         state = self._make_state(55, tmp_path)
@@ -178,30 +176,28 @@ class TestMemoryUpdateNodeAppliesCompactedHistory:
             return_value=fake_service,
         ):
             with patch(
-                "src.core.orchestration.graph.nodes.memory_update_node.distill_context",
+                "src.core.orchestration.graph.nodes.finalize_node.distill_context",
                 return_value={},
             ):
-                result = asyncio.run(memory_update_node(state, config))  # type: ignore[arg-type]
+                result = asyncio.run(finalize_node(state, config))  # type: ignore[arg-type]
 
         assert "history" in result, (
-            "memory_update_node must return 'history' when CompactionService compacts"
+            "finalize_node must return 'history' when CompactionService compacts"
         )
         assert result["history"] == compact_msgs
 
-    def test_memory_update_node_returns_force_compact_false(self, tmp_path):
-        """memory_update_node always returns _force_compact: False."""
-        from src.core.orchestration.graph.nodes.memory_update_node import (
-            memory_update_node,
-        )
+    def test_finalize_node_returns_force_compact_false(self, tmp_path):
+        """finalize_node always returns _force_compact: False."""
+        from src.core.orchestration.graph.nodes.finalize_node import finalize_node
 
         state = self._make_state(5, tmp_path)
         config = {"configurable": {"orchestrator": None}}
 
         with patch(
-            "src.core.orchestration.graph.nodes.memory_update_node.distill_context",
+            "src.core.orchestration.graph.nodes.finalize_node.distill_context",
             return_value={},
         ):
-            result = asyncio.run(memory_update_node(state, config))  # type: ignore[arg-type]
+            result = asyncio.run(finalize_node(state, config))  # type: ignore[arg-type]
 
         assert result.get("_force_compact") is False
 
@@ -258,12 +254,10 @@ class TestOrchestratorStartNewTaskClearsStaleState:
 # ---------------------------------------------------------------------------
 
 
-class TestMemoryUpdateNodeInjectsDistilledAnalysisSummary:
-    def test_memory_update_node_returns_analysis_summary_from_distilled(self, tmp_path):
-        """memory_update_node must return 'analysis_summary' from distilled current_state."""
-        from src.core.orchestration.graph.nodes.memory_update_node import (
-            memory_update_node,
-        )
+class TestFinalizeNodeInjectsDistilledAnalysisSummary:
+    def test_finalize_node_returns_analysis_summary_from_distilled(self, tmp_path):
+        """finalize_node must return 'analysis_summary' from distilled current_state."""
+        from src.core.orchestration.graph.nodes.finalize_node import finalize_node
 
         state = {
             "working_dir": str(tmp_path),
@@ -283,14 +277,13 @@ class TestMemoryUpdateNodeInjectsDistilledAnalysisSummary:
         }
 
         with patch(
-            "src.core.orchestration.graph.nodes.memory_update_node.distill_context",
+            "src.core.orchestration.graph.nodes.finalize_node.distill_context",
             return_value=distilled_return,
         ):
-            result = asyncio.run(memory_update_node(state, config))  # type: ignore[arg-type]
+            result = asyncio.run(finalize_node(state, config))  # type: ignore[arg-type]
 
         assert "analysis_summary" in result, (
-            "memory_update_node must return 'analysis_summary' from distilled current_state. "
-            "ME-3: distilled state never fed back to agent context."
+            "finalize_node must return 'analysis_summary' from distilled current_state."
         )
         assert result["analysis_summary"] == "All steps completed successfully.", (
             f"analysis_summary has wrong value: {result.get('analysis_summary')!r}"

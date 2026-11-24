@@ -104,73 +104,7 @@ class TestToolDispatchBenchmark:
 
 
 # ---------------------------------------------------------------------------
-# Benchmark 3: DAG parser throughput
-# ---------------------------------------------------------------------------
-
-
-class TestDAGParserBenchmark:
-    """Measure DAG parsing throughput for common plan sizes."""
-
-    def test_dag_parse_throughput_small(self):
-        """_parse_dag_content must parse a 5-step plan in under 5 ms."""
-        from src.core.orchestration.dag_parser import _parse_dag_content
-
-        content = json.dumps(
-            {
-                "root_task": "bench",
-                "steps": [
-                    {
-                        "step_id": f"step_{i}",
-                        "description": f"Step {i}",
-                        "files": ["a.py"],
-                        "depends_on": [f"step_{i - 1}"] if i > 0 else [],
-                    }
-                    for i in range(5)
-                ],
-            }
-        )
-
-        start = time.perf_counter()
-        for _ in range(100):
-            dag = _parse_dag_content(content)
-        elapsed_ms = (time.perf_counter() - start) * 1000 / 100
-
-        assert dag is not None # type: ignore[possibly-undefined]
-        assert elapsed_ms < 5, f"DAG parse too slow: {elapsed_ms:.2f} ms/call"
-
-    def test_dag_topological_sort_throughput(self):
-        """topological_sort_waves must finish a 20-step chain in under 10 ms."""
-        from src.core.orchestration.dag_parser import _parse_dag_content
-
-        content = json.dumps(
-            {
-                "root_task": "bench",
-                "steps": [
-                    {
-                        "step_id": f"step_{i}",
-                        "description": f"Step {i}",
-                        "files": [f"f{i}.py"],
-                        "depends_on": [f"step_{i - 1}"] if i > 0 else [],
-                    }
-                    for i in range(20)
-                ],
-            }
-        )
-
-        dag = _parse_dag_content(content)
-        assert dag is not None
-
-        start = time.perf_counter()
-        for _ in range(200):
-            waves = dag.topological_sort_waves()
-        elapsed_ms = (time.perf_counter() - start) * 1000 / 200
-
-        assert waves is not None # type: ignore[possibly-undefined]
-        assert elapsed_ms < 10, f"topological_sort_waves too slow: {elapsed_ms:.2f} ms/call"
-
-
-# ---------------------------------------------------------------------------
-# Benchmark 4: Token efficiency & parallel wave dispatch latency
+# Benchmark 3: Token efficiency & parallel wave dispatch latency
 # ---------------------------------------------------------------------------
 
 

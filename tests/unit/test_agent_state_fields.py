@@ -1,118 +1,66 @@
-"""
-Tests for NEW-5: AgentState TypedDict was missing several fields used at runtime.
+"""Tests for slimmed canonical AgentState fields (TASK-25 Stage A)."""
 
-Missing fields that were added:
-- original_task       — written by perception_node decomposition, read by execution/replan
-- step_description    — written by step_controller_node
-- planned_action      — written by step_controller_node
-- plan_validation     — written by plan_validator_node, read by builder.py routing
-- plan_enforce_warnings — read by plan_validator_node
-- plan_strict_mode    — read by plan_validator_node
-- task_history        — written by create_state_checkpoint
-
-Regression tests verify:
-1. All 7 fields exist in AgentState TypedDict annotations
-2. step_controller_node returns the expected keys
-3. A dict with these keys can be constructed without error
-"""
-
-
-# ruff: noqa: E501
-import pytest
+from __future__ import annotations
 
 
 class TestAgentStateFieldsExist:
-    """Verify all NEW-5 fields are present in AgentState TypedDict."""
+    """Verify active canonical fields exist and retired legacy 12-node fields are removed."""
 
     def _get_state_annotations(self):
-        """Return the resolved annotations dict of AgentState."""
         from src.core.orchestration.graph.state import AgentState
 
         return AgentState.__annotations__
 
-    def test_original_task_field_exists(self):
-        """original_task must be declared in AgentState (used by perception_node decomposition)."""
+    def test_active_canonical_fields_exist(self):
         annotations = self._get_state_annotations()
-        assert "original_task" in annotations, (
-            "NEW-5: 'original_task' must be in AgentState — written by perception_node:171"
-        )
-
-    def test_step_description_field_exists(self):
-        """step_description must be declared in AgentState (written by step_controller_node)."""
-        annotations = self._get_state_annotations()
-        assert "step_description" in annotations, (
-            "NEW-5: 'step_description' must be in AgentState — written by step_controller_node:44"
-        )
-
-    def test_planned_action_field_exists(self):
-        """planned_action must be declared in AgentState (written by step_controller_node)."""
-        annotations = self._get_state_annotations()
-        assert "planned_action" in annotations, (
-            "NEW-5: 'planned_action' must be in AgentState — written by step_controller_node:44"
-        )
-
-    def test_plan_validation_field_exists(self):
-        """plan_validation must be declared in AgentState (written by plan_validator_node, read by builder)."""
-        annotations = self._get_state_annotations()
-        assert "plan_validation" in annotations, (
-            "NEW-5: 'plan_validation' must be in AgentState — written by plan_validator_node, "
-            "read by builder.py:60"
-        )
-
-    def test_plan_enforce_warnings_field_exists(self):
-        """plan_enforce_warnings must be declared in AgentState (read by plan_validator_node)."""
-        annotations = self._get_state_annotations()
-        assert "plan_enforce_warnings" in annotations, (
-            "NEW-5: 'plan_enforce_warnings' must be in AgentState — read by plan_validator_node:186"
-        )
-
-    def test_plan_strict_mode_field_exists(self):
-        """plan_strict_mode must be declared in AgentState (read by plan_validator_node)."""
-        annotations = self._get_state_annotations()
-        assert "plan_strict_mode" in annotations, (
-            "NEW-5: 'plan_strict_mode' must be in AgentState — read by plan_validator_node:189"
-        )
-
-    def test_task_history_field_exists(self):
-        """task_history must be declared in AgentState (written by create_state_checkpoint)."""
-        annotations = self._get_state_annotations()
-        assert "task_history" in annotations, (
-            "NEW-5: 'task_history' must be in AgentState — written by create_state_checkpoint"
-        )
-
-    def test_all_new5_fields_in_single_check(self):
-        """Single test that verifies all 7 NEW-5 fields are present."""
-        from src.core.orchestration.graph.state import AgentState
-
-        annotations = AgentState.__annotations__
         required_fields = [
+            "task",
             "original_task",
-            "step_description",
+            "working_dir",
+            "history",
+            "verified_reads",
             "planned_action",
             "plan_validation",
             "plan_enforce_warnings",
-            "plan_strict_mode",
             "task_history",
+            "runtime",
+            "run",
+            "pending_action",
+            "last_action",
+            "verification",
         ]
         missing = [f for f in required_fields if f not in annotations]
-        assert missing == [], (
-            f"NEW-5: The following fields are missing from AgentState: {missing}"
-        )
+        assert missing == [], f"Active fields missing from AgentState: {missing}"
+
+    def test_legacy_12_node_fields_retired(self):
+        annotations = self._get_state_annotations()
+        retired_fields = [
+            "plan_dag",
+            "execution_waves",
+            "current_wave",
+            "step_description",
+            "plan_progress",
+            "plan_strict_mode",
+            "step_controller_enabled",
+            "evaluation_llm_verdict",
+            "evaluation_llm_reason",
+            "call_graph",
+            "test_map",
+            "key_symbols",
+        ]
+        present = [f for f in retired_fields if f in annotations]
+        assert present == [], f"Legacy 12-node fields should be retired: {present}"
 
 
 class TestAgentStateDictConstructible:
-    """Verify the fields can be used in a real AgentState-compatible dict."""
+    """Verify an active canonical AgentState dict is cleanly constructible."""
 
-    def test_state_dict_with_new5_fields_is_valid(self):
-        """
-        NEW-5: A state dict with all new fields must be accepted without TypedDict
-        validation errors. This confirms the fields were actually added to the TypedDict.
-        """
+    def test_canonical_state_dict_is_valid(self):
         from src.core.orchestration.graph.state import AgentState
 
-        # Construct a state dict including all NEW-5 fields
         state: AgentState = {  # type: ignore[assignment]
             "task": "test task",
+            "original_task": "original multi-step task",
             "history": [],
             "verified_reads": [],
             "next_action": None,
@@ -122,49 +70,21 @@ class TestAgentStateDictConstructible:
             "system_prompt": "",
             "errors": [],
             "session_id": None,
-            "delegation_results": None,
             "current_plan": None,
             "current_step": 0,
-            "deterministic": None,
-            "seed": None,
-            "analysis_summary": None,
-            "relevant_files": None,
-            "key_symbols": None,
-            "analyst_findings": None,
-            "plan_resumed": None,
-            "delegations": None,
-            "debug_attempts": 0,
-            "max_debug_attempts": 3,
-            "last_debug_error_type": None,
-            "verification_passed": None,
-            "verification_result": None,
-            "step_controller_enabled": True,
-            "task_decomposed": False,
-            "tool_call_count": 0,
-            "max_tool_calls": 50,
-            "last_tool_name": None,
-            "repo_summary_data": None,
-            "replan_required": None,
-            "action_failed": False,
-            "plan_progress": None,
-            "evaluation_result": None,
-            "cancel_event": None,
-            "empty_response_count": 0,
-            # NEW-5 fields:
-            "original_task": "original multi-step task",
-            "step_description": "Step one description",
             "planned_action": {"name": "read_file", "arguments": {"path": "a.py"}},
             "plan_validation": {"valid": True, "warnings": []},
             "plan_enforce_warnings": False,
-            "plan_strict_mode": False,
             "task_history": [],
+            "runtime": {},
+            "run": {},
+            "pending_action": None,
+            "last_action": None,
+            "verification": None,
         }
 
-        # All NEW-5 fields must be accessible
         assert state["original_task"] == "original multi-step task"
-        assert state["step_description"] == "Step one description"
         assert state["planned_action"]["name"] == "read_file"  # type: ignore[index]
         assert state["plan_validation"]["valid"] is True  # type: ignore[index]
         assert state["plan_enforce_warnings"] is False
-        assert state["plan_strict_mode"] is False
         assert state["task_history"] == []

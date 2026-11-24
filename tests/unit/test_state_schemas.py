@@ -71,7 +71,7 @@ class TestSchemaInventory:
             ("agent_loop", 24, ()),
             ("approval", 12, ()),
             ("verify", 8, ()),
-            ("compact", 10, ()),
+            ("compact", 7, ()),
             ("finalize", 7, ()),
         ],
     )

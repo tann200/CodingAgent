@@ -177,18 +177,18 @@ class TestSecondaryNodeSpans:
 
         assert "verification" in calls
 
-    def test_memory_update_node_calls_span(self):
-        from src.core.orchestration.graph.nodes import memory_update_node as _mod
+    def test_approval_node_calls_span(self):
+        from src.core.orchestration.graph.nodes import approval_node as _mod
         calls = []
 
         async def fake_impl(s, c):
             return {}
 
         with patch.object(_mod, "_span_node", self._make_fake_span(calls)), \
-             patch.object(_mod, "_memory_update_node_impl", fake_impl):
-            asyncio.run(_mod.memory_update_node(_make_state(), {}))
+             patch.object(_mod, "_approval_node_impl", fake_impl):
+            asyncio.run(_mod.approval_node(_make_state(), {}))
 
-        assert "memory_update" in calls
+        assert "approval" in calls
 
     def test_impl_functions_exist(self):
         """All _impl functions must exist and be coroutine functions."""
@@ -196,6 +196,6 @@ class TestSecondaryNodeSpans:
         from src.core.orchestration.graph.nodes.initialize_node import _initialize_node_impl
         from src.core.orchestration.graph.nodes.finalize_node import _finalize_node_impl
         from src.core.orchestration.graph.nodes.verification_node import _verification_node_impl
-        from src.core.orchestration.graph.nodes.memory_update_node import _memory_update_node_impl
-        for fn in [_initialize_node_impl, _finalize_node_impl, _verification_node_impl, _memory_update_node_impl]:
+        from src.core.orchestration.graph.nodes.approval_node import _approval_node_impl
+        for fn in [_initialize_node_impl, _finalize_node_impl, _verification_node_impl, _approval_node_impl]:
             assert inspect.iscoroutinefunction(fn), f"{fn.__name__} is not async"
