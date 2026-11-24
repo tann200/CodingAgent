@@ -65,16 +65,16 @@ Graph checkpoints can persist and rehydrate graph state. They improve crash reco
 
 ### Tool Execution And Safety
 
-`src/core/orchestration/tool_execution_pipeline.py` is the normal enforcement point for model-initiated tool calls. It performs canonicalization, read-before-write and scope checks, permission checks, approval handling, contract validation, rollback snapshots where supported, hooks, timeout handling, event publication, and tracing. String tool output is capped via tier-adaptive truncation scaled dynamically by `ModelRuntimePolicy` (`nano`: 6,000 chars; `compact`: 12,000 chars; `standard`: 24,000 chars; `frontier`: 48,000 chars) before entering history and model context.
+`src/core/orchestration/tool_execution_pipeline.py` is the normal enforcement point for model-initiated tool calls, coordinating four single-responsibility stages under `src/core/orchestration/pipeline/` (`preflight.py`, `permissions.py`, `dispatch.py`, `post_hooks.py`). It performs canonicalization, read-before-write and scope checks, permission checks, approval handling, contract validation, rollback snapshots where supported, hooks, timeout handling, event publication, and tracing. String tool output is capped via tier-adaptive truncation scaled dynamically by `ModelRuntimePolicy` (`nano`: 6,000 chars; `compact`: 12,000 chars; `standard`: 24,000 chars; `frontier`: 48,000 chars) before entering history and model context.
 
-`src/tools/` provides the registered functions. Important groups are:
+`src/tools/` provides the registered functions managed by a single authoritative `ToolRegistry` (`src/tools/_registry.py`; `src/core/orchestration/tool_registry.py` and `registry_builder.py` re-export and delegate directly). Important groups are:
 
-- `_file_io.py`, `_edit_tools.py`, `patch_tools.py`, and `repo_write_tools.py` for workspace modification.
+- `_file_io.py`, `_edit_tools.py`, `patch_tools.py`, and `repo_write_tools.py` for workspace modification. Model-facing file edits standardize on three canonical primitives (`write_file`, `edit_file_atomic`, `apply_patch`), while legacy edit aliases (`edit_file`, `edit_by_line_range`, `multiedit`, `edit_code_block`) remain registered and executable with `schema_visibility="alias_only"`.
 - `_bash_exec.py`, `bash_security.py`, and `sandbox.py` for command execution. Sandboxed execution isolates `/tmp` using `--tmpfs` (avoiding host temp data exposure) and fails closed by default if no backend is available or enforcing, unless explicitly opted out via `CODINGAGENT_SANDBOX_ALLOW_UNENFORCED=1` or `CODINGAGENT_SANDBOX_LEVEL=off`.
 - `repo_read_tools.py`, `lsp_tools.py`, and `project_tools.py` for repository inspection.
-- `verification_tools.py`, `lint_dispatch.py`, and `formatter.py` for validation.
+- `verification_tools.py` (including consolidated auto-formatting via `format_file` and `run_formatter`) and `lint_dispatch.py` for validation.
 - `memory_tools.py`, `todo_tools.py`, `plan_mode_tools.py`, and `subagent_tools.py` for agent state and workflow support.
-- `src/config/toolsets/` (`compact-flat.yaml`, `standard-flat.yaml`, `frontier-flat.yaml`) defines the model-facing flat single-purpose primitive toolsets (12 / 18 / 25 tools) intersected fail-closed with role and `explore_mode` permissions. `_capabilities.py` and `capability_tools.py` remain registered with `schema_visibility="alias_only"` for backward-compatible execution without bloating model-facing schemas.
+- `src/config/toolsets/` (`compact-flat.yaml`, `standard-flat.yaml`, `frontier-flat.yaml`) defines the model-facing flat single-purpose primitive toolsets (12 / 18 / 25 tools) intersected fail-closed with role and `explore_mode` permissions. Track 1 `capability_tools.py` and `formatter.py` have been retired.
 
 `ToolRegistry.call()` routes invocations through guarded orchestrator execution (`Orchestrator.execute_tool()`), ensuring read-before-write validation, workspace confinement, secret redaction, and transactional pre-call snapshots for all mutations (including unlinking newly created files/directories on rollback). Tool discovery fails closed if non-optional built-in modules fail to import, and toolset resolution fails closed if any configured tool is absent.
 

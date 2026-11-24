@@ -393,9 +393,8 @@ def resolve_effective_tool_schemas(
 
     # Real ToolRegistry path: load curated flat toolset YAML and filter by permissions
     from src.tools._registry import ToolRegistry as _ToolsRegistry
-    from src.core.orchestration.tool_registry import ToolRegistry as _CoreToolRegistry
 
-    if isinstance(reg, (_ToolsRegistry, _CoreToolRegistry)):
+    if isinstance(reg, _ToolsRegistry):
         try:
             from src.config.toolsets.loader import get_tools_for_toolset
 

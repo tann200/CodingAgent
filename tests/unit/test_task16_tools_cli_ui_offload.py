@@ -39,26 +39,20 @@ def test_tool_schema_resolves_optional_and_pep604_unions():
 
 
 # ---------------------------------------------------------------------------
-# 2. capability_tools.py permissions & imports/kwargs
+# 2. Retired capability_tools.py & canonical git/verify primitives
 # ---------------------------------------------------------------------------
 
 
-def test_capability_tools_git_write_permission_and_signatures():
-    import src.tools.capability_tools as ct
+def test_canonical_git_and_verify_primitives_permissions(tmp_path: Path):
+    from src.tools import git_tools, verification_tools
     from src.tools._tool import PermissionKind
 
-    git_meta = ct.git.__tool_meta__
-    assert git_meta.permission_kind == PermissionKind.GIT_WRITE
-    assert "write" in git_meta.side_effects
+    assert git_tools.git_commit.__tool_meta__.permission_kind == PermissionKind.GIT_WRITE
+    assert "write" in git_tools.git_commit.__tool_meta__.side_effects
 
-
-def test_capability_tools_all_wrappers_import_cleanly(tmp_path: Path):
-    import src.tools.capability_tools as ct
-
-    # Syntax check & format_file kwargs match verification_tools
     target = tmp_path / "ok.py"
     target.write_text("x = 1\n", encoding="utf-8")
-    res = ct.verify(operation="syntax", path=str(target), workdir=str(tmp_path))
+    res = verification_tools.syntax_check(workdir=str(tmp_path))
     assert res.get("ok") is True or res.get("status") == "ok"
 
 

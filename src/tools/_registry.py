@@ -74,41 +74,20 @@ _BUILTIN_ALIASES: Dict[str, str] = {
     "fs.list": "list_files",
 }
 
-# Capability-dispatcher wrappers and deprecated duplicate tools kept registered
-# for execution compatibility ("alias_only") while excluded from default primary
-# OpenAI tool schemas so models see clean single-purpose primitives.
+# Deprecated duplicate primitives and legacy edit aliases kept registered for
+# execution compatibility ("alias_only") while excluded from default primary
+# OpenAI tool schemas so models see clean canonical primitives (write_file,
+# edit_file_atomic, apply_patch).
 _ALIAS_ONLY_TOOL_NAMES: frozenset[str] = frozenset(
     {
-        "batch",
-        "code_search",
-        "delegate",
-        "files_delete",
-        "files_edit",
-        "files_list",
-        "files_move",
-        "files_read",
-        "files_search",
-        "files_write",
-        "format",
-        "git",
-        "lsp",
-        "memory",
-        "patch",
-        "plan",
-        "repo_inspect",
-        "shell",
-        "skills",
-        "state",
-        "symbols",
-        "tasks_wait",
-        "todo",
-        "user_interact",
-        "verify",
-        "web_read",
         # Deprecated duplicate primitives
         "run_tests_legacy",
         "get_git_diff",
+        # Legacy edit primitives — canonical set is write_file, edit_file_atomic, apply_patch
         "edit_file",
+        "edit_by_line_range",
+        "multiedit",
+        "edit_code_block",
     }
 )
 
@@ -150,6 +129,15 @@ class ToolRegistry:
         self._orchestrator: Optional[Any] = None
         self._explicit_filter: bool = False
 
+    @property
+    def tools(self) -> Dict[str, Dict[str, Any]]:
+        """Direct mapping of registered tool entries (compat alias for ``_tools``)."""
+        return self._tools
+
+    @tools.setter
+    def tools(self, value: Dict[str, Dict[str, Any]]) -> None:
+        self._tools = value
+
     def set_orchestrator(self, orchestrator: Any) -> None:
         """Bind an active orchestrator to this registry for guarded tool execution."""
         with self._lock:
@@ -180,6 +168,9 @@ class ToolRegistry:
         tags: Optional[List[str]] = None,
         origin: str = "builtin",
         schema_visibility: str = "primary",
+        tool_meta: Optional[Any] = None,
+        permission_kind: Optional[Any] = None,
+        schema: Optional[Dict[str, Any]] = None,
     ) -> None:
         """Manually register a callable under *name*.
 
@@ -196,20 +187,49 @@ class ToolRegistry:
         tags:
             Toolset membership hints (e.g. ``["coding", "review"]``).
         origin:
-            ``'builtin'`` (default) or ``'plugin'``.  Plugin registrations that
-            attempt to overwrite a builtin name raise ``ValueError`` (TASK-03).
+            ``'builtin'`` (default), ``'mcp'``, or ``'plugin'``.  Plugin
+            registrations that attempt to overwrite a builtin name raise
+            ``ValueError`` (TASK-03).
         schema_visibility:
             ``'primary'`` (default) or ``'alias_only'`` (executable, hidden from
             default OpenAI schemas unless explicitly filtered).
+        tool_meta:
+            Optional ``ToolDefinition`` metadata override.
+        permission_kind:
+            Optional ``PermissionKind`` override.
+        schema:
+            Optional JSON schema dict (e.g. MCP tool ``inputSchema``).
         """
+        meta_obj = tool_meta if tool_meta is not None else getattr(fn, TOOL_ATTR, None)
         entry: Dict[str, Any] = {
             "fn": fn,
-            "side_effects": list(side_effects or []),
-            "description": description or (fn.__doc__ or "").strip().split("\n")[0],
-            "tags": list(tags or []),
+            "side_effects": list(
+                side_effects
+                if side_effects is not None
+                else (getattr(meta_obj, "side_effects", None) or [])
+            ),
+            "description": (
+                description
+                or getattr(meta_obj, "description", "")
+                or (fn.__doc__ or "").strip().split("\n")[0]
+            ),
+            "tags": list(
+                tags
+                if tags is not None
+                else (getattr(meta_obj, "tags", None) or [])
+            ),
             "name": name,
-            "schema_visibility": schema_visibility,
+            "origin": origin,
+            "schema_visibility": schema_visibility or getattr(meta_obj, "schema_visibility", "primary"),
         }
+        if meta_obj is not None:
+            entry["__tool_meta__"] = meta_obj
+        if permission_kind is not None:
+            entry["permission_kind"] = permission_kind
+        elif meta_obj is not None and getattr(meta_obj, "permission_kind", None) is not None:
+            entry["permission_kind"] = meta_obj.permission_kind
+        if schema is not None:
+            entry["schema"] = schema
         # Hold the lock for the entire check-and-register sequence to prevent
         # TOCTOU races between the builtin-conflict check, the plugin-cap check,
         # and the final write.
@@ -379,6 +399,9 @@ class ToolRegistry:
         with self._lock:
             if name in self._tools:
                 del self._tools[name]
+                prev_origin = self._origins.pop(name, None)
+                if prev_origin == "plugin" and self._plugin_count > 0:
+                    self._plugin_count -= 1
                 return True
             return False
 
@@ -477,9 +500,18 @@ class ToolRegistry:
             fn = entry.get("fn")
             if not fn:
                 continue
-            defn = getattr(fn, TOOL_ATTR, None)
-            if defn is not None:
+            defn = entry.get("__tool_meta__") or getattr(fn, TOOL_ATTR, None)
+            if defn is not None and hasattr(defn, "to_openai_schema"):
                 schema = defn.to_openai_schema()
+            elif isinstance(entry.get("schema"), dict):
+                schema = {
+                    "type": "function",
+                    "function": {
+                        "name": name,
+                        "description": entry.get("description", ""),
+                        "parameters": entry["schema"],
+                    },
+                }
             else:
                 # Fallback: build minimal schema from signature
                 schema = _minimal_schema(name, fn, entry.get("description", ""))
@@ -501,6 +533,8 @@ class ToolRegistry:
             if tool_tags & set(tags):
                 with sub._lock:
                     sub._tools[name] = entry
+                    if name in self._origins:
+                        sub._origins[name] = self._origins[name]
         return sub
 
     def filter_by_names(self, names: List[str]) -> "ToolRegistry":
@@ -512,6 +546,8 @@ class ToolRegistry:
             for n in names:
                 if n in self._tools:
                     sub._tools[n] = self._tools[n]
+                    if n in self._origins:
+                        sub._origins[n] = self._origins[n]
         return sub
 
     def resolve_toolset(self, toolset_name: str, fail_closed: bool = True) -> List[str]:

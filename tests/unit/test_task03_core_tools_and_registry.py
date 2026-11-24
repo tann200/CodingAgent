@@ -99,11 +99,13 @@ class TestTask03RegistryAndPreflight:
 
         primary_names = {s["function"]["name"] for s in reg.get_openai_functions()}
         assert "read_file" in primary_names
-        assert "files_read" not in primary_names
+        assert "edit_file_atomic" in primary_names
+        assert "edit_file" not in primary_names
+        assert "edit_by_line_range" not in primary_names
 
-        filtered = reg.filter_by_names(["files_read"])
+        filtered = reg.filter_by_names(["edit_file"])
         filtered_names = {s["function"]["name"] for s in filtered.get_openai_functions()}
-        assert "files_read" in filtered_names
+        assert "edit_file" in filtered_names
 
     def test_tool_registry_call_fails_closed_when_orchestrator_init_fails(self):
         core_reg = CoreToolRegistry()

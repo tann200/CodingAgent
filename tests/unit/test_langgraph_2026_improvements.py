@@ -168,11 +168,14 @@ class TestFlatToolsetsAndRoleFiltering:
         schemas = reg.get_openai_functions()
         schema_names = {s["function"]["name"] for s in schemas}
 
-        # Alias-only capability wrappers are hidden from model-facing schemas
-        for alias in ("files_read", "files_write", "files_edit", "shell", "verify"):
+        # Legacy edit primitives & deprecated aliases are hidden from model-facing schemas
+        for alias in ("edit_file", "edit_by_line_range", "multiedit", "edit_code_block"):
             assert alias not in schema_names
             # Yet remain registered as executable aliases
             assert reg.get(alias) is not None
+        # Canonical 3 edit primitives stay visible
+        for canonical in ("write_file", "edit_file_atomic", "apply_patch"):
+            assert canonical in schema_names
 
         orch = SimpleNamespace(tool_registry=reg, explore_mode=False)
 

@@ -1,12 +1,23 @@
 from typing import Dict, Any, List, Optional, Union
 from pathlib import Path
+import logging
 import subprocess
 import shutil
 import os
 import re
 import time
 
+try:
+    import yaml as _yaml
+except ImportError:
+    _yaml = None  # type: ignore[assignment]
+
 from src.tools._tool import tool, PermissionKind
+
+_logger = logging.getLogger(__name__)
+_FORMATTER_CONFIG_PATH = Path(__file__).parents[1] / "config" / "formatters.yaml"
+_CMD_CACHE: Dict[str, Optional[List[str]]] = {}
+_FORMATTER_CONFIG: Optional[Dict[str, Any]] = None
 
 
 def _safe_resolve_workdir(workdir: str) -> str:
@@ -991,6 +1002,99 @@ def format_file(path: str) -> Dict[str, Any]:
             "path": path,
             "error": str(exc),
         }
+
+
+def _load_config() -> Dict[str, Any]:
+    """Load formatters.yaml; return built-in fallback on error."""
+    if _yaml is None:
+        return {}
+    try:
+        if _FORMATTER_CONFIG_PATH.exists():
+            return _yaml.safe_load(_FORMATTER_CONFIG_PATH.read_text(encoding="utf-8")) or {}
+    except Exception:
+        pass
+    return {
+        ".py": {"cmd": ["black", "--quiet", "{file}"]},
+        ".go": {"cmd": ["gofmt", "-w", "{file}"]},
+        ".rs": {"cmd": ["rustfmt", "{file}"]},
+    }
+
+
+def _get_config() -> Dict[str, Any]:
+    global _FORMATTER_CONFIG
+    if _FORMATTER_CONFIG is None:
+        _FORMATTER_CONFIG = _load_config()
+    return _FORMATTER_CONFIG
+
+
+def _get_cmd(ext: str, file_path: str) -> Optional[List[str]]:
+    """Return the configured formatter command for *ext*, or None if unavailable."""
+    if ext in _CMD_CACHE:
+        cached = _CMD_CACHE[ext]
+        if cached is None:
+            return None
+        return [part.replace("{file}", file_path) for part in cached]
+
+    cfg = _get_config()
+    entry = cfg.get(ext)
+    if not entry:
+        _CMD_CACHE[ext] = None
+        return None
+
+    template: List[str] = entry.get("cmd", [])
+    if not template:
+        _CMD_CACHE[ext] = None
+        return None
+
+    binary = template[0]
+    if not shutil.which(binary):
+        _logger.debug("formatter: %s not found on PATH — skipping for %s", binary, ext)
+        _CMD_CACHE[ext] = None
+        return None
+
+    _CMD_CACHE[ext] = template
+    return [part.replace("{file}", file_path) for part in template]
+
+
+def run_formatter(file_path: str, timeout: float = 15.0) -> bool:
+    """Run the configured auto-formatter for *file_path* (merged from formatter.py).
+
+    Returns ``True`` if the formatter ran successfully, ``False`` otherwise.
+    Never raises — formatting is best-effort and never blocks writes.
+    """
+    ext = Path(file_path).suffix.lower()
+    cmd = _get_cmd(ext, str(Path(file_path).resolve()))
+    if cmd is None:
+        return False
+
+    try:
+        from src.tools.sandbox import run_sandboxed
+
+        result = run_sandboxed(
+            cmd,
+            cwd=Path(file_path).resolve().parent,
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+            network=False,
+        )
+        if result.returncode != 0:
+            _logger.debug(
+                "formatter: %s exited %d for %s: %s",
+                cmd[0],
+                result.returncode,
+                file_path,
+                result.stderr.strip()[:200],
+            )
+            return False
+        _logger.debug("formatter: %s ran successfully on %s", cmd[0], file_path)
+        return True
+    except subprocess.TimeoutExpired:
+        _logger.debug("formatter: %s timed out for %s", cmd[0], file_path)
+        return False
+    except Exception as exc:
+        _logger.debug("formatter: unexpected error running %s: %s", cmd[0], exc)
+        return False
 
 
 # Alias for backwards compatibility

@@ -42,8 +42,6 @@ import uuid
 from dataclasses import dataclass
 from typing import Any, Callable, Dict, Optional
 
-from src.core.orchestration.tool_constants import PERM_ORDER as _PERM_ORDER
-
 logger = logging.getLogger(__name__)
 
 # TS-4: Transient error keywords that warrant an automatic retry.
@@ -410,107 +408,36 @@ class ToolExecutionService:
 
     @staticmethod
     def _check_permission_mode(name: str) -> ExecutionVerdict:
-        """Enforce --permission-mode restriction."""
-        try:
-            from src.tools.tools_config import (
-                get_active_permission_mode,
-                get_tool_permission,
-            )
+        """Enforce --permission-mode restriction (delegates to pipeline.permissions)."""
+        from src.core.orchestration.pipeline.permissions import _check_permission_mode_guard
 
-            _active_mode = get_active_permission_mode()
-            if _active_mode is None:
-                return ExecutionVerdict(blocked=False)
-
-            _tool_perm = get_tool_permission(name)
-            _active_rank = _PERM_ORDER.get(getattr(_active_mode, "value", ""), 99)
-            _tool_rank = _PERM_ORDER.get(getattr(_tool_perm, "value", ""), 99)
-            if _tool_rank > _active_rank:
-                return ExecutionVerdict(
-                    blocked=True,
-                    result={
-                        "ok": False,
-                        "error": (
-                            f"Tool '{name}' requires '{getattr(_tool_perm, 'value', '')}' "
-                            f"permission but active mode is '{getattr(_active_mode, 'value', '')}'."
-                        ),
-                    },
-                )
-        except Exception as _e:
-            logger.error("Permission mode check failed for tool '%s' (fail-closed): %s", name, _e)
-            return ExecutionVerdict(
-                blocked=True,
-                result={
-                    "ok": False,
-                    "error": f"Tool '{name}' was blocked: permission mode check error.",
-                },
-            )
+        blocked = _check_permission_mode_guard(None, name)
+        if blocked is not None:
+            return ExecutionVerdict(blocked=True, result=blocked)
         return ExecutionVerdict(blocked=False)
 
     @staticmethod
     def _check_explore_mode(name: str, orchestrator: Optional[Any]) -> ExecutionVerdict:
-        """Block non-read tools when explore_mode is active."""
-        if not orchestrator or not getattr(orchestrator, "explore_mode", False):
+        """Block non-read tools when explore_mode is active (delegates to pipeline.permissions)."""
+        if not orchestrator:
             return ExecutionVerdict(blocked=False)
-        try:
-            from src.core.orchestration.role_config import is_tool_allowed_for_role
+        from src.core.orchestration.pipeline.permissions import _check_explore_mode_guard
 
-            if not is_tool_allowed_for_role(name, "analyst"):
-                return ExecutionVerdict(
-                    blocked=True,
-                    result={
-                        "ok": False,
-                        "error": (
-                            f"Explore mode is active: tool '{name}' is not permitted. "
-                            "Only read-only exploration tools are allowed."
-                        ),
-                    },
-                )
-        except Exception as _e:
-            logger.error("Explore mode check failed for tool '%s' (fail-closed): %s", name, _e)
-            return ExecutionVerdict(
-                blocked=True,
-                result={
-                    "ok": False,
-                    "error": f"Tool '{name}' was blocked: explore mode check error.",
-                },
-            )
+        blocked = _check_explore_mode_guard(orchestrator, name)
+        if blocked is not None:
+            return ExecutionVerdict(blocked=True, result=blocked)
         return ExecutionVerdict(blocked=False)
 
     @staticmethod
     def _check_plan_mode(name: str, orchestrator: Optional[Any]) -> ExecutionVerdict:
-        """Block write tools when plan mode is enabled and not approved."""
+        """Block write tools when plan mode is enabled and not approved (delegates to pipeline.permissions)."""
         if not orchestrator:
             return ExecutionVerdict(blocked=False)
-        try:
-            from src.core.orchestration.plan_mode import PlanMode
+        from src.core.orchestration.pipeline.permissions import _check_plan_mode_guard
 
-            _pm = getattr(orchestrator, "plan_mode", None)
-            if (
-                _pm
-                and getattr(_pm, "enabled", False)
-                and name in PlanMode.BLOCKED_TOOLS
-            ):
-                _approved = getattr(orchestrator, "_plan_mode_approved", None)
-                if _approved is not True:
-                    return ExecutionVerdict(
-                        blocked=True,
-                        result={
-                            "ok": False,
-                            "error": (
-                                f"Tool '{name}' is blocked: the current plan has not been "
-                                "approved yet. Await user approval before making file changes."
-                            ),
-                        },
-                    )
-        except Exception as _e:
-            logger.error("Plan mode check failed for tool '%s' (fail-closed): %s", name, _e)
-            return ExecutionVerdict(
-                blocked=True,
-                result={
-                    "ok": False,
-                    "error": f"Tool '{name}' was blocked: plan mode check error.",
-                },
-            )
+        blocked = _check_plan_mode_guard(orchestrator, name)
+        if blocked is not None:
+            return ExecutionVerdict(blocked=True, result=blocked)
         return ExecutionVerdict(blocked=False)
 
     def _run_pre_hook(self, name: str, args: Dict[str, Any]) -> ExecutionVerdict:

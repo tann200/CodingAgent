@@ -399,10 +399,10 @@ class TestLSPToolSchemas:
 class TestFormatter:
     def test_run_formatter_returns_false_for_missing_binary(self, tmp_path):
         """When binary not installed, run_formatter returns False without raising."""
-        from src.tools.formatter import run_formatter, _CMD_CACHE
+        from src.tools.verification_tools import run_formatter, _CMD_CACHE
 
         # Use a non-existent binary name via a temp YAML override
-        with patch("src.tools.formatter._get_config") as mock_cfg:
+        with patch("src.tools.verification_tools._get_config") as mock_cfg:
             mock_cfg.return_value = {
                 ".testfmt": {"cmd": ["__nonexistent_binary_xyz__", "{file}"]}
             }
@@ -414,7 +414,7 @@ class TestFormatter:
 
     def test_run_formatter_no_config_for_extension(self, tmp_path):
         """Unknown extension returns False without error."""
-        from src.tools.formatter import run_formatter, _CMD_CACHE
+        from src.tools.verification_tools import run_formatter, _CMD_CACHE
 
         _CMD_CACHE.clear()
         f = tmp_path / "file.zzz"
@@ -424,7 +424,7 @@ class TestFormatter:
 
     def test_run_formatter_caches_unavailable(self, tmp_path):
         """Second call for same unavailable binary uses cache (no subprocess)."""
-        from src.tools.formatter import run_formatter, _CMD_CACHE
+        from src.tools.verification_tools import run_formatter, _CMD_CACHE
 
         _CMD_CACHE.clear()
         f = tmp_path / "a.zzz"

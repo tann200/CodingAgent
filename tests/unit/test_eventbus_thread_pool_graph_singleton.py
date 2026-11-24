@@ -222,11 +222,14 @@ class TestToolTimeoutThreadPoolExecutorFromDaemonThread:
         import inspect
         from src.core.orchestration import orchestrator as orc_mod
         import src.core.orchestration.tool_execution_pipeline as pipeline_mod
+        from src.core.orchestration.pipeline import dispatch as dispatch_mod
 
-        # Phase C: body moved to tool_execution_pipeline; check either module
-        source = inspect.getsource(
-            orc_mod.Orchestrator.execute_tool
-        ) + inspect.getsource(pipeline_mod)
+        # Phase C / TASK-22: body moved to pipeline/dispatch.py
+        source = (
+            inspect.getsource(orc_mod.Orchestrator.execute_tool)
+            + inspect.getsource(pipeline_mod)
+            + inspect.getsource(dispatch_mod)
+        )
         assert "ThreadPoolExecutor" in source, (
             "C1 fix: execute_tool must use ThreadPoolExecutor for timeouts"
         )
@@ -262,11 +265,14 @@ class TestSandboxAstParsePythonContentBeforeWrite:
         import inspect
         from src.core.orchestration import orchestrator as orc_mod
         import src.core.orchestration.tool_execution_pipeline as pipeline_mod
+        from src.core.orchestration.pipeline import preflight as preflight_mod
 
-        # Phase C: body moved to tool_execution_pipeline; check either module
-        source = inspect.getsource(
-            orc_mod.Orchestrator.execute_tool
-        ) + inspect.getsource(pipeline_mod)
+        # Phase C / TASK-22: body moved to pipeline/preflight.py
+        source = (
+            inspect.getsource(orc_mod.Orchestrator.execute_tool)
+            + inspect.getsource(pipeline_mod)
+            + inspect.getsource(preflight_mod)
+        )
         # C2 fix must parse new content directly, not call sandbox.validate_ast(path)
         assert "ast.parse" in source or "_ast.parse" in source, (
             "C2 fix: execute_tool must call ast.parse() on new content"

@@ -35,7 +35,7 @@ from src.tools.guardrails import (
     mark_file_read as _mark_file_read,
 )
 from src.core.orchestration.event_bus import get_event_bus as _get_event_bus
-from src.tools.formatter import run_formatter as _run_formatter
+from src.tools.verification_tools import run_formatter as _run_formatter
 from src.tools._diff_gate import _publish_diff_preview
 from src.core.security.redaction import (
     is_secret_path as _is_secret_path,
