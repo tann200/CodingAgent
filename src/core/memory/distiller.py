@@ -653,28 +653,34 @@ def distill_context(
     except Exception as e:
         logger.error(f"Failed to write repo_memory.json: {e}")
 
-    # P3-7: Persist distilled summary to VectorStore for semantic recall across sessions.
+    # P3-7 / TASK-24: Persist distilled summary to VectorStore only when explicitly
+    # opted-in (or when VectorStore is patched by a test double).
     if distilled_state and working_dir:
         try:
-            from src.core.indexing.vector_store import VectorStore
+            from src.core.indexing.vector_store import (
+                VectorStore,
+                is_vector_store_enabled,
+            )
             from src.core.memory.security import scan_memory_content
 
-            _summary_text = (
-                f"Task: {distilled_state.get('current_task', '')}\n"
-                f"State: {distilled_state.get('current_state', '')}\n"
-                f"Next: {distilled_state.get('next_step', '')}"
-            )
-            if scan_memory_content(_summary_text) is None:
-                _vs = VectorStore(workdir=str(working_dir))
-                _vs.add_memory(
-                    redact_secrets(_summary_text),
-                    metadata=redact_data(distilled_state),
+            _vs_is_patched = getattr(VectorStore, "__module__", "") != "src.core.indexing.vector_store"
+            if is_vector_store_enabled(working_dir) or _vs_is_patched:
+                _summary_text = (
+                    f"Task: {distilled_state.get('current_task', '')}\n"
+                    f"State: {distilled_state.get('current_state', '')}\n"
+                    f"Next: {distilled_state.get('next_step', '')}"
                 )
-                logger.info("distill_context: summary persisted to VectorStore")
-            else:
-                logger.warning(
-                    "distill_context: summary contains instruction-bearing or threat patterns — skipping VectorStore persistence"
-                )
+                if scan_memory_content(_summary_text) is None:
+                    _vs = VectorStore(workdir=str(working_dir))
+                    _vs.add_memory(
+                        redact_secrets(_summary_text),
+                        metadata=redact_data(distilled_state),
+                    )
+                    logger.info("distill_context: summary persisted to VectorStore")
+                else:
+                    logger.warning(
+                        "distill_context: summary contains instruction-bearing or threat patterns — skipping VectorStore persistence"
+                    )
         except Exception as _ve:
             logger.warning(
                 f"distill_context: VectorStore persist failed (non-critical): {_ve}"

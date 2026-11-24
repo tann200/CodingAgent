@@ -11,7 +11,7 @@ ARCH-VOL21-2: the original monolithic 446-line ``bootstrap_orchestrator`` has
 been split into four focused private helpers:
 
   _init_infrastructure   — MessageManager, thread pools, working dir,
-                            RollbackManager, FileLockManager, GitSnapshotManager,
+                            RollbackManager, FileLockManager,
                             SessionStore, LifecycleManager, SessionManager.
   _init_providers        — provider/adapter selection, startup event publish.
   _init_event_subscriptions — all event-bus subscriptions (provider, session,
@@ -147,21 +147,9 @@ def _init_infrastructure(orch: Any, message_max_tokens: Optional[int]) -> None:
         cancel_event=getattr(orch, "cancel_event", None),
     )
 
-    # S4-A: Initialize GitSnapshotManager for workspace snapshots.
-    from src.core.orchestration.snapshot_manager import GitSnapshotManager
-
-    _project_id = orch.working_dir.name or "default"
-    orch.snapshot_manager = GitSnapshotManager(
-        workspace=orch.working_dir,
-        project_id=_project_id,
-        enabled=True,
-    )
-
-    # Initialize SessionStore. Use the raw backend factory to prefer returning
-    # the concrete implementation (SqliteSessionStore or JsonlSessionStore).
-    # This satisfies tests that assert the orchestrator has a raw backend
-    # instance (not the compatibility wrapper). Fall back to the factory
-    # if raw creation fails.
+    # Initialize SessionStore (canonical SQLite backend — TASK-24).
+    # Note: GitSnapshotManager (snapshot_manager.py) has been retired in favour
+    # of the single transactional RollbackManager initialized above.
     try:
         from src.core.memory.session_store import _create_backend as _raw_create
 
@@ -172,13 +160,7 @@ def _init_infrastructure(orch: Any, message_max_tokens: Optional[int]) -> None:
 
             orch.session_store = get_session_store(workdir=str(orch.working_dir))
         except Exception:
-            # Fallback: instantiate JsonlSessionStore directly if factory fails
-            try:
-                from src.core.memory.jsonl_session_store import JsonlSessionStore
-
-                orch.session_store = JsonlSessionStore(str(orch.working_dir))
-            except Exception:
-                orch.session_store = None
+            orch.session_store = None
 
     # Initialize SessionLifecycleManager for graceful shutdown and snapshots
     from src.core.orchestration.session_lifecycle import get_session_lifecycle_manager
@@ -248,9 +230,6 @@ def _init_infrastructure(orch: Any, message_max_tokens: Optional[int]) -> None:
         # runtime import cycle by keeping this inside TYPE_CHECKING.
         from src.core.memory.session_store import SessionStore  # pragma: no cover
 
-    # orch.session_store may be either JsonlSessionStore or SessionStore. For
-    # type-checkers this is a Union; cast to the expected SessionStore to
-    # silence pyright while preserving runtime behaviour.
     orch.session_mgr = _SM(
         working_dir=orch.working_dir,
         session_store=cast("SessionStore", orch.session_store),

@@ -149,10 +149,10 @@ def test_sqlite_delete_session_cleans_mistakes_fts_and_refreshes_decisions(tmp_p
     assert all(d.get("session_id") != sid for d in decisions)
 
 
-def test_jsonl_session_store_preserves_dotted_session_ids_and_parity(tmp_path: Path) -> None:
-    from src.core.memory.jsonl_session_store import JsonlSessionStore
+def test_session_store_preserves_dotted_session_ids_and_delete(tmp_path: Path) -> None:
+    from src.core.memory.session_store import SessionStore
 
-    store = JsonlSessionStore(workdir=str(tmp_path))
+    store = SessionStore(workdir=str(tmp_path))
     sid = "release-1.2.3"
 
     store.add_message(sid, "user", "release message")
@@ -168,12 +168,12 @@ def test_jsonl_session_store_preserves_dotted_session_ids_and_parity(tmp_path: P
     assert sid in sessions
     assert "release-1.2" not in sessions
 
-    # Verify search_mistakes works in JsonlSessionStore
+    # Verify search_mistakes works
     mistakes = store.search_mistakes("mismatch")
     assert len(mistakes) >= 1
     assert "mismatch" in mistakes[0]["summary"]
 
-    # Verify delete_session cleans up files, snapshots, state, and updates decisions
+    # Verify delete_session cleans up records, snapshots, state, and updates decisions
     deleted_count = store.delete_session(sid)
     assert deleted_count >= 1
 

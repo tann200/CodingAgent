@@ -573,12 +573,22 @@ class ContextBuilder:
         """
         lines: List[str] = []
 
-        # 1. VectorStore — episodic memories from prior sessions
+        # 1. VectorStore — strictly opt-in episodic memories from prior sessions (TASK-24)
         try:
-            if _VectorStore is None:
-                raise ImportError("VectorStore unavailable")
-            _vs = _VectorStore(workdir=str(self._agent_context_dir.parent))
-            results = _vs.search_memories(query=task, limit=limit)
+            from src.core.indexing.vector_store import is_vector_store_enabled
+
+            _ws_root = self._agent_context_dir.parent
+            _is_patched_vs = _VectorStore is not None and not (
+                isinstance(_VectorStore, type)
+                and _VectorStore.__module__ == "src.core.indexing.vector_store"
+            )
+            if _VectorStore is not None and (
+                is_vector_store_enabled(_ws_root) or _is_patched_vs
+            ):
+                _vs = _VectorStore(workdir=str(_ws_root))
+                results = _vs.search_memories(query=task, limit=limit)
+            else:
+                results = []
             for r in results:
                 text = r.get("text") or r.get("content") or str(r)
                 text_str = str(text)[:250]

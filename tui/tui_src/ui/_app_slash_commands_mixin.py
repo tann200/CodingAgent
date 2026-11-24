@@ -729,39 +729,38 @@ class AppSlashCommandsMixin(AgentAppProtocol):
             self.notify(f"/mcp error: {exc}", severity="error")
 
     async def _slash_diff(self: AgentAppProtocol) -> None:
-        """Show working-directory diff since the last git snapshot."""
+        """Show working-directory diff via RollbackManager snapshots or git diff."""
         try:
-            orch = self._bridge._orchestrator
-            snap_mgr = getattr(orch, "snapshot_manager", None) if orch else None
-            if snap_mgr is None:
-                from src.core.orchestration.snapshot_manager import GitSnapshotManager
-                from pathlib import Path as _Path
-
-                _workdir = _Path(getattr(orch, "working_dir", ".") if orch else ".")
-                snap_mgr = GitSnapshotManager(
-                    workspace=_workdir,
-                    project_id=_workdir.name or "default",
-                )
-
             import asyncio as _asyncio
+            from pathlib import Path as _Path
 
-            _base_hash: str = "HEAD"
-            try:
-                _state = getattr(orch, "_last_agent_state", None) if orch else None
-                _snaps = (_state or {}).get("snapshots") or []
-                if _snaps:
-                    _base_hash = _snaps[0]
-            except Exception:
-                pass
+            orch = self._bridge._orchestrator
+            workdir = _Path(getattr(orch, "working_dir", ".") if orch else ".")
 
-            diff_text: str = ""
-            try:
-                diff_text = await _asyncio.wait_for(
-                    snap_mgr.diff(_base_hash), timeout=5.0
-                )
-            except Exception:
-                diff_text = ""
+            def _compute_diff() -> str:
+                from src.tools.git_tools import git_diff
 
+                res = git_diff(workdir=str(workdir))
+                if isinstance(res, dict) and res.get("status") == "ok":
+                    txt = str(res.get("diff") or res.get("output") or "").strip()
+                    if txt:
+                        return txt
+                # Fallback: summarize modified files recorded by RollbackManager
+                rb = getattr(orch, "rollback_manager", None) if orch else None
+                if rb is not None and hasattr(rb, "list_snapshots"):
+                    snaps = rb.list_snapshots()
+                    if snaps:
+                        latest = snaps[-1]
+                        files = latest.get("files") if isinstance(latest, dict) else []
+                        if files:
+                            return "Tracked rollback snapshot files:\n" + "\n".join(
+                                f"  - {f}" for f in files
+                            )
+                return ""
+
+            diff_text = await _asyncio.wait_for(
+                _asyncio.to_thread(_compute_diff), timeout=5.0
+            )
             if not diff_text or not diff_text.strip():
                 diff_text = "(no changes since last snapshot)"
 

@@ -174,6 +174,61 @@ class SqliteSessionStore:
     ) -> Optional[str]:
         return self._snap.save_snapshot(session_id, state_json, role, task)
 
+    def save_session_state(
+        self,
+        session_id: str,
+        state: Dict[str, Any],
+        role: Optional[str] = None,
+        task: Optional[str] = None,
+    ) -> None:
+        """Persist resumable subagent/session state dict in SQLite (secret-redacted)."""
+        sid = session_id or "unknown"
+        payload = {
+            "state": redact_data(state),
+            "role": role,
+            "task": redact_secrets(task) if isinstance(task, str) else task,
+        }
+        state_json = json.dumps(payload, default=str)
+        with self._lock:
+            conn = self._get_writer_connection()
+            conn.execute(
+                """CREATE TABLE IF NOT EXISTS session_states (
+                    session_id TEXT PRIMARY KEY,
+                    state_json TEXT NOT NULL,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )"""
+            )
+            conn.execute(
+                """INSERT INTO session_states (session_id, state_json, updated_at)
+                   VALUES (?, ?, CURRENT_TIMESTAMP)
+                   ON CONFLICT(session_id) DO UPDATE SET
+                       state_json = excluded.state_json,
+                       updated_at = CURRENT_TIMESTAMP""",
+                (sid, state_json),
+            )
+            conn.commit()
+
+    def load_session_state(self, session_id: str) -> Optional[Dict[str, Any]]:
+        """Load persisted resumable session state dict, or None if absent."""
+        sid = session_id or "unknown"
+        conn = self._get_connection()
+        try:
+            row = conn.execute(
+                "SELECT state_json FROM session_states WHERE session_id=?",
+                (sid,),
+            ).fetchone()
+        except sqlite3.OperationalError:
+            return None
+        if not row:
+            return None
+        try:
+            data = json.loads(row["state_json"])
+            if isinstance(data, dict) and isinstance(data.get("state"), dict):
+                return data["state"]
+            return data if isinstance(data, dict) else None
+        except Exception:
+            return None
+
     def get_snapshot(self, session_id: str, snapshot_id: str) -> Optional[str]:
         return self._snap.get_snapshot(session_id, snapshot_id)
 
@@ -507,6 +562,11 @@ class SqliteSessionStore:
                 "decision": r["decision"],
                 "rationale": r["rationale"],
                 "ts": r["created_at"],
+                "provenance": {
+                    "source": "session_decision",
+                    "trust_level": "untrusted_reference",
+                    "sanitized": True,
+                },
             }
             for r in rows
         ]
@@ -814,6 +874,7 @@ class SqliteSessionStore:
                 "mistakes",
                 "session_plans",
                 "session_snapshots",
+                "session_states",
             ):
                 try:
                     cur = conn.execute(

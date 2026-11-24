@@ -542,14 +542,15 @@ class TestSessionStoreSQLiteCheckSameThreadRemoved:
     """SCAN2-5: check_same_thread=False must not appear alongside threading.local()."""
 
     def test_check_same_thread_removed(self):
-        from pathlib import Path as _Path
+        import inspect
+        from src.core.memory.sqlite_store_collaborators import ConnectionManager
 
-        src = _Path("src/core/memory/session_store.py").read_text()
-        assert "check_same_thread=False" not in src, (
-            "SCAN2-5: check_same_thread=False contradicts threading.local() pattern; must be removed"
+        reader_src = inspect.getsource(ConnectionManager.get_connection)
+        init_src = inspect.getsource(ConnectionManager.__init__)
+        assert "check_same_thread=False" not in reader_src, (
+            "SCAN2-5: check_same_thread=False contradicts threading.local() pattern; must be removed from per-thread reader"
         )
-        # threading.local() must still be present
-        assert "threading.local()" in src, (
+        assert "threading.local()" in init_src, (
             "SCAN2-5: threading.local() must still be used for per-thread connections"
         )
 

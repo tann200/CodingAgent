@@ -1,13 +1,11 @@
-"""PERF-01 follow-up: Sqlite parity for streaming pagination + lazy summary.
+"""PERF-01 follow-up: Sqlite streaming pagination + summary.
 
-Locks the acceptance criteria that (a) the Sqlite store exposes the same
-iter_records / read_page cursor API as the JSONL store, so both backends
-paginate large sessions with bounded memory and an explicit has_more signal,
-and (b) JsonlSessionStore.get_session_summary counts from the lazy iterator
-without materialising the whole session.
+Locks the acceptance criteria that (a) the SQLite store exposes
+iter_records / read_page cursor APIs so large sessions paginate with
+bounded memory and an explicit has_more signal, and (b) get_session_summary
+counts match full records.
 """
 
-from src.core.memory.jsonl_session_store import JsonlSessionStore
 from src.core.memory.sqlite_session_store import SqliteSessionStore
 
 
@@ -91,38 +89,20 @@ def test_sqlite_read_page_validates_args(tmp_path):
         raise AssertionError("expected ValueError for offset=-1")
 
 
-def test_jsonl_get_session_summary_counts_lazily_matches_full_read(tmp_path):
-    store = JsonlSessionStore(workdir=str(tmp_path))
-    sess_dir = store._get_sessions_dir()
-    sess_dir.mkdir(parents=True, exist_ok=True)
-    import json
-
-    with open(sess_dir / "analytics.jsonl", "w", encoding="utf-8") as f:
-        for i in range(70):
-            kind = (
-                "message"
-                if i % 2 == 0
-                else "tool_call"
-                if i % 3 == 0
-                else "error"
-                if i % 5 == 0
-                else "decision"
-            )
-            f.write(json.dumps({"type": kind, "content": f"r-{i}"}) + "\n")
+def test_sqlite_get_session_summary_matches_counts(tmp_path):
+    store = SqliteSessionStore(workdir=str(tmp_path))
+    for i in range(40):
+        if i % 2 == 0:
+            store.add_message("analytics", "user", f"m-{i}")
+        elif i % 3 == 0:
+            store.add_tool_call("analytics", "read_file", {"path": f"f-{i}"}, {"ok": True})
+        elif i % 5 == 0:
+            store.add_error("analytics", "runtime", f"e-{i}")
+        else:
+            store.add_decision("analytics", f"d-{i}", "rationale")
 
     summary = store.get_session_summary("analytics")
-    records = list(store.iter_records("analytics"))
-    assert summary["messages"] == summary["message_count"] == sum(
-        1 for r in records if r.get("type") == "message"
-    )
-    assert summary["tool_calls"] == summary["tool_call_count"] == sum(
-        1 for r in records if r.get("type") == "tool_call"
-    )
-    assert summary["errors"] == summary["error_count"] == sum(
-        1 for r in records if r.get("type") == "error"
-    )
-    assert summary["decisions"] == sum(
-        1 for r in records if r.get("type") == "decision"
-    )
-    assert summary["plans"] == 0
+    assert summary["message_count"] == 20
+    assert summary["tool_call_count"] == 7
+    assert summary["error_count"] == 3
     assert summary["session_id"] == "analytics"

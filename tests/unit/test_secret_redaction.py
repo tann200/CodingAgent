@@ -501,31 +501,29 @@ class TestSessionStoreSanitization:
         assert "pass1234567890" not in str(tool_calls[0])
         assert "secret_api_key_value" not in str(tool_calls[0])
 
-    def test_jsonl_session_store_redaction(self, tmp_path):
-        from src.core.memory.jsonl_session_store import JsonlSessionStore
+    def test_jsonl_export_redaction(self, tmp_path):
+        from src.core.memory.session_store import SessionStore
 
-        store = JsonlSessionStore(workdir=tmp_path)
+        store = SessionStore(workdir=tmp_path)
 
         store.add_message(
             "sess-2",
             "user",
             "Token: ghp_1234567890abcdefghijklmnopqrstuvwxyz12",
         )
-        messages = store.get_messages("sess-2")
-        assert len(messages) == 1
-        assert "ghp_" not in messages[0]["content"]
-        assert REDACTED_PLACEHOLDER in messages[0]["content"]
-
         store.add_tool_call(
             "sess-2",
             "bash",
             args={"cmd": "curl -H 'Authorization: Bearer mysecrettoken1234567890abcdef'"},
             result={"output": "Returned: AIzaSyD-abc123DEF456ghi789JKL012mno345"},
         )
-        tool_calls = store.get_tool_calls("sess-2")
-        assert len(tool_calls) == 1
-        assert "mysecrettoken" not in str(tool_calls[0])
-        assert "AIzaSyD" not in str(tool_calls[0])
+        out_path = tmp_path / "export.jsonl"
+        store.export_jsonl("sess-2", out_path)
+        raw = out_path.read_text(encoding="utf-8")
+        assert "ghp_" not in raw
+        assert "mysecrettoken" not in raw
+        assert "AIzaSyD" not in raw
+        assert REDACTED_PLACEHOLDER in raw
 
 
 # ==============================================================================

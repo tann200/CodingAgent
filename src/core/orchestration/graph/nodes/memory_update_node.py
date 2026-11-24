@@ -1,5 +1,4 @@
 from langchain_core.runnables import RunnableConfig
-import asyncio
 import atexit
 import logging
 from pathlib import Path
@@ -21,8 +20,6 @@ except ImportError as _distiller_err:
         "memory_update_node: distiller unavailable (%s) — context compaction disabled",
         _distiller_err,
     )
-
-from src.core.memory.advanced_features import TrajectoryLogger
 
 logger = logging.getLogger(__name__)
 
@@ -55,13 +52,8 @@ async def _memory_update_node_impl(state: StateLike, config: RunnableConfig) -> 
         f"memory_update_node: processing {history_len} messages from {working_dir}"
     )
 
-    evaluation_result = state.get("evaluation_result")
-    task = state.get("task", "")
-    current_plan = state.get("current_plan", [])
     history = state.get("history", [])
-    tool_sequence = _extract_tool_sequence(history)
     session_id = state.get("session_id")
-    task_success = evaluation_result == "complete" if evaluation_result else False
 
     # HR-6: Check token budget BEFORE deciding whether to distill/compact.
     # If the monitor reports "compact" (>85% usage), force a compaction regardless of
@@ -232,35 +224,6 @@ async def _memory_update_node_impl(state: StateLike, config: RunnableConfig) -> 
             logger.error(f"memory_update_node: distillation failed: {e}")
     else:
         logger.info("memory_update_node: skipping distillation (continuing execution)")
-
-    async def run_trajectory_logging():
-        if not (task_success and task):
-            return
-        try:
-            trajectory_logger = TrajectoryLogger(str(workdir_path))
-            trajectory_logger.log_run(
-                task=task,
-                plan=str(current_plan),
-                tool_sequence=tool_sequence,
-                patch=_extract_patch_from_history(history),
-                tests="",
-                success=task_success,
-                session_id=session_id or "",
-            )
-            logger.info("memory_update_node: trajectory logged")
-        except Exception as e:
-            logger.warning(f"memory_update_node: trajectory logging failed: {e}")
-
-    advanced_tasks = [run_trajectory_logging()]
-
-    # Use return_exceptions=True so all tasks run even if some fail (H14 fix)
-    results = await asyncio.gather(
-        *advanced_tasks,
-        return_exceptions=True,
-    )
-    for i, res in enumerate(results):
-        if isinstance(res, Exception):
-            logger.warning(f"memory_update_node: parallel task {i} failed: {res}")
 
     logger.info("=== memory_update_node END ===")
     # HR-2 / ME-3 fix: return updated history and distilled summary via return dict.

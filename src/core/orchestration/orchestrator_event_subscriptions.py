@@ -161,6 +161,17 @@ def _register_scheduler_distill_subscription(orch: Any) -> None:
                         msgs = list(getattr(orch, "msg_mgr").messages or [])
                     except Exception:
                         msgs = []
+                    # TASK-24: Skip periodic background LLM distillation on short histories
+                    # unless explicitly forced so short tasks never contend with
+                    # local GPUs or generate unnecessary distillation traffic.
+                    _src = (
+                        payload.get("source")
+                        if isinstance(payload, dict)
+                        else getattr(payload, "source", None)
+                    )
+                    _force = isinstance(payload, dict) and bool(payload.get("force"))
+                    if _src == "scheduler" and not _force and len(msgs) < 12:
+                        return
                     try:
                         with _rt_cm:
                             distilled = distill_context(

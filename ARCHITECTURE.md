@@ -81,8 +81,8 @@ Graph checkpoints can persist and rehydrate graph state. They improve crash reco
 ### Context, Memory, And Repository Intelligence
 
 - `src/core/context/` constructs prompts from task messages, tool descriptions, skills, optional prior-session context, LSP context, and retrieved snippets.
-- `src/core/memory/` provides JSONL and SQLite session stores, summaries/distillation, compaction, snapshots, and sidecar diagnostics.
-- `src/core/indexing/` extracts symbols via `SymbolGraph` (with PageRank importance and call-graph context), maintains a repository index, wires live `LSPClient` `didChange` diagnostics into `ContextBuilder`, and tags optional `VectorStore` embeddings with model and dimension metadata.
+- `src/core/memory/` uses a single canonical SQLite `SessionStore` (WAL + FTS5) with portable secret-redacted JSONL import/export (`jsonl_io.py`), an on-demand `TurnGroup`-atomic `CompactionEngine` (invoked only when context thresholds are crossed or on explicit `/compact`), deterministic first-turn session titles (LLM titles opt-in via `CODINGAGENT_LLM_SESSION_TITLES=1`), and sidecar diagnostics. File-level transactional snapshots and rollback (including lossless binary files) are unified in `RollbackManager`; `JsonlSessionStore`, `GitSnapshotManager`, and `advanced_features.py` have been retired.
+- `src/core/indexing/` extracts symbols via `SymbolGraph` (with PageRank importance and call-graph context), maintains a repository index, wires live `LSPClient` `didChange` diagnostics into `ContextBuilder`, and keeps `VectorStore` semantic embeddings strictly opt-in (`CODINGAGENT_ENABLE_VECTOR_STORE=1` or project `vector_store.enabled: true`) so short tasks incur zero embedding/stub overhead.
 - `src/config/agent-brain/roles/` and `src/config/agent-brain/skills/` supply prompt-time role and internal skill content. Reusable agent skills packaged for external agent runners (Agensi, Claude Code, Cursor) reside in `src/config/skills/<skill>/SKILL.md`.
 
 ### Providers And Evaluation

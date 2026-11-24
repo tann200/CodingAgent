@@ -22,8 +22,10 @@ safe path via ``asyncio.to_thread``.
 from __future__ import annotations
 
 import asyncio
+import importlib.util
+import os
 import threading
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 import hashlib
 import logging
 import json
@@ -34,6 +36,30 @@ from pathlib import Path
 from src.tools.tools_config import agent_context_path
 
 logger = logging.getLogger(__name__)
+
+
+def is_vector_store_enabled(workdir: Optional[str | Path] = None) -> bool:
+    """Return True only when VectorStore semantic memory is explicitly enabled.
+
+    TASK-24: VectorStore is strictly opt-in so short tasks do not create noisy
+    ``.codingAgent/vectorstore/memories.jsonl`` stub files or emit
+    sentence-transformers fallback warnings.
+    """
+    env_flag = os.environ.get("CODINGAGENT_ENABLE_VECTOR_STORE", "").strip().lower()
+    if env_flag in ("1", "true", "yes"):
+        return True
+    if env_flag in ("0", "false", "no"):
+        return False
+    if importlib.util.find_spec("sentence_transformers") is not None:
+        return True
+    if workdir is not None:
+        try:
+            mem_file = agent_context_path(Path(workdir)) / "vectorstore" / "memories.jsonl"
+            if mem_file.exists():
+                return True
+        except Exception:
+            pass
+    return False
 
 # ---------------------------------------------------------------------------
 # sentence-transformers lazy import — real semantic model when available
@@ -240,9 +266,10 @@ class VectorStore:
     def __init__(self, workdir: str) -> None:
         self.workdir = workdir
         self._model = _DummyModel()
-        # PHASE-4 item 4.8: kick off the sentence-transformers load in a daemon
-        # thread so the first encode/search doesn't block the calling thread.
-        _preload_st_model()
+        # TASK-24: Only preload sentence-transformers when actually installed
+        # so environments without optional ML deps emit zero stub warnings or threads.
+        if importlib.util.find_spec("sentence_transformers") is not None:
+            _preload_st_model()
 
     @property
     def model(self) -> _DummyModel:

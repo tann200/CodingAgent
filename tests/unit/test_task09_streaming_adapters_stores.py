@@ -210,47 +210,38 @@ def test_sqlite_session_store_snapshot_revert_redaction_and_tiebreak(tmp_path: P
         store.close()
 
 
-def test_jsonl_session_store_security_revert_and_parity(tmp_path: Path):
-    from src.core.memory.jsonl_session_store import JsonlSessionStore
+def test_session_store_revert_and_jsonl_roundtrip(tmp_path: Path):
+    from src.core.memory.session_store import SessionStore
 
-    store = JsonlSessionStore(workdir=tmp_path)
-    with pytest.raises(ValueError):
-        store._session_files("../escape")
-    with pytest.raises(ValueError):
-        store.add_message("bad/id", "user", "hi")
+    store = SessionStore(workdir=tmp_path)
+    try:
+        sid = "sess_ok.1"
+        store.add_message(sid, "user", "first")
+        snap = store.save_snapshot(sid, json.dumps({"step": 1}))
+        assert snap is not None
+        store.add_message(sid, "assistant", "second")
 
-    sid = "sess_ok.1"
-    store.add_message(sid, "user", "first")
-    snap = store.save_snapshot(sid, json.dumps({"step": 1}))
-    assert snap is not None
-    store.add_message(sid, "assistant", "second")
+        rev = store.revert_session(sid, snap)
+        assert isinstance(rev, dict) and rev.get("ok") is True
+        assert [m["content"] for m in store.get_messages(sid)] == ["first"]
 
-    # Simulate rotation where snap lived in rotated file 0, rotated file 1 is newer, and active has newer messages
-    sdir = store._get_sessions_dir()
-    active = sdir / f"{sid}.jsonl"
-    rot0 = sdir / f"{sid}.0.jsonl"
-    rot1 = sdir / f"{sid}.1.jsonl"
-    active.rename(rot0)
-    # Rewrite snapshot pointer in rot0? Or point snap to rot0: wait—update snapshot index/metadata
-    snap_meta = store._snapshot_path(sid, snap)
-    meta = json.loads(snap_meta.read_text(encoding="utf-8"))
-    meta["_file"] = str(rot0)
-    snap_meta.write_text(json.dumps(meta), encoding="utf-8")
-    rot1.write_text(json.dumps({"type": "message", "role": "user", "content": "future1"}) + "\n", encoding="utf-8")
-    active.write_text(json.dumps({"type": "message", "role": "user", "content": "future2"}) + "\n", encoding="utf-8")
+        secret = "ghp_0123456789abcdefghijklmnopqrstuvwxyzABCD"
+        store.add_plan(sid, f"step {secret}")
+        store.add_error(sid, "runtime_error", f"boom {secret}")
+        store.save_plan(sid, [f"active plan {secret}"], f"task {secret}", 1)
+        loaded = store.load_plan(sid)
+        assert loaded is not None and secret not in json.dumps(loaded)
+        recent = store.get_recent_sessions(limit=5)
+        assert recent and recent[0]["session_id"] == sid and "last_active" in recent[0]
 
-    store.revert_session(sid, snap)
-    assert not rot1.exists()
-    assert [m["content"] for m in store.get_messages(sid)] == ["first"]
-
-    secret = "ghp_0123456789abcdefghijklmnopqrstuvwxyzABCD"
-    store.add_plan(sid, f"step {secret}")
-    store.add_error(sid, "runtime_error", f"boom {secret}")
-    store.save_plan(sid, [f"active plan {secret}"], f"task {secret}", 1)
-    loaded = store.load_plan(sid)
-    assert loaded is not None and secret not in json.dumps(loaded)
-    recent = store.get_recent_sessions(limit=5)
-    assert recent and set(recent[0]) == {"session_id", "summary"}
+        export_file = tmp_path / "sess.jsonl"
+        store.export_jsonl(sid, export_file)
+        assert secret not in export_file.read_text(encoding="utf-8")
+        imported_id = store.import_jsonl(export_file, session_id="sess_imported")
+        assert imported_id == "sess_imported"
+        assert [m["content"] for m in store.get_messages("sess_imported")] == ["first"]
+    finally:
+        store.close()
 
 
 def test_memory_search_redacts_secrets(tmp_path: Path):

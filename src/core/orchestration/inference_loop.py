@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import contextlib as _contextlib
 import contextvars as _contextvars
+import os
 import threading as _threading
 from typing import Any, Dict, List, Optional
 
@@ -257,32 +258,41 @@ def _run_agent_once_with_runtime(
         except Exception:
             pass
 
-    # ORCH-W5: Generate session title via the internal "title" agent (one-shot,
-    # no tool loop).  Only on the first turn (_session_title not yet set) so we
-    # don't regenerate on every continuation call.  Fire-and-forget in a daemon
-    # thread so it never blocks the main pipeline.
+    # TASK-24: Derive a clean deterministic session title on the first turn
+    # without spawning a background LLM call that contends with single-slot
+    # local GPUs on short tasks.  Opt-in LLM title generation remains available
+    # via CODINGAGENT_LLM_SESSION_TITLES=1.
     if prompt and not getattr(orch, "_session_title", None):
+        _use_llm_title = os.environ.get("CODINGAGENT_LLM_SESSION_TITLES", "").strip().lower() in (
+            "1",
+            "true",
+            "yes",
+        )
+        if _use_llm_title:
+            def _gen_title(p: str) -> None:
+                try:
+                    from src.core.memory.distiller import generate_session_title
 
-        def _gen_title(p: str) -> None:
+                    _t = generate_session_title(p)
+                    if _t:
+                        orch._session_title = _t
+                        orch.event_bus.publish_typed(SessionTitleGenerated(title=_t))
+                except Exception:
+                    pass
+
+            _title_ctx = _contextvars.copy_context()
+            _t_thread = _threading.Thread(
+                target=_title_ctx.run, args=(_gen_title, prompt), daemon=True
+            )
+            _t_thread.start()
+            orch._session_title_thread = _t_thread
+        else:
+            _det_title = " ".join(str(prompt).split()[:10]).rstrip(".,;:!?")[:80] or "New session"
+            orch._session_title = _det_title
             try:
-                from src.core.memory.distiller import generate_session_title
-
-                _t = generate_session_title(p)
-                if _t:
-                    orch._session_title = _t
-                    orch.event_bus.publish_typed(SessionTitleGenerated(title=_t))
+                orch.event_bus.publish_typed(SessionTitleGenerated(title=_det_title))
             except Exception:
                 pass
-
-        # SEC-VOL23-1: store thread reference on the orchestrator so the shutdown
-        # path can join it with a short timeout, preventing a partial write if
-        # the process exits while the title is still being generated.
-        _title_ctx = _contextvars.copy_context()
-        _t_thread = _threading.Thread(
-            target=_title_ctx.run, args=(_gen_title, prompt), daemon=True
-        )
-        _t_thread.start()
-        orch._session_title_thread = _t_thread
 
         # Gap 3: fire HOOK_SESSION_START once when a new agent session begins.
         # Guarded by the same "first turn" condition as title generation so a
