@@ -774,7 +774,7 @@ def bash(
                 "status": "error",
                 "error": (
                     f"Command blocked as dangerous (risk: {'; '.join(_risk_reasons)}). "
-                    "Not allowed without operator approval."
+                    "Not allowed — requires operator approval."
                 ),
                 "requires_approval": True,
             }
