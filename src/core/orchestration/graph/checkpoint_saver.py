@@ -50,6 +50,7 @@ _checkpointer_lock = threading.Lock()
 LIVE_CHANNELS = frozenset(
     {
         "cancel_event",
+        "workflow_config",
         "_file_lock_manager",
         "_agent_session_manager",
         "_context_controller",

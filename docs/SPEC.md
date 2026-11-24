@@ -43,10 +43,10 @@
 
 ## 3. Canonical Graph & Orchestration State Specification
 
-### 3.1 Graph Topology & Reducer Safety (`src/core/orchestration/graph/`)
-- All model-tier executions MUST run on the canonical 6-node graph (`initialize -> agent_loop -> [approval | verify | compact | finalize] -> END`) in [`builder.py`](file:///Users/tann200/PycharmProjects/CodingAgent/src/core/orchestration/graph/builder.py).
-- **Explicit State Spec Declaration:** Every state key read or written between nodes (including `_verified_file_hashes`) MUST be declared in `_AgentStateSpec` ([`state.py`](file:///Users/tann200/PycharmProjects/CodingAgent/src/core/orchestration/graph/state.py)) and validated under `NodeOutputSchema` ([`state_schemas.py`](file:///Users/tann200/PycharmProjects/CodingAgent/src/core/orchestration/graph/state_schemas.py)) with strict mode enabled (`CODINGAGENT_STATE_SCHEMAS_STRICT=1`).
-- **`merge_or_replace_list` Reducer Rule:** Any node returning a `history` update MUST return either:
+### 3.1 Canonical Pipeline Topology & Reducer Safety (`src/core/orchestration/runner.py`, `graph/`)
+- All model-tier executions MUST run on the canonical 6-stage native async `AgentRunner` pipeline (`initialize -> agent_loop -> [approval | verify | compact | finalize] -> END`) constructed by [`builder.py`](file:///Users/tann200/PycharmProjects/CodingAgent/src/core/orchestration/graph/builder.py) and executed by [`runner.py`](file:///Users/tann200/PycharmProjects/CodingAgent/src/core/orchestration/runner.py).
+- **Explicit State Spec Declaration:** Every state key read or written between stages (including `_verified_file_hashes`) MUST be declared in `_AgentStateSpec` ([`state.py`](file:///Users/tann200/PycharmProjects/CodingAgent/src/core/orchestration/graph/state.py)) and validated under `NodeOutputSchema` ([`state_schemas.py`](file:///Users/tann200/PycharmProjects/CodingAgent/src/core/orchestration/graph/state_schemas.py)) with strict mode enabled (`CODINGAGENT_STATE_SCHEMAS_STRICT=1`).
+- **`merge_or_replace_list` Reducer Rule:** Any stage returning a `history` update MUST return either:
   - strictly the new **delta** slice (`history[initial_len:]`), **or**
   - the full list explicitly wrapped via `replace_state_list(...)`.
   Returning an unwrapped full `list` of prior + new history is forbidden (causes $O(2^k)$ exponential history duplication).
