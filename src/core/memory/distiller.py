@@ -395,11 +395,21 @@ def distill_context(
     # so the distilled current_task is derived from the actual user request, not just
     # recent tool output.
     if messages:
-        anchor_indices = {0}
-        msg_window = min(len(messages), 50)
-        windowed_start = max(1, len(messages) - msg_window + 1)
-        for idx, m in enumerate(messages):
-            if idx not in anchor_indices and idx < windowed_start:
+        # Exclude raw system prompts when anchoring/windowing unless no other messages exist,
+        # otherwise messages[0] (the agent identity system prompt) overwrites TASK_STATE.md.
+        candidate_pairs = [
+            (idx, m) for idx, m in enumerate(messages) if m.get("role") != "system"
+        ]
+        if not candidate_pairs:
+            candidate_pairs = list(enumerate(messages))
+        first_user_pos = next(
+            (i for i, (_, m) in enumerate(candidate_pairs) if m.get("role") == "user"),
+            0,
+        )
+        msg_window = min(len(candidate_pairs), 50)
+        windowed_start = max(0, len(candidate_pairs) - msg_window)
+        for pos, (_idx, m) in enumerate(candidate_pairs):
+            if pos != first_user_pos and pos < windowed_start:
                 continue
             # Increase truncation limit for error messages that may contain critical details
             limit = (

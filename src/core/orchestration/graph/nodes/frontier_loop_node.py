@@ -771,6 +771,7 @@ async def frontier_loop_node(
                         "unverified_mutation_missing",
                         "empty_response",
                         "empty_inspection",
+                        "mutation_failed",
                     )
                     and incomplete_nudges < _MAX_INCOMPLETE_NUDGES
                     and turns_taken < effective_max_turns

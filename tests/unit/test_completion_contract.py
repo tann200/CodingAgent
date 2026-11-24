@@ -362,3 +362,76 @@ class TestSpec04RegressionContracts:
 
         assert result["last_result"]["ok"] is True
         assert result["last_result"]["task_type"] == TaskType.INFORMATIONAL.value
+
+    @pytest.mark.asyncio
+    async def test_frontier_loop_nudges_on_mutation_failed_before_exiting(self, tmp_path):
+        from unittest.mock import MagicMock
+
+        target = tmp_path / "sorter.py"
+        target.write_text("def sort_descending(items): return sorted(items, reverse=True)\n", encoding="utf-8")
+        orch = SimpleNamespace(
+            working_dir=str(tmp_path),
+            _session_modified_files={str(target)},
+            msg_mgr=SimpleNamespace(messages=[]),
+            plan_mode=None,
+            _current_task_id="t-3",
+            _tool_executor=None,
+            adapter=SimpleNamespace(
+                supports_native_tools=True,
+                default_model="gpt-4o",
+                models=["gpt-4o"],
+                name="openai",
+            ),
+            tool_registry=SimpleNamespace(
+                get_openai_functions=lambda **_kw: [
+                    {"type": "function", "function": {"name": "read_file", "parameters": {}}}
+                ]
+            ),
+            execute_tool=MagicMock(return_value={"ok": True, "result": {"content": "def sort_descending..."}}),
+        )
+        state = {
+            "task": "Create a file sorter.py with sort_descending",
+            "history": [],
+            "tool_call_count": 2,
+            "max_tool_calls": 10,
+            "model_tier": "frontier",
+            "working_dir": str(tmp_path),
+            "errors": [],
+            "last_result": {"ok": False, "error": "Preflight: bash command contains dangerous pattern ';'."},
+        }
+
+        call_responses = [
+            {"choices": [{"message": {"content": "Created sorter.py."}}]},
+            {
+                "choices": [
+                    {
+                        "message": {
+                            "content": "",
+                            "tool_calls": [
+                                {
+                                    "id": "tc-recover",
+                                    "type": "function",
+                                    "function": {"name": "read_file", "arguments": '{"path": "sorter.py"}'},
+                                }
+                            ],
+                        }
+                    }
+                ]
+            },
+            {"choices": [{"message": {"content": "Verified sorter.py is present."}}]},
+        ]
+
+        with (
+            patch(
+                "src.core.orchestration.graph.nodes.frontier_loop_node._resolve_orchestrator",
+                return_value=orch,
+            ),
+            patch(
+                "src.core.orchestration.graph.nodes.frontier_loop_node.call_model",
+                new=AsyncMock(side_effect=call_responses),
+            ),
+        ):
+            result = await frontier_loop_node(state, config={})
+
+        assert result["last_result"]["ok"] is True
+        assert result["replan_required"] is None

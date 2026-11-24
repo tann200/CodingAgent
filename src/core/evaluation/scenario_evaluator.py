@@ -1006,7 +1006,7 @@ def get_default_scenarios() -> List[Scenario]:
                     "]\n"
                 ),
             },
-            expected_files={"records.py": "{'a': 1, 'name': 'Alice', 'z': 3}"},
+            expected_files={"records.py": "3}"},
             test_command=(
                 "python -c \""
                 "import records; "

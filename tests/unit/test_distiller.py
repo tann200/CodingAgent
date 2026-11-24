@@ -107,3 +107,32 @@ def test_call_llm_sync_uses_thread_executor_not_asyncio_run_in_running_loop():
     )
     # The running-loop branch must still exist
     assert "Running loop detected" in src or "running loop" in src.lower()
+
+
+def test_distill_context_excludes_leading_system_prompt_and_anchors_user(tmp_path):
+    """Leading role=='system' prompts must not be sent as messages[0] anchor to distiller."""
+    captured = {}
+
+    def _fake_sync(msgs, **_kwargs):
+        captured["prompt"] = msgs[0]["content"]
+        return json.dumps(
+            {
+                "current_task": "Fix sorter.py",
+                "completed_steps": [],
+                "next_step": "Done",
+                "current_state": "finished",
+                "files_modified": [],
+                "errors_resolved": [],
+            }
+        )
+
+    messages = [
+        {"role": "system", "content": "SECRET_SYSTEM_IDENTITY_HEADER"},
+        {"role": "user", "content": "ACTUAL_USER_TASK_ANCHOR"},
+    ] + [{"role": "assistant", "content": f"step {i}"} for i in range(60)]
+
+    with patch("src.core.memory.distiller._call_llm_sync", side_effect=_fake_sync):
+        distill_context(messages, working_dir=tmp_path)
+
+    assert "ACTUAL_USER_TASK_ANCHOR" in captured["prompt"]
+    assert "SECRET_SYSTEM_IDENTITY_HEADER" not in captured["prompt"]
