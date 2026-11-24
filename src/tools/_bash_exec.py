@@ -609,6 +609,23 @@ def _validate_bash_segment(
     first_cmd = cmd_parts[0].lower()
     cmd_lower = _re.sub(r"\s+", " ", seg_str).lower()
 
+    # Gate 2a: Git subcommand allowlist (run before generic restricted-command check
+    # so mutating git subcommands like `git push` return specific git-subcommand errors).
+    if first_cmd == "git":
+        is_safe, msg = _check_git_command_safety(cmd_parts)
+        if not is_safe:
+            if "Dangerous git flag" in msg:
+                return {"status": "error", "error": msg}
+            return {
+                "status": "error",
+                "error": (
+                    f"{msg} "
+                    f"Allowed: {sorted(GIT_SAFE_SUBCOMMANDS)}. "
+                    "Write operations (commit, push, add, reset, …) are not allowed without user approval."
+                ),
+                "requires_approval": True,
+            }
+
     # Gate 2b: Restricted-command check
     if _matches_restricted_command(cmd_parts, seg_str):
         allowed = any(cmd_lower.startswith(ok) for ok in RESTRICTED_ALLOWED_SUBCOMMANDS)
@@ -650,22 +667,6 @@ def _validate_bash_segment(
     _deny_err = _check_command_denylist(seg_str)
     if _deny_err is not None:
         return {"status": "error", "error": _deny_err}
-
-    # Gate 4b: Git subcommand allowlist
-    if first_cmd == "git":
-        is_safe, msg = _check_git_command_safety(cmd_parts)
-        if not is_safe:
-            if "Dangerous git flag" in msg:
-                return {"status": "error", "error": msg}
-            return {
-                "status": "error",
-                "error": (
-                    f"{msg} "
-                    f"Allowed: {sorted(GIT_SAFE_SUBCOMMANDS)}. "
-                    "Write operations (commit, push, add, reset, …) require user approval."
-                ),
-                "requires_approval": True,
-            }
 
     # Gate 5: Tier allowlist
     if first_cmd in SAFE_COMMANDS:
@@ -772,8 +773,8 @@ def bash(
             return {
                 "status": "error",
                 "error": (
-                    f"Command requires operator approval (risk: {'; '.join(_risk_reasons)}). "
-                    "Use safe alternatives or request user approval."
+                    f"Command blocked as dangerous (risk: {'; '.join(_risk_reasons)}). "
+                    "Not allowed without operator approval."
                 ),
                 "requires_approval": True,
             }

@@ -208,7 +208,8 @@ class TestPreflightCheckBlocksDangerousPatterns:
         orc.tool_registry = reg
         return orc
 
-    def test_dangerous_pattern_pipe_rejected(self, tmp_path):
+    def test_dangerous_pattern_pipe_rejected(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("CODINGAGENT_SANDBOX_ALLOW_UNENFORCED", "1")
         orc = self._make_orchestrator(tmp_path)
         result = orc.preflight_check(
             {"name": "bash", "arguments": {"command": "ls | grep foo"}}

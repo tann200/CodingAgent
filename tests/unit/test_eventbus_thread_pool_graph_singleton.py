@@ -443,8 +443,9 @@ class TestBashDangerousPatternWhitespaceNormalization:
         result = bash("rm -rf /tmp/test")
         assert result.get("status") == "error"
 
-    def test_background_operator_blocked(self):
-        """Shell operators like && must be blocked."""
+    def test_background_operator_blocked(self, monkeypatch):
+        """Shell operators like && must be blocked in unconfined fallback mode."""
+        monkeypatch.setenv("CODINGAGENT_SANDBOX_ALLOW_UNENFORCED", "1")
         from src.tools.file_tools import bash
 
         result = bash("echo hello && echo world")

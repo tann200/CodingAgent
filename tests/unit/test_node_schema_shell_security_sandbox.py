@@ -25,8 +25,9 @@ if ROOT not in sys.path:
 class TestBashToolShellOperatorBlocking:
     """Tests for the shell injection security fix."""
 
-    def test_bash_rejects_shell_operators(self):
-        """Test that bash tool rejects dangerous shell operators."""
+    def test_bash_rejects_shell_operators(self, monkeypatch):
+        """Test that unconfined bash tool rejects dangerous shell operators."""
+        monkeypatch.setenv("CODINGAGENT_SANDBOX_ALLOW_UNENFORCED", "1")
         from src.tools import file_tools
 
         dangerous_commands = [

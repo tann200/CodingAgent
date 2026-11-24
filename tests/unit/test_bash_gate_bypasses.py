@@ -42,7 +42,11 @@ class TestGate3CombinedFlags:
             "php -r 'echo 1'",
         ],
     )
-    def test_combined_code_exec_flags_blocked_in_bash(self, cmd: str, tmp_path: Path):
+    def test_combined_code_exec_flags_blocked_in_bash(
+        self, cmd: str, tmp_path: Path, monkeypatch
+    ):
+        # Unconfined fallback must block all inline code execution flags (including python -c)
+        monkeypatch.setenv("CODINGAGENT_SANDBOX_ALLOW_UNENFORCED", "1")
         res = bash(cmd, workdir=tmp_path)
         assert res["status"] == "error"
         assert "inline code execution flags are blocked" in res["error"]
