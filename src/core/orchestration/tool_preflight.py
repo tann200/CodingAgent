@@ -7,7 +7,6 @@ The main entry point is ``preflight_check_impl(orch, tool_call)``.
 from __future__ import annotations
 
 import difflib
-import re
 from pathlib import Path
 from typing import Any, Dict
 
@@ -99,20 +98,58 @@ def preflight_check_impl(orch: Any, tool_call: Dict[str, Any]) -> Dict[str, Any]
                 "suggestions": _closest,
             }
 
-    # HR-5 fix: validate bash commands at preflight time (defence-in-depth).
-    # file_tools.bash() also checks these, but catching them here provides
-    # an earlier rejection path and a consistent error source.
+    # TASK-23: Delegate bash preflight validation to the single authoritative
+    # AST analyzer in bash_security.py (honoring explicit empty _BASH_DANGEROUS_PATTERNS
+    # overrides used in isolated unit tests).
     if name == "bash":
         command = args.get("command") or args.get("cmd") or ""
-        if command:
-            cmd_normalised = re.sub(r"\s+", " ", str(command)).lower()
-            for pattern in orch._BASH_DANGEROUS_PATTERNS:
-                if pattern in cmd_normalised:
+        patterns_enabled = bool(getattr(orch, "_BASH_DANGEROUS_PATTERNS", True))
+        if command and patterns_enabled:
+            from src.tools.bash_security import (
+                BashRiskLevel,
+                SAFE_SANDBOX_OPERATORS,
+                analyze_bash_command,
+                split_shell_segments,
+            )
+            from src.tools._bash_exec import _is_os_sandbox_enforced
+
+            cmd_str = str(command)
+            risk_level, risk_reasons = analyze_bash_command(
+                cmd_str, working_dir=str(getattr(orch, "working_dir", None) or ".")
+            )
+            if risk_level in (BashRiskLevel.BLOCKED, BashRiskLevel.DANGEROUS):
+                return {
+                    "ok": False,
+                    "error": (
+                        f"Preflight: bash command blocked as dangerous: "
+                        f"{'; '.join(risk_reasons)}."
+                    ),
+                }
+            try:
+                _segments, operators = split_shell_segments(cmd_str)
+            except ValueError as exc:
+                return {
+                    "ok": False,
+                    "error": f"Preflight: malformed bash command: {exc}",
+                }
+            if operators:
+                if _is_os_sandbox_enforced():
+                    bad_ops = [op for op in operators if op not in SAFE_SANDBOX_OPERATORS]
+                    if bad_ops:
+                        return {
+                            "ok": False,
+                            "error": (
+                                f"Preflight: bash command contains dangerous shell operator "
+                                f"'{bad_ops[0]}' not allowed even inside sandbox."
+                            ),
+                        }
+                else:
                     return {
                         "ok": False,
                         "error": (
-                            f"Preflight: bash command contains dangerous pattern "
-                            f"'{pattern}'. No shell operators or destructive commands allowed."
+                            f"Preflight: bash command contains dangerous shell operator "
+                            f"'{operators[0]}'. No unquoted shell operators allowed without "
+                            "an enforced OS sandbox."
                         ),
                     }
 

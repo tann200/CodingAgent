@@ -32,7 +32,12 @@ from src.tools._security import (
     TEST_COMPILE_COMMANDS,
 )
 from src.tools._tool import tool, PermissionKind
-from src.tools.bash_security import analyze_bash_command, BashRiskLevel
+from src.tools.bash_security import (
+    SAFE_SANDBOX_OPERATORS,
+    analyze_bash_command,
+    BashRiskLevel,
+    split_shell_segments,
+)
 from src.tools import sandbox as _sandbox
 from src.tools._approval import (
     is_tier3 as _is_tier3,
@@ -573,90 +578,39 @@ def _matches_restricted_command(cmd_parts: list[str], command: str) -> bool:
     return any(prefix in RESTRICTED_COMMANDS for prefix in prefixes)
 
 
-@tool(side_effects=["execute"], tags=["coding"], permission_kind=PermissionKind.EXECUTE_BASH)
-def bash(
-    command: str,
-    workdir: object = _WORKDIR_DEFAULT,
-    description: str = "",
-    timeout_secs: float = 60.0,
-    run_in_background: bool = False,
-) -> Dict[str, Any]:
-    """Execute a shell command and return its output.
+def _is_os_sandbox_enforced() -> bool:
+    """Return True when real OS sandboxing (bwrap or enforcing SBPL) will wrap execution.
 
-    Args:
-        command: The shell command to run.
-        workdir: Working directory for the command.
-        description: Brief description of the command's intent (advisory; logged for auditability).
-        timeout_secs: Maximum seconds to wait for the command (default 60). Ignored when run_in_background=True.
-        run_in_background: If True, spawn the process without waiting and return a background_task_id (PID).
+    Returns False whenever the operator opted into unconfined execution
+    (``CODINGAGENT_SANDBOX_ALLOW_UNENFORCED=1`` or ``sandbox_level='off'``)
+    or when no enforcing OS backend is available on the host.
     """
-    if workdir is _WORKDIR_DEFAULT:
-        workdir = Path.cwd()
-    workdir = Path(workdir)  # type: ignore[arg-type]
-
-    if description:
-        _logger.info("bash: %s | cmd=%r", description, command)
-
-    # Pre-Gate: Unicode normalization — NFKC normalises homoglyphs and strips
-    # control/format characters (null bytes, zero-width spaces, etc.) before
-    # any security gate inspects the command string.
-    command = _normalize_command(command)
-
-    # Gate 1: Shell-operator / metacharacter block (DANGEROUS_PATTERNS).
-    # Blocks &&, ||, ;, |, >, >>, <, $(, ` and destructive keywords on the
-    # normalised (whitespace-collapsed, lowercased) command string so spacing
-    # tricks like "r m  -rf" or "ls  |  grep" cannot bypass the check.
-    # Quotes are stripped first so that `rm '-rf' /` still matches `rm -rf`.
-    _cmd_lower = _re.sub(r"\s+", " ", command).lower()
-    _cmd_lower = _cmd_lower.replace("'", "").replace('"', "")
-    for pattern in DANGEROUS_PATTERNS:
-        if pattern in _cmd_lower:
-            return {
-                "status": "error",
-                "error": f"Command contains dangerous pattern '{pattern}'. No shell operators or destructive commands allowed.",
-            }
-
-    # Gate 2: AST-level bash security analysis — catches advanced injection vectors
-    # ($(...), backtick substitution, pipe-to-shell, fork bombs, disk-wipe ops) that
-    # DANGEROUS_PATTERNS may miss (e.g. creative whitespace, multi-arg tricks).
-    # Both BLOCKED and DANGEROUS are hard-blocked here; later gates also catch
-    # DANGEROUS commands, but treating DANGEROUS as blocked provides defence-in-depth
-    # and eliminates the risk of silent pass-through if a later gate has a gap.
     try:
-        _risk_level, _risk_reasons = analyze_bash_command(
-            command, working_dir=str(workdir)
-        )
-        if _risk_level == BashRiskLevel.BLOCKED:
-            return {
-                "status": "error",
-                "error": f"Command blocked by security analysis: {'; '.join(_risk_reasons)}",
-            }
-        if _risk_level == BashRiskLevel.DANGEROUS:
-            return {
-                "status": "error",
-                "error": (
-                    f"Command requires operator approval (risk: {'; '.join(_risk_reasons)}). "
-                    "Use safe alternatives or request user approval."
-                ),
-                "requires_approval": True,
-            }
-    except ImportError:
-        pass  # bash_security unavailable; Gate 1 above is still active
+        if _sandbox._allow_unenforced():
+            return False
+        if _sandbox.get_sandbox_level() == "off":
+            return False
+        return bool(_sandbox.sandbox_available())
+    except Exception:
+        return False
 
-    try:
-        cmd_parts = shlex.split(command)
-    except ValueError as e:
-        return {"status": "error", "error": f"Invalid command: {e}"}
 
+def _validate_bash_segment(
+    cmd_parts: List[str],
+    seg_str: str,
+    workdir: Path,
+    *,
+    sandbox_enforced: bool,
+) -> Optional[Dict[str, Any]]:
+    """Validate one parsed command segment through Gates 2b–6 + network policy."""
     if not cmd_parts:
         return {"status": "error", "error": "Empty command"}
 
     first_cmd = cmd_parts[0].lower()
-    cmd_lower = _re.sub(r"\s+", " ", command).lower()
+    cmd_lower = _re.sub(r"\s+", " ", seg_str).lower()
 
-    # Gate 2: Restricted-command check (tier-3 candidates are blocked unless in the
-    # RESTRICTED_ALLOWED_SUBCOMMANDS list, e.g. "npm test").
-    if _matches_restricted_command(cmd_parts, command):
+    # Gate 2b: Restricted-command check
+    if _matches_restricted_command(cmd_parts, seg_str):
         allowed = any(cmd_lower.startswith(ok) for ok in RESTRICTED_ALLOWED_SUBCOMMANDS)
         if not allowed:
             return {
@@ -668,28 +622,36 @@ def bash(
             }
 
     # Gate 3: Block inline code-execution flags (python3 -c, node -e, ruby -e, php -r).
+    # TASK-23: Inside an actively enforced OS sandbox (network=False, workspace-confined,
+    # non-strict mode), allow direct `python`/`python3 -c "<snippet>"` while still
+    # blocking combined obfuscated flags (-Bc, -Ic, -), other interpreters (node -e,
+    # ruby -e, php -r), and all env/xargs/find -exec wrappers (Gate 4 below).
+    _allow_sandboxed_python_c = (
+        sandbox_enforced
+        and not BASH_STRICT_ALLOWLIST
+        and os.path.basename(first_cmd) in ("python", "python3")
+    )
     for part in cmd_parts[1:]:
         if _is_code_exec_flag(first_cmd, part):
+            if _allow_sandboxed_python_c and part == "-c":
+                continue
             return {
                 "status": "error",
                 "error": f"Command '{first_cmd} {part}' is not allowed: inline code execution flags are blocked. "
                 "Run a script file instead (e.g. python3 script.py).",
             }
 
-    # Gate 4: Archive / inplace-edit flag check (shared helper — also used by bash_readonly).
+    # Gate 4: Archive / inplace-edit / env / xargs / find -exec check
     _flag_err = _check_shell_flags(cmd_parts, first_cmd)
     if _flag_err is not None:
         return _flag_err
 
-    # Gate 4c: P2-T3 explicit command denylist — blocks unconditionally dangerous
-    # commands regardless of flags (e.g. nc, telnet, crontab).
-    _deny_err = _check_command_denylist(command)
+    # Gate 4c: Explicit command denylist (nc, telnet, mkfs, crontab, ...)
+    _deny_err = _check_command_denylist(seg_str)
     if _deny_err is not None:
         return {"status": "error", "error": _deny_err}
 
-    # Gate 4b: Git subcommand allowlist — only read-only git operations are
-    # auto-allowed.  Write operations (commit, push, reset, rm, …) require
-    # explicit user approval or must go through the RESTRICTED_COMMANDS path.
+    # Gate 4b: Git subcommand allowlist
     if first_cmd == "git":
         is_safe, msg = _check_git_command_safety(cmd_parts)
         if not is_safe:
@@ -705,14 +667,11 @@ def bash(
                 "requires_approval": True,
             }
 
-    # Gate 5: Tier allowlist.
-    # In strict allowlist mode (BASH_STRICT_ALLOWLIST=1) only SAFE_COMMANDS pass;
-    # compilers and test runners (TEST_COMPILE_COMMANDS) are also blocked so the
-    # agent is restricted to read-only inspection commands.
+    # Gate 5: Tier allowlist
     if first_cmd in SAFE_COMMANDS:
-        pass  # Auto-allowed
+        pass
     elif first_cmd == "git":
-        pass  # Already validated by Gate 4b (subcommand allowlist)
+        pass
     elif BASH_STRICT_ALLOWLIST:
         return {
             "status": "error",
@@ -739,21 +698,133 @@ def bash(
         }
 
     # Tier-3 approval gate
-    _approval_result = _check_tier3_approval(command)
+    _approval_result = _check_tier3_approval(seg_str)
     if _approval_result is not None:
         return _approval_result
 
     # Gate 6: Block access to secret/protected files in arguments
-    _secret_err = _check_secret_path_args(cmd_parts, Path(workdir))
+    _secret_err = _check_secret_path_args(cmd_parts, workdir)
     if _secret_err is not None:
         return _secret_err
 
-    # MC-6: per-tool network policy — bash() denies outbound network.  Refuse
-    # network-capable commands when the sandbox cannot enforce the deny and
-    # enforcement is required; warn (and proceed) otherwise.
-    _net_policy_err = _check_network_policy(cmd_parts, first_cmd, command)
+    # MC-6: per-tool network policy
+    _net_policy_err = _check_network_policy(cmd_parts, first_cmd, seg_str)
     if _net_policy_err is not None:
         return _net_policy_err
+
+    return None
+
+
+@tool(side_effects=["execute"], tags=["coding"], permission_kind=PermissionKind.EXECUTE_BASH)
+def bash(
+    command: str,
+    workdir: object = _WORKDIR_DEFAULT,
+    description: str = "",
+    timeout_secs: float = 60.0,
+    run_in_background: bool = False,
+) -> Dict[str, Any]:
+    """Execute a shell command and return its output.
+
+    Args:
+        command: The shell command to run.
+        workdir: Working directory for the command.
+        description: Brief description of the command's intent (advisory; logged for auditability).
+        timeout_secs: Maximum seconds to wait for the command (default 60). Ignored when run_in_background=True.
+        run_in_background: If True, spawn the process without waiting and return a background_task_id (PID).
+    """
+    if workdir is _WORKDIR_DEFAULT:
+        workdir = Path.cwd()
+    workdir = Path(workdir)  # type: ignore[arg-type]
+
+    if description:
+        _logger.info("bash: %s | cmd=%r", description, command)
+
+    # Pre-Gate: Unicode normalization — NFKC normalises homoglyphs and strips
+    # control/format characters (null bytes, zero-width spaces, etc.).
+    command = _normalize_command(command)
+
+    sandbox_enforced = _is_os_sandbox_enforced()
+
+    # Gate 1: Strict naive operator blocking when OS sandbox is NOT enforced
+    # (unconfined host fallback). When an OS sandbox IS actively enforced,
+    # quote-aware AST segmentation + per-segment validation below takes over.
+    if not sandbox_enforced:
+        _cmd_lower = _re.sub(r"\s+", " ", command).lower()
+        _cmd_lower = _cmd_lower.replace("'", "").replace('"', "")
+        for pattern in DANGEROUS_PATTERNS:
+            if pattern in _cmd_lower:
+                return {
+                    "status": "error",
+                    "error": f"Command contains dangerous pattern '{pattern}'. No shell operators or destructive commands allowed.",
+                }
+
+    # Gate 2: AST-level bash security analysis (always active).
+    try:
+        _risk_level, _risk_reasons = analyze_bash_command(
+            command, working_dir=str(workdir)
+        )
+        if _risk_level == BashRiskLevel.BLOCKED:
+            return {
+                "status": "error",
+                "error": f"Command blocked by security analysis: {'; '.join(_risk_reasons)}",
+            }
+        if _risk_level == BashRiskLevel.DANGEROUS:
+            return {
+                "status": "error",
+                "error": (
+                    f"Command requires operator approval (risk: {'; '.join(_risk_reasons)}). "
+                    "Use safe alternatives or request user approval."
+                ),
+                "requires_approval": True,
+            }
+    except ImportError:
+        pass
+
+    if sandbox_enforced:
+        try:
+            segments, operators = split_shell_segments(command)
+        except ValueError as e:
+            return {"status": "error", "error": f"Invalid command: {e}"}
+
+        bad_ops = [op for op in operators if op not in SAFE_SANDBOX_OPERATORS]
+        if bad_ops:
+            return {
+                "status": "error",
+                "error": f"Command contains dangerous pattern '{bad_ops[0]}'. Redirections and background operators are not allowed.",
+            }
+        if not segments:
+            return {"status": "error", "error": "Empty command"}
+        if operators and len(segments) < len(operators) + 1:
+            return {"status": "error", "error": "Invalid command: empty pipeline segment"}
+        if operators and run_in_background:
+            return {
+                "status": "error",
+                "error": "Shell pipelines/chains are not supported with run_in_background=True.",
+            }
+
+        for seg_parts in segments:
+            seg_str = " ".join(shlex.quote(tok) for tok in seg_parts)
+            seg_err = _validate_bash_segment(
+                seg_parts, seg_str, Path(workdir), sandbox_enforced=True
+            )
+            if seg_err is not None:
+                return seg_err
+
+        cmd_parts = segments[0] if not operators else ["/bin/sh", "-c", command]
+    else:
+        try:
+            cmd_parts = shlex.split(command)
+        except ValueError as e:
+            return {"status": "error", "error": f"Invalid command: {e}"}
+
+        if not cmd_parts:
+            return {"status": "error", "error": "Empty command"}
+
+        seg_err = _validate_bash_segment(
+            cmd_parts, command, Path(workdir), sandbox_enforced=False
+        )
+        if seg_err is not None:
+            return seg_err
 
     # Background execution: spawn without waiting, return PID as task ID.
     # TW-2: the background path must not silently escape sandbox enforcement —

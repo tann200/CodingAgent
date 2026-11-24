@@ -225,39 +225,84 @@ def _analyze_bash_command_cached(cmd: str) -> _CacheResult:
     return BashRiskLevel.SAFE, ()
 
 
+# Operators permitted inside an OS-enforced sandbox when every parsed segment
+# individually passes AST, allowlist, flag, secret-path, and network checks.
+SAFE_SANDBOX_OPERATORS: frozenset[str] = frozenset({"|", "&&", "||", ";"})
+SHELL_OPERATORS: frozenset[str] = frozenset(
+    {"|", "&&", "||", ";", ">", ">>", "<", "<<", "&"}
+)
+
+
+def split_shell_segments(cmd: str) -> Tuple[List[List[str]], List[str]]:
+    """Parse *cmd* using a POSIX quote-aware lexer into ``(segments, operators)``.
+
+    Quoted metacharacters (e.g. ``;`` inside ``python3 -c "import math; ..."``)
+    stay inside their token and do **not** appear in *operators*.
+    Unquoted shell operators (``|``, ``&&``, ``||``, ``;``, ``>``, ``>>``,
+    ``<``, ``<<``, ``&``) split the command into individual argv segments.
+
+    Raises ``ValueError`` on malformed quoting (unclosed quotes).
+    """
+    lexer = shlex.shlex(cmd, posix=True, punctuation_chars=";&|<>")
+    lexer.whitespace_split = True
+    raw_tokens = list(lexer)
+
+    segments: List[List[str]] = []
+    operators: List[str] = []
+    current: List[str] = []
+
+    for tok in raw_tokens:
+        if tok in SHELL_OPERATORS:
+            # Preserve escaped/terminating `;` belonging to `find ... -exec ... \;`
+            if (
+                tok == ";"
+                and current
+                and Path(current[0]).name.lower() == "find"
+                and any(f in current for f in ("-exec", "-execdir", "-ok"))
+            ):
+                current.append(tok)
+                continue
+            operators.append(tok)
+            if current:
+                segments.append(current)
+                current = []
+        else:
+            current.append(tok)
+
+    if current:
+        segments.append(current)
+    return segments, operators
+
+
 def analyze_bash_command(
     cmd: str, working_dir: Optional[str] = None
 ) -> Tuple[BashRiskLevel, List[str]]:
     """Analyse *cmd* and return ``(risk_level, reasons)``.
 
     The function works in three passes:
-    1. Tokenize with ``shlex.split()`` to normalise whitespace and quoting.
-       Falls back to raw string analysis when the command cannot be parsed
-       (e.g. contains unclosed quotes — treated as DANGEROUS by default).
+    1. Tokenize with quote-aware ``split_shell_segments()`` to normalise
+       whitespace, quoting, and multi-command pipelines. Falls back to
+       DANGEROUS on unclosed quotes.
     2. Check BLOCKED patterns first; return immediately on first match.
-    3. Check DANGEROUS patterns; collect all matches and return DANGEROUS if any.
+    3. Check DANGEROUS patterns across the full command and each segment;
+       when *working_dir* is provided, also run workspace path-escape checks
+       on every parsed segment.
 
     Returns ``(SAFE, [])`` when no patterns match.
-
-    Args:
-        cmd:         Raw command string.
-        working_dir: Optional workspace root.  When supplied, move/copy
-                     commands whose destination escapes it are escalated to
-                     DANGEROUS (see ``_path_escape_reasons``).  Omitting it
-                     skips only that check; all pattern passes still run.
-
-    SEC-2: Internally delegates to ``_analyze_bash_command_cached`` which stores
-    immutable tuples; this public wrapper converts reasons back to a fresh list
-    so callers receive an independent mutable copy they can safely modify.
     """
     level, reasons_tuple = _analyze_bash_command_cached(cmd)
     reasons = list(reasons_tuple)
-    if working_dir and level is not BashRiskLevel.BLOCKED:
+    if level is not BashRiskLevel.BLOCKED:
         try:
-            tokens = shlex.split(cmd)
+            segments, _ = split_shell_segments(cmd)
         except ValueError:
-            tokens = cmd.split()
-        reasons.extend(_path_escape_reasons(tokens, working_dir))
+            if "malformed command (unmatched quotes)" not in reasons:
+                reasons.append("malformed command (unmatched quotes)")
+            return BashRiskLevel.DANGEROUS, reasons
+
+        if working_dir:
+            for seg in segments:
+                reasons.extend(_path_escape_reasons(seg, working_dir))
         if reasons:
             level = BashRiskLevel.DANGEROUS
     return level, reasons
