@@ -28,10 +28,68 @@ def canonical_provider_name(name: Optional[str]) -> str:
     return normalized
 
 
+_BUNDLED_PROVIDERS_CONFIG = (
+    Path(__file__).resolve().parents[2] / "config" / "providers.json"
+).resolve()
+
+
+def is_bundled_providers_config(path: Path) -> bool:
+    """Return True if *path* points to the tracked bundled ``src/config/providers.json``."""
+    try:
+        return path.resolve() == _BUNDLED_PROVIDERS_CONFIG
+    except Exception:
+        return False
+
+
 def resolve_providers_config_path(path: Optional[str], module_file: str) -> Path:
     if path:
         return Path(path)
     return Path(module_file).parents[2] / "config" / "providers.json"
+
+
+def apply_user_prefs_to_providers(
+    providers: list[dict],
+    canonical_provider: Callable[[Optional[str]], str],
+) -> list[dict]:
+    """Layer user-scoped ``UserPrefs`` overrides over bundled provider defaults in memory.
+
+    Never mutates ``src/config/providers.json`` on disk.
+    """
+    try:
+        from src.core.user_prefs import UserPrefs
+
+        prefs = UserPrefs.load()
+    except Exception:
+        return providers
+
+    selected_provider = canonical_provider(prefs.selected_model_provider)
+    selected_model = prefs.selected_model_name
+    provider_overrides = prefs.data.get("providers")
+    if not isinstance(provider_overrides, dict):
+        provider_overrides = {}
+
+    layered: list[dict] = []
+    for entry in providers:
+        if not isinstance(entry, dict):
+            continue
+        item = dict(entry)
+        pkey = canonical_provider(item.get("name") or item.get("type") or "")
+        if selected_provider:
+            item["active"] = pkey == selected_provider
+        if pkey:
+            ov = provider_overrides.get(pkey)
+            if not isinstance(ov, dict):
+                # Also allow raw lowercase keys stored by legacy callers
+                ov = provider_overrides.get(str(item.get("type") or "").lower())
+            if isinstance(ov, dict):
+                if ov.get("base_url"):
+                    item["base_url"] = ov["base_url"]
+                if not selected_provider and "active" in ov and isinstance(ov["active"], bool):
+                    item["active"] = ov["active"]
+        if selected_provider and pkey == selected_provider and selected_model:
+            item["default_model"] = selected_model
+        layered.append(item)
+    return layered
 
 
 def set_provider_active_flag(
@@ -46,6 +104,20 @@ def set_provider_active_flag(
 ) -> None:
     cfg_path = resolve_config_path(None)
     target_key = canonical_provider(provider_type)
+    if is_bundled_providers_config(cfg_path):
+        # TASK-21: Keep tracked src/config/providers.json read-only; persist
+        # runtime active-provider state in UserPrefs instead.
+        with lock:
+            from src.core.user_prefs import UserPrefs
+
+            prefs = UserPrefs.load()
+            prefs.update_provider_config(target_key, active=bool(active))
+            if active:
+                prefs.selected_model_provider = target_key
+            elif canonical_provider(prefs.selected_model_provider) == target_key:
+                prefs.selected_model_provider = None
+            prefs.save()
+        return
     with lock:
         raw = json.loads(cfg_path.read_text(encoding="utf-8"))
         providers = raw if isinstance(raw, list) else [raw]
@@ -119,16 +191,36 @@ def get_active_provider_name(
 ) -> Optional[str]:
     try:
         cfg_path = resolve_config_path(providers_config_path)
+        bundled = is_bundled_providers_config(cfg_path)
+        provider_overrides: dict[str, Any] = {}
+        if bundled:
+            try:
+                from src.core.user_prefs import UserPrefs
+
+                prefs = UserPrefs.load()
+                selected = canonical_provider(prefs.selected_model_provider)
+                if selected:
+                    return selected
+                raw_ov = prefs.data.get("providers")
+                if isinstance(raw_ov, dict):
+                    provider_overrides = raw_ov
+            except Exception:
+                pass
         with lock:
             raw = json.loads(cfg_path.read_text(encoding="utf-8"))
         providers: list[Any] = raw if isinstance(raw, list) else ([raw] if isinstance(raw, dict) else [])
         for provider in providers:
             if not isinstance(provider, dict):
                 continue
-            if provider.get("active") is True:
-                key = canonical_provider(provider.get("name") or provider.get("type") or "")
-                if key:
+            key = canonical_provider(provider.get("name") or provider.get("type") or "")
+            if bundled and key:
+                ov = provider_overrides.get(key)
+                if isinstance(ov, dict) and ov.get("active") is False:
+                    continue
+                if isinstance(ov, dict) and ov.get("active") is True:
                     return key
+            if provider.get("active") is True and key:
+                return key
     except Exception:
         pass
     return None

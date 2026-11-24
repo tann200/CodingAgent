@@ -981,6 +981,19 @@ def _dispatch_tool_call(
                 except RuntimeError:
                     loop = None
 
+                # TASK-21: Dispatch MCP async tool calls onto the persistent
+                # event loop that owns the MCP client transport.
+                target_loop = getattr(fn, "_mcp_loop", None)
+                if (
+                    target_loop is not None
+                    and not target_loop.is_closed()
+                    and target_loop.is_running()
+                    and target_loop is not loop
+                ):
+                    return _asyncio.run_coroutine_threadsafe(
+                        cast(Coroutine[Any, Any, Any], rv), target_loop
+                    ).result()
+
                 if loop is not None and loop.is_running():
                     # Thread has an active running event loop; run the coroutine in a
                     # dedicated thread to avoid nested loop collision and preserve caller's loop.

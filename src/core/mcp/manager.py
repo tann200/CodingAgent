@@ -14,6 +14,8 @@ from __future__ import annotations
 
 
 from src.core.messaging.event_types import McpServerStatus, McpToolsListChanged
+import asyncio
+import inspect
 import logging
 import threading
 from dataclasses import dataclass
@@ -52,6 +54,33 @@ class McpServerState:
         return "disconnected"
 
 
+class _LoopTaggingRegistryProxy:
+    """Proxy around a ToolRegistry that stamps ``_mcp_loop`` onto MCP tool callables."""
+
+    def __init__(self, target: Any, loop: Optional[asyncio.AbstractEventLoop]) -> None:
+        self._target = target
+        self._loop = loop
+
+    def register(self, name: str, fn: Any, *args: Any, **kwargs: Any) -> Any:
+        tagged = fn
+        if self._loop is not None and callable(fn):
+            try:
+                setattr(fn, "_mcp_loop", self._loop)
+            except Exception:
+                if inspect.iscoroutinefunction(fn):
+                    _orig = fn
+
+                    async def _bound(*a: Any, **kw: Any) -> Any:
+                        return await _orig(*a, **kw)
+
+                    setattr(_bound, "_mcp_loop", self._loop)
+                    tagged = _bound
+        return self._target.register(name, tagged, *args, **kwargs)
+
+    def __getattr__(self, item: str) -> Any:
+        return getattr(self._target, item)
+
+
 class McpServerManager:
     """Manage configured outbound MCP servers.
 
@@ -75,6 +104,76 @@ class McpServerManager:
         self._states: Dict[str, McpServerState] = {}
         self._started: bool = False
         self._lock = threading.RLock()
+        # TASK-21: Persistent daemon event loop for sync callers (e.g. run_deferred_init_sync)
+        self._bg_loop: Optional[asyncio.AbstractEventLoop] = None
+        self._bg_thread: Optional[threading.Thread] = None
+        self._owner_loop: Optional[asyncio.AbstractEventLoop] = None
+
+    def _ensure_bg_loop(self) -> asyncio.AbstractEventLoop:
+        """Return (creating lazily) a long-lived daemon event loop for MCP transports."""
+        with self._lock:
+            if (
+                self._bg_loop is not None
+                and not self._bg_loop.is_closed()
+                and self._bg_thread is not None
+                and self._bg_thread.is_alive()
+            ):
+                return self._bg_loop
+
+            loop = asyncio.new_event_loop()
+            ready = threading.Event()
+
+            def _run_loop() -> None:
+                asyncio.set_event_loop(loop)
+                loop.call_soon(ready.set)
+                try:
+                    loop.run_forever()
+                finally:
+                    try:
+                        pending = asyncio.all_tasks(loop)
+                        for task in pending:
+                            task.cancel()
+                        if pending:
+                            loop.run_until_complete(
+                                asyncio.gather(*pending, return_exceptions=True)
+                            )
+                        loop.run_until_complete(loop.shutdown_asyncgens())
+                    except Exception:
+                        pass
+                    try:
+                        loop.close()
+                    except Exception:
+                        pass
+
+            thread = threading.Thread(
+                target=_run_loop, name="mcp-event-loop", daemon=True
+            )
+            thread.start()
+            ready.wait(timeout=5.0)
+            self._bg_loop = loop
+            self._bg_thread = thread
+            return loop
+
+    def run_coro_sync(self, coro: Any, timeout: Optional[float] = None) -> Any:
+        """Execute *coro* on the manager's persistent daemon event loop."""
+        loop = self._ensure_bg_loop()
+        fut = asyncio.run_coroutine_threadsafe(coro, loop)
+        return fut.result(timeout=timeout)
+
+    def start_sync(self, timeout: Optional[float] = None) -> None:
+        """Start configured MCP servers synchronously on the persistent daemon loop."""
+        self.run_coro_sync(self.start(), timeout=timeout)
+
+    def _wrap_registry_for_loop(self, registry: Any) -> Any:
+        running_loop: Optional[asyncio.AbstractEventLoop]
+        try:
+            running_loop = asyncio.get_running_loop()
+        except RuntimeError:
+            running_loop = self._owner_loop
+        if running_loop is not None:
+            self._owner_loop = running_loop
+            return _LoopTaggingRegistryProxy(registry, running_loop)
+        return registry
 
     def _normalize_server_cmd(self, cfg: Dict[str, Any]) -> List[str]:
         cmd = cfg.get("cmd")
@@ -112,7 +211,7 @@ class McpServerManager:
                 (not s.connected) and (s.last_error or s.needs_auth)
                 for s in self._states.values()
             )
-            payload = {
+            payload: Dict[str, Any] = {
                 "running": bool(connected_names),
                 "count": len(connected_names),
                 "server_names": connected_names,
@@ -165,7 +264,7 @@ class McpServerManager:
             client = self._clients.get(server_name)
             if client is None:
                 return 0
-        count = await client.register_tools(self._registry)
+        count = await client.register_tools(self._wrap_registry_for_loop(self._registry))
         with self._lock:
             st = self._states.get(server_name)
             if st is not None:
@@ -325,7 +424,9 @@ class McpServerManager:
                 if should_register is None:
                     should_register = auto_register_default
                 if should_register:
-                    count = await client.register_tools(self._registry)
+                    count = await client.register_tools(
+                        self._wrap_registry_for_loop(self._registry)
+                    )
                     with self._lock:
                         st.tool_count = count
 
@@ -372,12 +473,26 @@ class McpServerManager:
         self._publish_status()
 
     def stop_sync(self) -> None:
-        """Synchronous kill of all MCP subprocesses for use in close/shutdown.
+        """Synchronously disconnect MCP clients, kill remaining subprocesses, and close the daemon loop."""
+        with self._lock:
+            bg_loop = self._bg_loop
+            bg_thread = self._bg_thread
 
-        Sends SIGTERM to each stdio subprocess (falling back to SIGKILL),
-        then clears the client registry.  Non-stdio transports are skipped
-        since they have no local subprocess to clean up.
-        """
+        # Gracefully disconnect all async clients (HTTP/SSE/WS/stdio) on the
+        # persistent daemon loop before tearing it down.
+        if (
+            bg_loop is not None
+            and not bg_loop.is_closed()
+            and bg_loop.is_running()
+            and threading.current_thread() is not bg_thread
+        ):
+            try:
+                fut = asyncio.run_coroutine_threadsafe(self.stop(), bg_loop)
+                fut.result(timeout=5.0)
+            except Exception as exc:
+                logger.debug("mcp manager: stop_sync async disconnect failed: %s", exc)
+
+        # Fallback: terminate any remaining stdio subprocesses directly.
         with self._lock:
             for name, client in list(self._clients.items()):
                 proc = getattr(client, "_process", None)
@@ -394,15 +509,31 @@ class McpServerManager:
                     st.connected = False
             self._clients.clear()
             self._started = False
+            self._bg_loop = None
+            self._bg_thread = None
+            self._owner_loop = None
+
+        if bg_loop is not None and not bg_loop.is_closed():
+            try:
+                bg_loop.call_soon_threadsafe(bg_loop.stop)
+            except Exception:
+                pass
+        if (
+            bg_thread is not None
+            and bg_thread.is_alive()
+            and threading.current_thread() is not bg_thread
+        ):
+            bg_thread.join(timeout=3.0)
 
     async def re_register_tools(self, registry: Any) -> None:
         """Re-register all connected MCP clients' tools into a new registry."""
         with self._lock:
             self._registry = registry
             clients = list(self._clients.values())
+        wrapped = self._wrap_registry_for_loop(registry)
         for client in clients:
             if hasattr(client, "register_tools"):
                 try:
-                    await client.register_tools(registry)
+                    await client.register_tools(wrapped)
                 except Exception as exc:
                     logger.debug("Failed to re-register MCP tools: %s", exc)

@@ -133,6 +133,7 @@ async def _prepare_turn_messages(
     runtime_policy: Any = None,
     thinking_mode: "str | None" = None,
     model_name: "str | None" = None,
+    tools_schema: "list | None" = None,
 ) -> list:
     """Build the messages list for one LLM turn while preserving the KV-cache prefix."""
     try:
@@ -146,9 +147,10 @@ async def _prepare_turn_messages(
         cb = ContextBuilder(working_dir=getattr(orchestrator, "working_dir", None))
         history = prune_tool_outputs(history)
         token_budget = get_context_budget(model_tier=model_tier)
-        tools_schema = resolve_effective_tool_schemas(
-            orchestrator, runtime_policy, active_role=role
-        )
+        if tools_schema is None:
+            tools_schema = resolve_effective_tool_schemas(
+                orchestrator, runtime_policy, active_role=role
+            )
         provider_caps = _resolve_pc(orchestrator)
 
         loop = asyncio.get_running_loop()
@@ -198,11 +200,13 @@ async def _call_llm_for_turn(
     role: str = "operational",
     runtime_policy: Any = None,
     thinking_mode: "str | None" = None,
+    tools_schema: "list | None" = None,
 ) -> "tuple[Any, str, list]":
     """Call the LLM and extract ``(response, content_text, tool_calls)``."""
-    tools_schema = resolve_effective_tool_schemas(
-        orchestrator, runtime_policy, active_role=role
-    )
+    if tools_schema is None:
+        tools_schema = resolve_effective_tool_schemas(
+            orchestrator, runtime_policy, active_role=role
+        )
 
     _llm_timeout: int | None = 120
     try:
@@ -631,59 +635,39 @@ async def frontier_loop_node(
         else:
             try:
                 messages = await _prepare_turn_messages(
-                    orchestrator=orchestrator,
-                    task=task,
-                    history=history,
-                    model_tier=model_tier,
-                    turns_taken=turns_taken,
-                    retrieved_snippets=retrieved_snippets,
-                    role=role,
-                    runtime_policy=runtime_policy,
+                    orchestrator=orchestrator, task=task, history=history,
+                    model_tier=model_tier, turns_taken=turns_taken,
+                    retrieved_snippets=retrieved_snippets, role=role,
+                    runtime_policy=runtime_policy, thinking_mode=thinking_mode_str,
+                    model_name=model_name, tools_schema=effective_tools,
                 )
             except TypeError:
                 try:
                     messages = await _prepare_turn_messages(
-                        orchestrator=orchestrator,
-                        task=task,
-                        history=history,
-                        model_tier=model_tier,
-                        turns_taken=turns_taken,
-                        retrieved_snippets=retrieved_snippets,
-                        role=role,
-                        thinking_mode=thinking_mode_str,
-                        model_name=model_name,
+                        orchestrator=orchestrator, task=task, history=history,
+                        model_tier=model_tier, turns_taken=turns_taken,
+                        retrieved_snippets=retrieved_snippets, role=role,
+                        runtime_policy=runtime_policy,
                     )
                 except TypeError:
                     messages = await _prepare_turn_messages(
-                        orchestrator=orchestrator,
-                        task=task,
-                        history=history,
-                        model_tier=model_tier,
-                        turns_taken=turns_taken,
+                        orchestrator=orchestrator, task=task, history=history,
+                        model_tier=model_tier, turns_taken=turns_taken,
                     )
 
             try:
                 try:
                     response, content_text, tool_calls = await _call_llm_for_turn(
-                        messages=messages,
-                        provider_name=provider_name,
-                        model_name=model_name,
-                        orchestrator=orchestrator,
-                        turns_taken=turns_taken,
-                        model_tier=model_tier,
-                        role=role,
-                        runtime_policy=runtime_policy,
-                        thinking_mode=thinking_mode_str,
+                        messages=messages, provider_name=provider_name, model_name=model_name,
+                        orchestrator=orchestrator, turns_taken=turns_taken, model_tier=model_tier,
+                        role=role, runtime_policy=runtime_policy, thinking_mode=thinking_mode_str,
+                        tools_schema=effective_tools,
                     )
                 except TypeError:
                     response, content_text, tool_calls = await _call_llm_for_turn(
-                        messages=messages,
-                        provider_name=provider_name,
-                        model_name=model_name,
-                        orchestrator=orchestrator,
-                        turns_taken=turns_taken,
-                        model_tier=model_tier,
-                        role=role,
+                        messages=messages, provider_name=provider_name, model_name=model_name,
+                        orchestrator=orchestrator, turns_taken=turns_taken,
+                        model_tier=model_tier, role=role,
                     )
             except Exception as exc:
                 error_str = str(exc)

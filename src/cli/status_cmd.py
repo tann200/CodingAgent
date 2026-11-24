@@ -19,13 +19,17 @@ from src.cli._helpers import (
 
 
 def _active_provider() -> dict:
-    """Return ``{provider, model}`` for the active entry in providers.json."""
+    """Return ``{provider, model}`` for the active provider (UserPrefs over providers.json)."""
     try:
         import src.core.inference.provider_config as _pc
 
         cfg_path = _pc.resolve_providers_config_path(None, _pc.__file__)
         raw = json.loads(cfg_path.read_text(encoding="utf-8"))
         providers = raw if isinstance(raw, list) else [raw]
+        if _pc.is_bundled_providers_config(cfg_path):
+            providers = _pc.apply_user_prefs_to_providers(
+                providers, _pc.canonical_provider_name
+            )
         for p in providers:
             if not isinstance(p, dict):
                 continue

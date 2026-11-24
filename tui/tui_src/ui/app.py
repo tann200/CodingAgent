@@ -413,32 +413,54 @@ class AgentApp(
             import tempfile as _tf
 
             cfg_path = resolve_config_path(None)
-            with _providers_json_lock:
-                raw = _json.loads(cfg_path.read_text(encoding="utf-8"))
-                entries = raw if isinstance(raw, list) else [raw]
-                matched = False
-                for p in entries:
-                    key = canonical_provider(p.get("type") or p.get("name") or "")
-                    p["active"] = key == norm_id
-                    if key == norm_id:
-                        matched = True
-                new_text = _json.dumps(entries, indent=2)
-                fd, tmp = _tf.mkstemp(dir=cfg_path.parent, suffix=".tmp")
+            try:
+                from src.core.inference.provider_config import is_bundled_providers_config
+
+                _is_bundled = is_bundled_providers_config(cfg_path)
+            except Exception:
+                _is_bundled = False
+
+            matched = False
+            if _is_bundled:
+                # TASK-21: Keep bundled src/config/providers.json read-only;
+                # active provider is persisted in UserPrefs below.
                 try:
-                    with _os.fdopen(fd, "w", encoding="utf-8") as f:
-                        f.write(new_text)
-                    _os.replace(tmp, cfg_path)
+                    with _providers_json_lock:
+                        raw = _json.loads(cfg_path.read_text(encoding="utf-8"))
+                        entries = raw if isinstance(raw, list) else [raw]
+                        matched = any(
+                            canonical_provider(p.get("type") or p.get("name") or "") == norm_id
+                            for p in entries
+                            if isinstance(p, dict)
+                        )
                 except Exception:
+                    pass
+                logger.info(f"_activate_provider: persisting active={norm_id} to UserPrefs (bundled providers.json read-only)")
+            else:
+                with _providers_json_lock:
+                    raw = _json.loads(cfg_path.read_text(encoding="utf-8"))
+                    entries = raw if isinstance(raw, list) else [raw]
+                    for p in entries:
+                        key = canonical_provider(p.get("type") or p.get("name") or "")
+                        p["active"] = key == norm_id
+                        if key == norm_id:
+                            matched = True
+                    new_text = _json.dumps(entries, indent=2)
+                    fd, tmp = _tf.mkstemp(dir=cfg_path.parent, suffix=".tmp")
                     try:
-                        _os.unlink(tmp)
-                    except OSError:
-                        pass
-                    raise
+                        with _os.fdopen(fd, "w", encoding="utf-8") as f:
+                            f.write(new_text)
+                        _os.replace(tmp, cfg_path)
+                    except Exception:
+                        try:
+                            _os.unlink(tmp)
+                        except OSError:
+                            pass
+                        raise
+                logger.info(f"_activate_provider: persisted active={norm_id} to providers.json")
 
             if not matched:
                 logger.warning(f"_activate_provider: no providers.json entry matched '{norm_id}'")
-
-            logger.info(f"_activate_provider: persisted active={norm_id} to providers.json")
 
             try:
                 from src.core.user_prefs import UserPrefs

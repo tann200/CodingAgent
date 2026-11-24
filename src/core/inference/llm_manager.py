@@ -195,7 +195,9 @@ from src.core.inference.provider_probe import (  # noqa: E402
     validate_provider_connection as _validate_provider_connection,
 )
 from src.core.inference.provider_config import (  # noqa: E402
+    apply_user_prefs_to_providers as _apply_user_prefs_to_providers,
     get_active_provider_name as _get_active_provider_name_helper,
+    is_bundled_providers_config as _is_bundled_providers_config,
     canonical_provider_name as _canonical_provider_name,
     normalize_provider_models as _normalize_provider_models,
     resolve_providers_config_path as _resolve_providers_config_path,
@@ -574,6 +576,18 @@ class ProviderManager(ProviderManagerProtocol):
                 except Exception:
                     pass
 
+            # TASK-21: Persist selected model override to UserPrefs when using bundled defaults
+            try:
+                cfg_path = resolve_config_path(self.providers_config_path)
+                if _is_bundled_providers_config(cfg_path):
+                    prefs = UserPrefs.load()
+                    prefs.selected_model_name = selected_model
+                    if target_pkey:
+                        prefs.selected_model_provider = target_pkey
+                    prefs.save()
+            except Exception:
+                pass
+
             _log.info(
                 "model.routing: live-switched to model=%r provider=%r (persisted=%s)",
                 selected_model,
@@ -591,11 +605,22 @@ class ProviderManager(ProviderManagerProtocol):
             pass
 
     def _persist_active_provider(self, target_key: str) -> bool:
-        """Write ``active: true`` for *target_key* and ``false`` for all others
-        in ``providers.json``.  Returns True on success.
+        """Persist active provider selection.
+
+        When targeting the tracked bundled ``src/config/providers.json``,
+        writes exclusively to ``UserPrefs`` (``~/.codingagent/prefs.json``) so
+        the repository stays clean.  When an explicit custom
+        ``providers_config_path`` is configured, updates that file atomically
+        via ``tempfile.mkstemp`` + ``os.replace``.
         """
         try:
             cfg_path = resolve_config_path(self.providers_config_path)
+            if _is_bundled_providers_config(cfg_path):
+                with _providers_json_lock:
+                    prefs = UserPrefs.load()
+                    prefs.selected_model_provider = target_key
+                    prefs.save()
+                return True
             with _providers_json_lock:
                 raw = json.loads(cfg_path.read_text(encoding="utf-8"))
                 providers = raw if isinstance(raw, list) else ([raw] if isinstance(raw, dict) else [])
@@ -956,6 +981,10 @@ class ProviderManager(ProviderManagerProtocol):
 
                 raw = json.loads(cfg.read_text(encoding="utf-8"))
                 providers = _load_provider_entries(raw)
+                if _is_bundled_providers_config(cfg):
+                    providers = _apply_user_prefs_to_providers(
+                        providers, canonical_provider
+                    )
                 self._last_loaded_providers = providers
                 _load_registered_providers(
                     providers=providers,
@@ -1025,8 +1054,10 @@ class ProviderManager(ProviderManagerProtocol):
             if hasattr(adapter, "get_loaded_context_length")
             else None,
             set_active_context_length_fn=_set_active_context_length_lazy,
-            is_active_provider_fn=lambda provider_key, provider_config: bool(
-                provider_config and provider_config.get("active")
+            is_active_provider_fn=lambda provider_key, provider_config: (
+                provider_key == self.get_active_provider_name()
+                if self.get_active_provider_name()
+                else bool(provider_config and provider_config.get("active"))
             ),
         )
 

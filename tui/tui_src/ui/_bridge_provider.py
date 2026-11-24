@@ -248,6 +248,19 @@ class BridgeProviderMixin(AgentBridgeProtocol):
                 return
             raw = json.loads(providers_path.read_text(encoding="utf-8"))
             providers = raw if isinstance(raw, list) else raw.get("providers", [])
+            try:
+                from src.core.inference.provider_config import (
+                    apply_user_prefs_to_providers,
+                    canonical_provider_name,
+                    is_bundled_providers_config,
+                )
+
+                if is_bundled_providers_config(providers_path):
+                    providers = apply_user_prefs_to_providers(
+                        providers, canonical_provider_name
+                    )
+            except Exception:
+                pass
             active = next(
                 (p for p in providers if isinstance(p, dict) and p.get("active")),
                 None,

@@ -88,7 +88,7 @@ Graph checkpoints can persist and rehydrate graph state. They improve crash reco
 ### Providers And Evaluation
 
 - `src/core/inference/` manages provider discovery, capability profiles, `KVCacheGovernor` calibration (including Apple Silicon headroom, `num_ctx`, `kv_cache_quant`, and MoE KV scaling), routing, token counting, streaming, retries, fallback, telemetry, and adapters (`AnthropicAdapter`, `OllamaAdapter`, `OpenAICompatAdapter`, `MlxAdapter`, `LlamaServerAdapter`). Anthropic and OpenAI/local adapters support prompt-cache prefix stability via `system_prompt_dynamic_boundary`.
-- `src/config/providers.json` contains provider definitions (with inactive presets for local `mlx` and `llama_server`).
+- `src/config/providers.json` contains read-only bundled provider defaults (with inactive presets for local `mlx` and `llama_server`). Runtime active provider, active model, and endpoint overrides are stored exclusively in user-scoped `UserPrefs` (`~/.codingagent/prefs.json`) and layered over bundled defaults at load time.
 - `src/core/evaluation/` includes 23 executable-verified scenarios, regression comparisons (failing on dropped baseline scenarios), comparison utilities, and SWE-bench grading harnesses. CI runs deterministic, acceptance, and mock-backed coverage by default; live-provider checks are scheduled or manually enabled.
 
 ### Events, Observability, And Server
@@ -101,7 +101,7 @@ Graph checkpoints can persist and rehydrate graph state. They improve crash reco
 
 Project-local runtime configuration is read from `.codingAgent/`. User-level preferences, provider credentials, session history, checkpoints, indexes, summaries, metrics, and audit/trace records are managed by their respective core services. Never assume session data is safe to expose to an LLM or remote client without redaction.
 
-Project-local configuration merges `.codingAgent/config.json` / `.codingAgent/config.local.json` and `.codingAgent/settings.json` / `.codingAgent/settings.local.json` (in that order). `codingagent init`, `codingagent mcp add`, and active configuration resolution all use `.codingAgent/`; the legacy `.agent` and `.localAgent` names are not used.
+Project-local configuration merges `.codingAgent/config.json` / `.codingAgent/config.local.json` and `.codingAgent/settings.json` / `.codingAgent/settings.local.json` (in that order). `codingagent init`, `codingagent mcp add`, and active configuration resolution all use `.codingAgent/`; the legacy `.agent` and `.localAgent` names are not used. Diagnostic step timings in `.codingAgent/timings.json` are capped to a bounded ring buffer (default `200` recent entries). Outbound MCP servers started synchronously via `Orchestrator.run_deferred_init_sync()` run on a dedicated persistent daemon event loop owned by `McpServerManager` and torn down cleanly in `Orchestrator.close()`.
 
 ## Trust Boundaries
 

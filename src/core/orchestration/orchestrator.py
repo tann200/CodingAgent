@@ -183,13 +183,47 @@ class Orchestrator:
 
         await start_mcp_server_impl(self)
 
+    def _ensure_deferred_loop(self) -> Any:
+        """Lazily create a persistent daemon event loop when mcp_manager has none."""
+        import asyncio
+        import threading
+
+        loop = getattr(self, "_deferred_loop", None)
+        thread = getattr(self, "_deferred_loop_thread", None)
+        if loop is not None and not loop.is_closed() and thread is not None and thread.is_alive():
+            return loop
+
+        loop = asyncio.new_event_loop()
+        ready = threading.Event()
+
+        def _runner() -> None:
+            asyncio.set_event_loop(loop)
+            loop.call_soon(ready.set)
+            try:
+                loop.run_forever()
+            finally:
+                try:
+                    loop.close()
+                except Exception:
+                    pass
+
+        thread = threading.Thread(target=_runner, name="orch-deferred-loop", daemon=True)
+        thread.start()
+        ready.wait(timeout=5.0)
+        self._deferred_loop = loop
+        self._deferred_loop_thread = thread
+        return loop
+
     def run_deferred_init_sync(self, trusted: Optional[bool] = None) -> Any:
-        """Synchronously execute deferred initialization if not already completed."""
+        """Synchronously execute deferred initialization on a persistent event loop.
+
+        TASK-21: Keeps the async event loop alive so MCP transports started
+        during deferred initialization remain usable until ``Orchestrator.close()``.
+        """
         if getattr(self, "_deferred_init_done", False):
             return getattr(self, "_deferred_init_result", None)
 
         import asyncio
-        import concurrent.futures
         from src.core.orchestration.deferred_init import run_deferred_init
 
         effective_trust = (
@@ -197,18 +231,12 @@ class Orchestrator:
         )
         coro = run_deferred_init(self, trusted=effective_trust)
 
-        try:
-            loop = asyncio.get_running_loop()
-        except RuntimeError:
-            loop = None
-
-        if loop is None:
-            result = asyncio.run(coro)
-        elif loop.is_running():
-            with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
-                result = pool.submit(asyncio.run, coro).result()
+        mcp_mgr = getattr(self, "mcp_manager", None)
+        if mcp_mgr is not None and hasattr(mcp_mgr, "run_coro_sync"):
+            result = mcp_mgr.run_coro_sync(coro)
         else:
-            result = loop.run_until_complete(coro)
+            loop = self._ensure_deferred_loop()
+            result = asyncio.run_coroutine_threadsafe(coro, loop).result()
 
         self._deferred_init_done = True
         self._deferred_init_result = result
@@ -570,11 +598,23 @@ class Orchestrator:
                 _title_thread.join(timeout=2.0)
         except Exception:
             pass
-        # P1: kill MCP subprocesses so stdio child processes are not orphaned.
+        # P1: disconnect MCP clients, kill remaining subprocesses, and close daemon loop.
         try:
             _mcp = getattr(self, "mcp_manager", None)
             if _mcp is not None and hasattr(_mcp, "stop_sync"):
                 _mcp.stop_sync()
+        except Exception:
+            pass
+        # TASK-21: Tear down fallback deferred-init daemon loop if created.
+        try:
+            _dloop = getattr(self, "_deferred_loop", None)
+            _dthread = getattr(self, "_deferred_loop_thread", None)
+            self._deferred_loop = None
+            self._deferred_loop_thread = None
+            if _dloop is not None and not _dloop.is_closed():
+                _dloop.call_soon_threadsafe(_dloop.stop)
+            if _dthread is not None and _dthread.is_alive():
+                _dthread.join(timeout=2.0)
         except Exception:
             pass
 

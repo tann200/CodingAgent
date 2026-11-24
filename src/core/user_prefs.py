@@ -11,11 +11,19 @@ DEFAULT_FILENAME = os.getenv("CODINGAGENT_PREFS") or str(get_prefs_path())
 logger = logging.getLogger(__name__)
 
 
+def _default_prefs_path() -> Path:
+    """Resolve the default prefs path, honoring runtime CODINGAGENT_PREFS overrides."""
+    env_override = os.getenv("CODINGAGENT_PREFS")
+    if env_override:
+        return Path(env_override)
+    return Path(DEFAULT_FILENAME)
+
+
 class UserPrefs:
     def __init__(
         self, data: Optional[Dict[str, Any]] = None, path: Optional[Path] = None
     ):
-        self.path = Path(path) if path else Path(DEFAULT_FILENAME)
+        self.path = Path(path) if path else _default_prefs_path()
         self.data = data or {}
         # CODE_QUALITY_AUDIT #8 fix: the three lines below previously assigned
         # instance attributes that shadow the @property descriptors defined later
@@ -29,7 +37,7 @@ class UserPrefs:
 
     @classmethod
     def load(cls, path: Optional[str] = None) -> "UserPrefs":
-        p = Path(path) if path else Path(DEFAULT_FILENAME)
+        p = Path(path) if path else _default_prefs_path()
         if p.exists():
             try:
                 d = json.loads(p.read_text(encoding="utf-8"))

@@ -407,10 +407,12 @@ class TestOpenRouterAdapter:
         assert out["ok"] is True
         assert out["provider"] == "openrouter"
         assert out["choices"][0]["message"]["content"] == "Hi"
-        # Verify correct endpoint was called
-        call_url = mock_post.call_args[0][0]
-        assert "openrouter.ai" in call_url
-        assert "chat/completions" in call_url
+        # Verify correct endpoint was called (filter by URL so unrelated daemon
+        # threads calling requests.post cannot race mock_post.call_args).
+        called_urls = [c.args[0] for c in mock_post.call_args_list if c.args]
+        assert any(
+            "openrouter.ai" in url and "chat/completions" in url for url in called_urls
+        ), f"Expected OpenRouter chat/completions URL, got: {called_urls}"
 
     def test_generate_includes_referer_header(self):
         from src.core.inference.adapters.openrouter_adapter import OpenRouterAdapter

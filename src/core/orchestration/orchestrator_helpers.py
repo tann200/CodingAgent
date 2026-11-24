@@ -15,17 +15,69 @@ import json
 import logging
 import re
 import subprocess
+import threading
 import traceback
 import time
 import tempfile
 import os
 import shutil
-from typing import Any, Dict
+from typing import Any, Dict, Optional
 
 from src.core.logger import logger as guilogger
 from src.core.utils.strings import valid_str as _valid_str, extract_str as _extract_str
 
 logger = logging.getLogger(__name__)
+
+_TIMINGS_LOCK = threading.Lock()
+DEFAULT_TIMINGS_MAX_ENTRIES = 200
+
+
+def _append_timing_entry(
+    working_dir: Any,
+    entry: Dict[str, Any],
+    *,
+    max_entries: Optional[int] = None,
+) -> None:
+    """Append a timing record to ``.codingAgent/timings.json`` as a bounded ring buffer.
+
+    TASK-21: Caps the file to the most recent *max_entries* records (default 200)
+    so long-lived sessions and test suites cannot grow ``timings.json`` unboundedly.
+    """
+    if not working_dir:
+        return
+    try:
+        cap = max_entries
+        if cap is None:
+            env_cap = os.environ.get("CODINGAGENT_TIMINGS_MAX_ENTRIES", "").strip()
+            cap = int(env_cap) if env_cap.isdigit() and int(env_cap) > 0 else DEFAULT_TIMINGS_MAX_ENTRIES
+        try:
+            from src.tools.tools_config import agent_context_path
+
+            agent_context_dir = agent_context_path(working_dir)
+        except Exception:
+            agent_context_dir = working_dir / ".codingAgent"
+        timings_path = agent_context_dir / "timings.json"
+        with _TIMINGS_LOCK:
+            if timings_path.exists():
+                try:
+                    existing = json.loads(timings_path.read_text(encoding="utf-8"))
+                    if isinstance(existing, list):
+                        data = existing
+                    else:
+                        data = [existing]
+                except Exception:
+                    data = []
+            else:
+                data = []
+            data.append(entry)
+            if len(data) > cap:
+                data = data[-cap:]
+            timings_path.parent.mkdir(parents=True, exist_ok=True)
+            from src.core.io_utils import atomic_write_json
+
+            atomic_write_json(timings_path, data, logger=guilogger)
+    except Exception:
+        pass
 
 
 # ---------------------------------------------------------------------------
@@ -273,39 +325,16 @@ def begin_step_transaction_impl(orch: Any) -> str:
     step_id = "step_" + datetime.datetime.now().strftime("%Y%m%d_%H%M%S_%f")
     orch._step_snapshot_id = step_id
     guilogger.debug(f"begin_step_transaction: started {step_id}")
-    # Record timing of begin_step_transaction (very fast, but useful overall)
-    try:
-        start_ts = time.time()
-        if getattr(orch, "working_dir", None):
-            from src.tools.tools_config import agent_context_path
-
-            agent_context_dir = agent_context_path(orch.working_dir)
-            timings_path = agent_context_dir / "timings.json"
-            entry = {
-                "phase": "begin_step_transaction",
-                "elapsed": 0.0,
-                "ts": int(start_ts),
-                "step_id": step_id,
-            }
-            if timings_path.exists():
-                try:
-                    data = json.loads(timings_path.read_text(encoding="utf-8"))
-                    if isinstance(data, list):
-                        data.append(entry)
-                    else:
-                        data = [data, entry]
-                except Exception:
-                    data = [entry]
-            else:
-                data = [entry]
-            try:
-                timings_path.parent.mkdir(parents=True, exist_ok=True)
-                from src.core.io_utils import atomic_write_json
-                atomic_write_json(timings_path, data, logger=guilogger)
-            except Exception:
-                pass
-    except Exception:
-        pass
+    # Record timing of begin_step_transaction (bounded ring buffer)
+    _append_timing_entry(
+        getattr(orch, "working_dir", None),
+        {
+            "phase": "begin_step_transaction",
+            "elapsed": 0.0,
+            "ts": int(time.time()),
+            "step_id": step_id,
+        },
+    )
     return step_id
 
 
@@ -544,41 +573,15 @@ def _ensure_working_dir_impl(orch: Any) -> None:
         except Exception:
             pass
     finally:
-        # Best-effort timing/logging for diagnostics
-        try:
-            elapsed = time.time() - start_ts
-            try:
-                from src.tools.tools_config import agent_context_path
-
-                agent_context_dir = agent_context_path(orch.working_dir)
-            except Exception:
-                agent_context_dir = orch.working_dir / ".codingAgent"
-                agent_context_dir.mkdir(parents=True, exist_ok=True)
-            timings_path = agent_context_dir / "timings.json"
-            entry = {
+        # Best-effort bounded timing record for diagnostics
+        _append_timing_entry(
+            getattr(orch, "working_dir", None),
+            {
                 "phase": "ensure_working_dir",
-                "elapsed": elapsed,
+                "elapsed": time.time() - start_ts,
                 "ts": int(start_ts),
-            }
-            if timings_path.exists():
-                try:
-                    data = json.loads(timings_path.read_text(encoding="utf-8"))
-                    if isinstance(data, list):
-                        data.append(entry)
-                    else:
-                        data = [data, entry]
-                except Exception:
-                    data = [entry]
-            else:
-                data = [entry]
-            try:
-                timings_path.parent.mkdir(parents=True, exist_ok=True)
-                from src.core.io_utils import atomic_write_json
-                atomic_write_json(timings_path, data, logger=guilogger)
-            except Exception:
-                pass
-        except Exception:
-            pass
+            },
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -635,43 +638,15 @@ def _background_model_check_impl(orch: Any) -> None:
     except Exception as _e:
         guilogger.warning(f"background_model_check failed: {_e}")
     finally:
-        # Record timing for provider/model check
-        try:
-            elapsed = time.time() - start_ts
-            if getattr(orch, "working_dir", None):
-                try:
-                    from src.tools.tools_config import agent_context_path
-
-                    agent_context_dir = agent_context_path(orch.working_dir)
-                except Exception:
-                    agent_context_dir = orch.working_dir / ".codingAgent"
-                    agent_context_dir.mkdir(parents=True, exist_ok=True)
-
-                timings_path = agent_context_dir / "timings.json"
-                entry = {
-                    "phase": "background_model_check",
-                    "elapsed": elapsed,
-                    "ts": int(start_ts),
-                }
-                if timings_path.exists():
-                    try:
-                        data = json.loads(timings_path.read_text(encoding="utf-8"))
-                        if isinstance(data, list):
-                            data.append(entry)
-                        else:
-                            data = [data, entry]
-                    except Exception:
-                        data = [entry]
-                else:
-                    data = [entry]
-                try:
-                    timings_path.parent.mkdir(parents=True, exist_ok=True)
-                    from src.core.io_utils import atomic_write_json
-                    atomic_write_json(timings_path, data, logger=guilogger)
-                except Exception:
-                    pass
-        except Exception:
-            pass
+        # Record bounded timing for provider/model check
+        _append_timing_entry(
+            getattr(orch, "working_dir", None),
+            {
+                "phase": "background_model_check",
+                "elapsed": time.time() - start_ts,
+                "ts": int(start_ts),
+            },
+        )
 
 
 # ---------------------------------------------------------------------------
