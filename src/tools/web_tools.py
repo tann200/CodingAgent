@@ -222,6 +222,49 @@ def _is_ssrf_blocked(url: str) -> None:
         raise PermissionError(f"URL '{url}' blocked due to parse/resolve error")
 
 
+_EXPLICIT_LOOPBACK_HOSTS = frozenset({"localhost", "127.0.0.1", "::1"})
+
+
+def validate_mcp_url(
+    url: str,
+    *,
+    allowed_schemes: Tuple[str, ...] = ("http", "https"),
+    allow_localhost: bool = True,
+) -> None:
+    """Validate an outbound MCP server URL against SSRF targets.
+
+    - Enforces *allowed_schemes* and a non-empty hostname.
+    - Always rejects obfuscated numeric/octal/hex IPv4 encodings (e.g.
+      ``0177.0.0.1``, ``0x7f.0.0.1``, ``2130706433``), ``0.0.0.0``, cloud
+      metadata endpoints (``169.254.169.254``), private LAN ranges, and
+      DNS-rebound hostnames resolving to internal/loopback addresses.
+    - Permits explicit literal loopback (``localhost``, ``127.0.0.1``, ``::1``)
+      only when *allow_localhost* is True (for local dev MCP servers; always
+      pass ``allow_localhost=False`` when validating redirect targets).
+    """
+    from urllib.parse import urlparse
+
+    if not url or not isinstance(url, str):
+        raise PermissionError("Blocked empty or invalid MCP URL")
+    parsed = urlparse(url)
+    scheme = (parsed.scheme or "").lower()
+    if scheme not in allowed_schemes:
+        raise PermissionError(f"Blocked MCP URL scheme: {parsed.scheme!r}")
+    host = (parsed.hostname or "").strip().lower().rstrip(".")
+    if not host:
+        raise PermissionError(f"Blocked MCP URL with missing hostname: {url}")
+
+    # Permit only explicit literal loopback strings when explicitly allowed.
+    # Obfuscated forms (0177.0.0.1, 0x7f.0.0.1, 2130706433, 0.0.0.0, ::ffff:...)
+    # are NOT in _EXPLICIT_LOOPBACK_HOSTS and will be blocked by _is_ssrf_blocked.
+    if allow_localhost and host in _EXPLICIT_LOOPBACK_HOSTS:
+        return
+
+    norm_scheme = {"ws": "http", "wss": "https"}.get(scheme, scheme)
+    norm_url = f"{norm_scheme}://{parsed.netloc}{parsed.path or ''}"
+    _is_ssrf_blocked(norm_url)
+
+
 @tool(tags=["coding", "planning", "debug"], permission_kind=PermissionKind.NETWORK)
 def web_search(query: str, max_results: int = 5) -> Dict[str, Any]:
     """Search the web for documentation, error messages, or package information.

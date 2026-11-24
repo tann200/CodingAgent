@@ -83,6 +83,10 @@ class McpHttpClient:
         if self._connected:
             return
 
+        from src.tools.web_tools import validate_mcp_url
+
+        validate_mcp_url(self.url, allowed_schemes=("http", "https"))
+
         self._client = httpx.AsyncClient(
             headers={
                 "Content-Type": "application/json",
@@ -90,6 +94,7 @@ class McpHttpClient:
                 **self.headers,
             },
             timeout=httpx.Timeout(self.timeout),
+            follow_redirects=False,
         )
 
         try:
@@ -231,6 +236,10 @@ class McpHttpClient:
 
         try:
             response = await self._client.post(self.url, json=payload)
+            if isinstance(getattr(response, "status_code", None), int) and 300 <= response.status_code < 400:
+                raise PermissionError(
+                    f"McpHttpClient: blocked HTTP redirect ({response.status_code}) from {self.url}"
+                )
             response.raise_for_status()
             content_type = response.headers.get("Content-Type", "")
 

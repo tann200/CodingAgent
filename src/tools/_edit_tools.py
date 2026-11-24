@@ -75,13 +75,11 @@ def _invalidate_context_cache(path: Path) -> None:
     except Exception:
         pass
 
-from src.tools._path_utils import safe_resolve as _safe_resolve  # noqa: E402
 from src.tools._tool import tool, PermissionKind  # noqa: E402
 from src.tools._diff_gate import (  # noqa: E402
     _publish_diff_preview,
     register_preview_gate,
 )
-from src.tools._workspace_guard import WorkspaceGuard  # noqa: E402
 from src.tools._lint_verify import verify_candidate_content as _verify_new_content  # noqa: E402
 
 _logger = logging.getLogger(__name__)
@@ -251,6 +249,17 @@ def _fuzzy_find(content: str, target: str) -> Optional[str]:
     return None
 
 
+def _count_diff_changes(diff_lines: list[str]) -> tuple[int, int]:
+    """Count added/removed content lines in a unified diff, excluding +++ / --- headers."""
+    lines_added = sum(
+        1 for ln in diff_lines if ln.startswith("+") and not ln.startswith("+++")
+    )
+    lines_removed = sum(
+        1 for ln in diff_lines if ln.startswith("-") and not ln.startswith("---")
+    )
+    return lines_added, lines_removed
+
+
 def _read_original_content(p: Path) -> tuple[Optional[str], Optional[Dict[str, Any]]]:
     """Read original content of a file for editing, returning (content, None) on success or (None, err_dict) if binary/unreadable."""
     try:
@@ -289,28 +298,18 @@ def edit_file(
     """Edit a file using a unified diff patch. Returns diff in result for TUI display."""
     if workdir is None:
         workdir = Path.cwd()
-    workdir_resolved = Path(workdir).resolve()
-    # Phase 4.3: WorkspaceGuard integration - check protected files
-    guard = WorkspaceGuard(workspace_root=workdir_resolved)
-    guard_result = guard.guard_operation("edit_file", path, user_approved)
-    if guard_result.get("status") == "error":
-        return {"path": path, "status": "error", "error": guard_result.get("error")}
+    from src.tools._file_io import _pre_write_check
 
-    p = _safe_resolve(path, workdir)
-
-    guard_res_resolved = guard.guard_operation("edit_file", str(p), user_approved)
-    if guard_res_resolved.get("status") == "error":
-        return {"path": str(p), "status": "error", "error": guard_res_resolved.get("error")}
-
-    # GAP-S1: Read-before-write guardrail (check after resolve so path is absolute)
-    try:
-        from src.tools.guardrails import check_read_before_write
-
-        rbw = check_read_before_write(str(p))
-        if rbw:
-            return {"path": str(p), "status": "error", **rbw}
-    except Exception:
-        pass
+    p, pre_err = _pre_write_check(
+        path,
+        Path(workdir),
+        operation="edit_file",
+        user_approved=user_approved,
+        check_binary=True,
+        check_read=True,
+    )
+    if pre_err is not None or p is None:
+        return pre_err or {"path": path, "status": "error", "error": "Pre-write check failed"}
     if not p.exists():
         return {"path": str(p), "status": "not_found"}
 
@@ -354,8 +353,7 @@ def edit_file(
     )
     diff = "".join(diff_lines)
 
-    lines_added = len([line for line in diff_lines if line.startswith("+")])
-    lines_removed = len([line for line in diff_lines if line.startswith("-")])
+    lines_added, lines_removed = _count_diff_changes(diff_lines)
 
     # M4: Publish diff preview (post-apply for edit_file since patch is atomic)
     _publish_diff_preview(str(p), diff, is_new_file=False)
@@ -396,21 +394,6 @@ def edit_by_line_range(
     """
     if workdir is None:
         workdir = Path.cwd()
-    workdir_resolved = Path(workdir).resolve()
-
-    guard = WorkspaceGuard(workspace_root=workdir_resolved)
-    guard_result = guard.guard_operation("edit_by_line_range", path, user_approved)
-    if guard_result.get("status") == "error":
-        return {"path": path, "status": "error", "error": guard_result.get("error")}
-
-    try:
-        p = _safe_resolve(path, workdir)
-    except (PermissionError, ValueError) as exc:
-        return {"path": path, "status": "error", "error": str(exc)}
-
-    guard_res_resolved = guard.guard_operation("edit_by_line_range", str(p), user_approved)
-    if guard_res_resolved.get("status") == "error":
-        return {"path": str(p), "status": "error", "error": guard_res_resolved.get("error")}
 
     # P2-6: Coerce to int — LLM may pass string representations
     try:
@@ -418,20 +401,26 @@ def edit_by_line_range(
         end_line = int(end_line)
     except (TypeError, ValueError) as _ce:
         return {
-            "path": str(p),
+            "path": path,
             "status": "error",
             "error": f"start_line/end_line must be integers: {_ce}",
         }
 
-    # GAP-S1: Read-before-write guardrail (check after resolve so path is absolute)
-    try:
-        from src.tools.guardrails import check_read_before_write
+    from src.tools._file_io import _pre_write_check
 
-        rbw = check_read_before_write(str(p))
-        if rbw:
-            return {"path": str(p), "status": "error", **rbw}
-    except Exception:
-        pass
+    try:
+        p, pre_err = _pre_write_check(
+            path,
+            Path(workdir),
+            operation="edit_by_line_range",
+            user_approved=user_approved,
+            check_binary=True,
+            check_read=True,
+        )
+    except (PermissionError, ValueError) as exc:
+        return {"path": path, "status": "error", "error": str(exc)}
+    if pre_err is not None or p is None:
+        return pre_err or {"path": path, "status": "error", "error": "Pre-write check failed"}
 
     if not p.exists():
         return {"path": str(p), "status": "not_found"}
@@ -484,12 +473,13 @@ def edit_by_line_range(
     # M4: Publish diff preview (post-write since diff requires splice result)
     _publish_diff_preview(str(p), diff, is_new_file=False)
 
+    lines_added, lines_removed = _count_diff_changes(diff_lines)
     result: Dict[str, Any] = {
         "path": str(p),
         "status": "ok",
         "diff": diff,
-        "lines_added": len([ln for ln in diff_lines if ln.startswith("+")]),
-        "lines_removed": len([ln for ln in diff_lines if ln.startswith("-")]),
+        "lines_added": lines_added,
+        "lines_removed": lines_removed,
     }
 
     return result
@@ -524,28 +514,18 @@ def edit_file_atomic(
     """
     if workdir is None:
         workdir = Path.cwd()
-    workdir_resolved = Path(workdir).resolve()
+    from src.tools._file_io import _pre_write_check
 
-    guard = WorkspaceGuard(workspace_root=workdir_resolved)
-    guard_result = guard.guard_operation("edit_file_atomic", path, user_approved)
-    if guard_result.get("status") == "error":
-        return {"path": path, "status": "error", "error": guard_result.get("error")}
-
-    p = _safe_resolve(path, workdir)
-
-    guard_res_resolved = guard.guard_operation("edit_file_atomic", str(p), user_approved)
-    if guard_res_resolved.get("status") == "error":
-        return {"path": str(p), "status": "error", "error": guard_res_resolved.get("error")}
-
-    # GAP-S1: Read-before-write guardrail (check after resolve so path is absolute)
-    try:
-        from src.tools.guardrails import check_read_before_write
-
-        rbw = check_read_before_write(str(p))
-        if rbw:
-            return {"path": str(p), "status": "error", **rbw}
-    except Exception:
-        pass
+    p, pre_err = _pre_write_check(
+        path,
+        Path(workdir),
+        operation="edit_file_atomic",
+        user_approved=user_approved,
+        check_binary=True,
+        check_read=True,
+    )
+    if pre_err is not None or p is None:
+        return pre_err or {"path": path, "status": "error", "error": "Pre-write check failed"}
     if not p.exists():
         return {"path": str(p), "status": "not_found"}
 
@@ -658,12 +638,13 @@ def edit_file_atomic(
     diff = _gen_diff(original_content, new_content, from_file=str(p), to_file=str(p))
     diff_lines = diff.splitlines(keepends=True)
 
+    lines_added, lines_removed = _count_diff_changes(diff_lines)
     result: Dict[str, Any] = {
         "path": str(p),
         "status": "ok",
         "diff": diff,
-        "lines_added": len([ln for ln in diff_lines if ln.startswith("+")]),
-        "lines_removed": len([ln for ln in diff_lines if ln.startswith("-")]),
+        "lines_added": lines_added,
+        "lines_removed": lines_removed,
     }
 
     return result
@@ -713,26 +694,18 @@ def multiedit(
             "error": "edits must be a non-empty list",
         }
 
-    workdir_resolved = Path(workdir).resolve()
-    guard = WorkspaceGuard(workspace_root=workdir_resolved)
-    guard_result = guard.guard_operation("multiedit", path, user_approved)
-    if guard_result.get("status") == "error":
-        return {"path": path, "status": "error", "error": guard_result.get("error")}
+    from src.tools._file_io import _pre_write_check
 
-    p = _safe_resolve(path, workdir)
-
-    guard_res_resolved = guard.guard_operation("multiedit", str(p), user_approved)
-    if guard_res_resolved.get("status") == "error":
-        return {"path": str(p), "status": "error", "error": guard_res_resolved.get("error")}
-
-    try:
-        from src.tools.guardrails import check_read_before_write
-
-        rbw = check_read_before_write(str(p))
-        if rbw:
-            return {"path": str(p), "status": "error", **rbw}
-    except Exception:
-        pass
+    p, pre_err = _pre_write_check(
+        path,
+        Path(workdir),
+        operation="multiedit",
+        user_approved=user_approved,
+        check_binary=True,
+        check_read=True,
+    )
+    if pre_err is not None or p is None:
+        return pre_err or {"path": path, "status": "error", "error": "Pre-write check failed"}
     if not p.exists():
         return {"path": str(p), "status": "not_found"}
 
@@ -803,11 +776,12 @@ def multiedit(
     )
     diff = "".join(diff_lines)
 
+    lines_added, lines_removed = _count_diff_changes(diff_lines)
     return {
         "path": str(p),
         "status": "ok",
         "diff": diff,
         "edits_applied": len(edits),
-        "lines_added": len([ln for ln in diff_lines if ln.startswith("+")]),
-        "lines_removed": len([ln for ln in diff_lines if ln.startswith("-")]),
+        "lines_added": lines_added,
+        "lines_removed": lines_removed,
     }

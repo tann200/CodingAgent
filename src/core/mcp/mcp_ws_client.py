@@ -100,6 +100,10 @@ class McpWsClient:
         if self._connected:
             return
 
+        from src.tools.web_tools import validate_mcp_url
+
+        validate_mcp_url(self.url, allowed_schemes=("ws", "wss"))
+
         try:
             import aiohttp  # type: ignore[reportMissingImports]
         except ImportError as exc:

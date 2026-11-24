@@ -197,6 +197,20 @@ def git_restore(
     """
     if not path or not path.strip():
         return {"status": "error", "error": "path must not be empty."}
+    from src.tools._file_io import _pre_write_check
+
+    try:
+        checked_path, pre_err = _pre_write_check(
+            path,
+            Path(workdir),
+            operation="git_restore",
+            check_binary=False,
+            check_read=False,
+        )
+    except PermissionError as exc:
+        return {"status": "error", "error": str(exc)}
+    if pre_err is not None or checked_path is None:
+        return pre_err or {"status": "error", "error": "Pre-write check failed"}
     args = ["restore"]
     if staged:
         args.append("--staged")

@@ -108,6 +108,7 @@ Project-local configuration merges `.codingAgent/config.json` / `.codingAgent/co
 - Provider output is untrusted and must remain subject to tool permissions and validation.
 - Repository content, tool output, web content, prior-session memory, MCP responses, and hook output can contain prompt injection.
 - Shell commands and project hooks are host-code execution. Sandbox availability is enforced fail-closed by default; commands are denied if no enforcing backend is present unless explicit unconfined opt-out is granted.
+- Mutating file, patch, AST, LSP, and `git_restore` tools share a single pre-write guardrail (`src/tools/_file_io.py:_pre_write_check`) enforcing workspace confinement, `WorkspaceGuard`, project `deny_write` patterns, read-before-write, and binary checks before writes. Outbound remote MCP clients (`http`, `sse`, `ws`) validate URLs against SSRF/obfuscated-loopback targets via `src/tools/web_tools.py:validate_mcp_url` and reject unvalidated HTTP redirects.
 - The optional server is a local control plane, not a general public API; task workdirs enforce an approved root allowlist (`CODINGAGENT_ALLOWED_WORKSPACE_ROOTS`, defaulting to the server's working directory), queue admission is bounded, and cancelled queued tasks abort before orchestrator construction.
 
 ## Design Constraints

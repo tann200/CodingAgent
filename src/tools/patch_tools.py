@@ -104,46 +104,30 @@ def edit_code_block(
     """
     try:
         workdir_path = Path(workdir)
+        from src.tools._file_io import _pre_write_check
 
-        # C1: Path safety — use _safe_resolve to prevent path traversal
         try:
-            file_path = file_tools._safe_resolve(path, workdir_path)
+            file_path, pre_err = _pre_write_check(
+                path,
+                workdir_path,
+                operation="edit_code_block",
+                check_binary=True,
+                check_read=True,
+            )
         except PermissionError as e:
             return {"status": "error", "error": str(e)}
+        if pre_err is not None or file_path is None:
+            return pre_err or {"status": "error", "error": "Pre-write check failed"}
 
         if not file_path.exists():
             return {"status": "not_found", "error": f"File not found: {path}"}
 
-        # Safe binary check
         try:
-            with file_path.open("rb") as fh:
-                header = fh.read(512)
-                if b"\x00" in header:
-                    return {"status": "error", "error": f"Cannot edit binary file: '{file_path.name}'."}
-                raw = header + fh.read()
-            old_content = raw.decode("utf-8")
+            old_content = file_path.read_text(encoding="utf-8")
         except UnicodeDecodeError:
             return {"status": "error", "error": f"File '{file_path.name}' is not valid UTF-8. Cannot edit as text."}
         except Exception as exc:
             return {"status": "error", "error": f"Failed to read file: {exc}"}
-
-        # WorkspaceGuard & read-before-write checks
-        workdir_resolved = workdir_path.resolve()
-        from src.core.orchestration.workspace_guard import WorkspaceGuard
-        guard = WorkspaceGuard(workspace_root=workdir_resolved)
-        guard_res = guard.guard_operation("edit_code_block", str(file_path))
-        if guard_res.get("status") == "error":
-            return {"status": "error", "error": guard_res.get("error")}
-
-        from src.tools._file_io import _check_project_deny_write
-        deny_err = _check_project_deny_write(file_path, workdir_resolved)
-        if deny_err:
-            return {"status": "error", "error": deny_err}
-
-        from src.tools.guardrails import check_read_before_write
-        rbw = check_read_before_write(str(file_path.resolve()))
-        if rbw:
-            return {"status": "error", "error": rbw.get("error", "File must be read first")}
 
         # C2: Uniqueness check — reject if 0 or >1 occurrences
         count = old_content.count(block_to_find)

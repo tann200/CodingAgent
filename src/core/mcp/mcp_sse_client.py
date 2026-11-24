@@ -92,6 +92,10 @@ class McpSseClient:
         an immediate ImportError when aiohttp is not available.  When aiohttp is present
         this returns a coroutine which must be awaited.
         """
+        from src.tools.web_tools import validate_mcp_url
+
+        validate_mcp_url(self.url, allowed_schemes=("http", "https"))
+
         try:
             import aiohttp  # noqa: F401  # type: ignore[reportMissingImports]
         except ImportError as exc:
@@ -103,6 +107,8 @@ class McpSseClient:
         async def _connect_impl() -> None:
             if self._connected:
                 return
+
+            validate_mcp_url(self.url, allowed_schemes=("http", "https"))
 
             self._session = aiohttp.ClientSession(headers=self._extra_headers)
             self._sse_task = asyncio.create_task(
@@ -156,7 +162,11 @@ class McpSseClient:
         assert self._session is not None
         sse_url = f"{self.url}/sse"
         try:
-            async with self._session.get(sse_url) as resp:
+            async with self._session.get(sse_url, allow_redirects=False) as resp:
+                if isinstance(getattr(resp, "status", None), int) and 300 <= resp.status < 400:
+                    raise PermissionError(
+                        f"McpSseClient[{self.name}]: blocked HTTP redirect ({resp.status}) from {sse_url}"
+                    )
                 resp.raise_for_status()
                 while True:
                     line_bytes = await resp.content.readline()
@@ -232,7 +242,12 @@ class McpSseClient:
             async with self._session.post(
                 f"{self.url}/message",
                 json=payload,
+                allow_redirects=False,
             ) as resp:
+                if isinstance(getattr(resp, "status", None), int) and 300 <= resp.status < 400:
+                    raise PermissionError(
+                        f"McpSseClient[{self.name}]: blocked HTTP redirect ({resp.status}) on POST"
+                    )
                 resp.raise_for_status()
         except Exception as exc:
             self._pending.pop(req_id, None)
