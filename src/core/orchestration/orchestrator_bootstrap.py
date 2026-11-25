@@ -11,8 +11,8 @@ ARCH-VOL21-2: the original monolithic 446-line ``bootstrap_orchestrator`` has
 been split into four focused private helpers:
 
   _init_infrastructure   — MessageManager, thread pools, working dir,
-                            RollbackManager, FileLockManager,
-                            SessionStore, LifecycleManager, SessionManager.
+                            RollbackManager, SessionStore, LifecycleManager,
+                            SessionManager.
   _init_providers        — provider/adapter selection, startup event publish.
   _init_event_subscriptions — all event-bus subscriptions (provider, session,
                               permission, bash-approval events).
@@ -136,16 +136,6 @@ def _init_infrastructure(orch: Any, message_max_tokens: Optional[int]) -> None:
     orch.rollback_manager = RollbackManager(str(orch.working_dir))
     orch._current_snapshot_id = None  # type: ignore[attr-defined]
     orch._step_snapshot_id = None  # type: ignore[attr-defined]
-
-    # Initialize FileLockManager for PRSW (Parallel Reads, Sequential Writes)
-    # Uses reset_instance to ensure a clean state on orchestrator re-initialization
-    # (e.g., TUI bridge reconnection or hot-reload).
-    from src.core.orchestration.file_lock_manager import FileLockManager
-
-    orch.file_lock_manager = FileLockManager.reset_instance(
-        workdir=str(orch.working_dir),
-        cancel_event=getattr(orch, "cancel_event", None),
-    )
 
     # Initialize SessionStore (canonical SQLite backend — TASK-24).
     # Note: GitSnapshotManager (snapshot_manager.py) has been retired in favour

@@ -41,7 +41,6 @@ from src.core.messaging.event_types import (
 )
 from src.core.messaging.events import Event
 from src.core.orchestration.agent_session_manager import AgentSessionManager
-from src.core.orchestration.file_lock_manager import FileLockManager
 
 MAX_WAIT = 10.0
 
@@ -379,73 +378,6 @@ class TestShutdownUnderLoad:
 
 
 # ---------------------------------------------------------------------------
-# Owner-scoped cancellation under real concurrent threads
-# ---------------------------------------------------------------------------
-
-class TestOwnerScopedCancellationConcurrent:
-    """cancel(owner=) / reset_cancel(owner=) remain correct under real threads."""
-
-    def test_cross_thread_reset_cannot_clear_other_owner(self):
-        manager = FileLockManager("/tmp")
-        manager.cancel(owner="agent1")
-
-        results = {"agent1_ok": False, "agent2_ok": False}
-
-        def _wrong_owner_reset():
-            manager.reset_cancel(owner="agent2")
-            results["agent2_ok"] = manager._cancel_event.is_set()
-
-        t = threading.Thread(target=_wrong_owner_reset)
-        t.start()
-        t.join(timeout=MAX_WAIT)
-
-        # agent2 (wrong owner) must NOT be able to clear agent1's cancel.
-        assert manager._cancel_event.is_set() is True
-        assert results["agent2_ok"] is True
-
-    def test_matching_owner_reset_clears_under_concurrency(self):
-        manager = FileLockManager("/tmp")
-        manager.cancel(owner="agent1")
-
-        done = threading.Event()
-        result = {}
-
-        def _correct_owner_reset():
-            manager.reset_cancel(owner="agent1")
-            result["cleared"] = not manager._cancel_event.is_set()
-            done.set()
-
-        threading.Thread(target=_correct_owner_reset).start()
-        assert done.wait(timeout=MAX_WAIT)
-        assert result["cleared"] is True
-
-    @pytest.mark.asyncio
-    async def test_blocked_write_acquire_serializes_across_agents(self):
-        manager = FileLockManager("/tmp")
-        manager.reset_cancel(owner="coordinator")
-
-        await manager.acquire_write_async("f.py", "agent1", timeout=5.0)
-
-        # A second agent's write acquire must wait until the first releases.
-        blocker = asyncio.ensure_future(
-            manager.acquire_write_async("f.py", "agent2", timeout=5.0)
-        )
-        await asyncio.sleep(0.15)
-        assert not blocker.done()
-
-        await manager.release_write("f.py", "agent1")
-        acquired = await asyncio.wait_for(blocker, timeout=MAX_WAIT)
-        assert acquired is True
-        # The owner-scoped cancel guard is intact: an unrelated reset does not
-        # clear the cancel signal.
-        manager.cancel(owner="coordinator")
-        manager.reset_cancel(owner="other")
-        assert manager._cancel_event.is_set() is True
-        manager.reset_cancel(owner="coordinator")
-        assert manager._cancel_event.is_set() is False
-
-
-# ---------------------------------------------------------------------------
 # Session-state hydration returns isolated snapshots (STAB-04)
 # ---------------------------------------------------------------------------
 
@@ -466,52 +398,6 @@ class TestSessionSnapshotIsolation:
         assert fresh.session_id != "mutated-by-caller"
         assert fresh.current_plan == []
         assert fresh.pending_p2p == []
-
-
-# ---------------------------------------------------------------------------
-# Real file-lock contention across threads
-# ---------------------------------------------------------------------------
-
-class TestFileLockContention:
-    """Concurrent write acquisitions across real threads serialize correctly."""
-
-    def test_write_lock_mutually_exclusive_under_threads(self):
-        manager = FileLockManager("/tmp")
-        manager.reset_cancel(owner="test")
-        path = "shared.py"
-        active = {"n": 0, "max": 0}
-        lock = threading.Lock()
-        violations = []
-
-        def _worker(agent: str):
-            loop = asyncio.new_event_loop()
-            try:
-                ok = loop.run_until_complete(
-                    manager.acquire_write_async(path, agent, timeout=5.0)
-                )
-                if not ok:
-                    violations.append(f"{agent}: not acquired")
-                    return
-                with lock:
-                    active["n"] += 1
-                    active["max"] = max(active["max"], active["n"])
-                time.sleep(0.02)
-                with lock:
-                    active["n"] -= 1
-                loop.run_until_complete(manager.release_write(path, agent))
-            finally:
-                loop.close()
-
-        threads = [threading.Thread(target=_worker, args=(f"a{i}",)) for i in range(8)]
-        for t in threads:
-            t.start()
-        for t in threads:
-            t.join(timeout=MAX_WAIT)
-
-        assert not violations
-        # Mutual exclusion: at most one writer holds the lock at a time.
-        assert active["max"] == 1
-        assert manager.get_lock_status(path)["writer"] is None
 
 
 # ---------------------------------------------------------------------------

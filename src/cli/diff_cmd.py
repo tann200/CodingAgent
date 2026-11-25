@@ -1,7 +1,9 @@
 """``codingagent diff`` — show working-directory diff since the git snapshot.
 
 Mirrors the TUI ``/diff`` command headlessly. Standalone CLI diff uses the plain
-repo working-tree diff (``git diff HEAD``), optionally restricted to a path.
+repo working-tree diff (``git diff HEAD``), optionally restricted to a path, and
+gracefully handles unborn ``HEAD`` repositories via ``git diff --cached`` plus
+untracked file inspection.
 """
 
 from __future__ import annotations
@@ -27,15 +29,17 @@ def run_diff(args: Any) -> int:
             print(f"Error: {workdir} is not a git repository", file=sys.stderr)
         return 1
 
-    diff_text = _git_diff(workdir, path)
+    has_head = _has_head_commit(workdir)
+    base = "HEAD" if has_head else "unborn HEAD"
+    diff_text = _git_diff(workdir, path, has_head=has_head)
     if not diff_text or not diff_text.strip():
-        diff_text = "(no changes since HEAD)"
+        diff_text = f"(no changes since {base})"
 
     if as_json:
-        print_json({"workdir": workdir, "base": "HEAD", "diff": diff_text})
+        print_json({"workdir": workdir, "base": base, "diff": diff_text})
         return 0
 
-    print("Working-directory diff (base: HEAD):")
+    print(f"Working-directory diff (base: {base}):")
     print(diff_text)
     return 0
 
@@ -55,20 +59,83 @@ def _is_git_repo(workdir: str) -> bool:
         return False
 
 
-def _git_diff(workdir: str, path: Optional[str]) -> str:
-    cmd = ["git", "diff", "--stat", "--patch", "HEAD"]
-    if path:
-        cmd.append("--")
-        cmd.append(path)
+def _has_head_commit(workdir: str) -> bool:
     try:
         proc = subprocess.run(
-            cmd,
+            ["git", "rev-parse", "--verify", "HEAD"],
+            cwd=workdir,
+            capture_output=True,
+            text=True,
+            timeout=5,
+            check=False,
+        )
+        return proc.returncode == 0
+    except Exception:
+        return False
+
+
+def _git_diff(workdir: str, path: Optional[str], *, has_head: Optional[bool] = None) -> str:
+    if has_head is None:
+        has_head = _has_head_commit(workdir)
+
+    if has_head:
+        cmd = ["git", "diff", "--stat", "--patch", "HEAD"]
+        if path:
+            cmd.extend(["--", path])
+        try:
+            proc = subprocess.run(
+                cmd,
+                cwd=workdir,
+                capture_output=True,
+                text=True,
+                timeout=15,
+                check=False,
+            )
+            return proc.stdout or ""
+        except Exception:
+            return ""
+
+    # Unborn HEAD: inspect staged changes and untracked files
+    sections: list[str] = []
+    cached_cmd = ["git", "diff", "--cached", "--stat", "--patch"]
+    if path:
+        cached_cmd.extend(["--", path])
+    try:
+        cached = subprocess.run(
+            cached_cmd,
             cwd=workdir,
             capture_output=True,
             text=True,
             timeout=15,
             check=False,
         )
-        return proc.stdout or ""
+        if cached.stdout and cached.stdout.strip():
+            sections.append(cached.stdout.rstrip())
     except Exception:
-        return ""
+        pass
+
+    status_cmd = ["git", "status", "--porcelain"]
+    if path:
+        status_cmd.extend(["--", path])
+    try:
+        st = subprocess.run(
+            status_cmd,
+            cwd=workdir,
+            capture_output=True,
+            text=True,
+            timeout=10,
+            check=False,
+        )
+        untracked = [
+            line[3:]
+            for line in (st.stdout or "").splitlines()
+            if line.startswith("?? ")
+        ]
+        if untracked:
+            sections.append(
+                "Untracked files:\n" + "\n".join(f"  + {f}" for f in untracked)
+            )
+    except Exception:
+        pass
+
+    return "\n\n".join(sections)

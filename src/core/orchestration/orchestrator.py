@@ -499,12 +499,6 @@ class Orchestrator:
 
         return get_current_task_id_impl(self)
 
-    def get_file_lock_manager(self):
-        """Get the FileLockManager — delegates to task_lifecycle.get_file_lock_manager_impl."""
-        from src.core.orchestration.task_lifecycle import get_file_lock_manager_impl
-
-        return get_file_lock_manager_impl(self)
-
     def approve_plan(self) -> None:
         """Approve plan — delegates to task_lifecycle.approve_plan_impl."""
         from src.core.orchestration.task_lifecycle import approve_plan_impl

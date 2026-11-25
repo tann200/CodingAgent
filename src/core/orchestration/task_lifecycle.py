@@ -340,16 +340,6 @@ def get_current_task_id_impl(orch) -> Optional[str]:
 
 
 # ---------------------------------------------------------------------------
-# get_file_lock_manager
-# ---------------------------------------------------------------------------
-
-
-def get_file_lock_manager_impl(orch):
-    """Get the FileLockManager for PRSW coordination."""
-    return orch.file_lock_manager
-
-
-# ---------------------------------------------------------------------------
 # approve_plan
 # ---------------------------------------------------------------------------
 

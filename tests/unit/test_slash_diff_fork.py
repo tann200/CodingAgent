@@ -54,35 +54,26 @@ class TestSlashCommandRegistry:
 
 
 class TestSlashHelp:
-    def test_sc5_diff_in_registry(self) -> None:
-        """SC-5: /diff registered in CommandRegistry."""
-        from tui.tui_src.ui.commands.registry import CommandRegistry
-
-        r = CommandRegistry()
-        # Check that _init_slash_registry registers diff
+    def test_sc5_diff_in_mixin(self) -> None:
+        """SC-5: /diff wired in slash commands mixin."""
         import pathlib
         src = pathlib.Path("tui/tui_src/ui/_app_slash_commands_mixin.py").read_text()
         assert '"diff"' in src or "'diff'" in src
         assert "_slash_diff" in src
 
-    def test_sc6_fork_in_registry(self) -> None:
-        """SC-6: /fork registered in CommandRegistry."""
+    def test_sc6_fork_in_mixin(self) -> None:
+        """SC-6: /fork wired in slash commands mixin."""
         import pathlib
         src = pathlib.Path("tui/tui_src/ui/_app_slash_commands_mixin.py").read_text()
         assert '"fork"' in src or "'fork'" in src
         assert "_slash_fork" in src
 
-    def test_help_text_contains_diff_and_fork(self) -> None:
-        """registry.help_text() includes /diff and /fork descriptions."""
-        from tui.tui_src.ui.commands import CommandRegistry
-        from tui.tui_src.ui.commands import SlashCommand
+    def test_help_descriptions_include_diff_and_fork(self) -> None:
+        """SLASH_COMMAND_DESCRIPTIONS includes /diff and /fork descriptions."""
+        from tui.tui_src.ui.components.chat_input import SLASH_COMMAND_DESCRIPTIONS
 
-        r = CommandRegistry()
-        r.register(SlashCommand("diff", "show working-directory diff", lambda app, _a: None))
-        r.register(SlashCommand("fork", "fork current session", lambda app, _a: None))
-        help_text = r.help_text()
-        assert "/diff" in help_text
-        assert "/fork" in help_text
+        assert "/diff" in SLASH_COMMAND_DESCRIPTIONS
+        assert "/fork" in SLASH_COMMAND_DESCRIPTIONS
 
 
 # ---------------------------------------------------------------------------

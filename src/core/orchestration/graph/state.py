@@ -246,7 +246,6 @@ class _AgentStateSpec(TypedDict, total=False):
 
     # ── Internal / private ─────────────────────────────────────────────────
     _p2p_context: List[Dict[str, Any]] | None
-    _file_lock_manager: Any | None
     _write_queue: List[Dict[str, Any]] | None
     _agent_session_manager: Any | None
     _context_controller: Any | None

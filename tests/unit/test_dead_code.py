@@ -52,7 +52,7 @@ _DYNAMIC_IMPORT_ROOTS = {
 # `python -m src.core.evaluation` harness.
 _ENTRYPOINTS = {
     "src.main",
-    "tui.tui_src.ui.main",
+    "tui.tui_src.ui.app",
     "src.server.app",
     "src.cli",
     "src.core.evaluation.__main__",

@@ -168,7 +168,3 @@ ThinkingProcess.expanded    { border-left: wide #3b82f6; background: #202020; }
 /* ── Agent artifact ─────────────────────────────────────────────────────── */
 AgentArtifact { margin: 1 0; height: auto; }
 StreamView    { height: auto; }
-
-/* ── Probe results ──────────────────────────────────────────────────────── */
-ProbeResultsScreen { align: center middle; }
-#probe_box { width: 70; height: auto; max-height: 80%; background: #1a1a1a; border: round #555555; padding: 2; margin: 2 4; }

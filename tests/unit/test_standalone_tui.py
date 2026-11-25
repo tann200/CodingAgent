@@ -492,62 +492,6 @@ class TestTimelineScreen:
 
 
 # ──────────────────────────────────────────────────────────────────────────────
-# main.py
-# ──────────────────────────────────────────────────────────────────────────────
-
-
-class TestMainModule:
-    """main.py: create_app factory and TextualAppStub."""
-
-    def test_create_app_function_exists(self):
-        from ui.main import create_app  # type: ignore[import]
-
-        assert callable(create_app)
-
-    def test_textual_app_stub_exists(self):
-        from ui.main import TextualAppStub  # type: ignore[import]
-
-        stub = TextualAppStub()
-        assert hasattr(stub, "send_prompt")
-        assert hasattr(stub, "interrupt")
-        assert hasattr(stub, "force_interrupt")
-        assert hasattr(stub, "run")
-
-    def test_stub_send_prompt(self):
-        from ui.main import TextualAppStub  # type: ignore[import]
-
-        stub = TextualAppStub()
-        result = stub.send_prompt("hello")
-        assert result is True
-        assert len(stub._messages) == 1
-        assert stub._messages[0] == ("user", "hello")
-
-    def test_stub_interrupt_no_op(self):
-        from ui.main import TextualAppStub  # type: ignore[import]
-
-        stub = TextualAppStub()
-        stub.interrupt()  # must not raise
-        stub.force_interrupt()  # must not raise
-
-    def test_stub_run_no_op(self):
-        from ui.main import TextualAppStub  # type: ignore[import]
-
-        stub = TextualAppStub()
-        stub.run()  # must not raise
-
-    def test_get_app_returns_stub_on_error(self):
-        from ui import main as main_mod  # type: ignore[import]
-
-        with patch.object(
-            main_mod, "create_app", side_effect=ImportError("no textual")
-        ):
-            app = main_mod._get_app()
-        from ui.main import TextualAppStub  # type: ignore[import]
-
-        assert isinstance(app, TextualAppStub)
-
-
-# ──────────────────────────────────────────────────────────────────────────────
 # components/__init__.py exports
 # ──────────────────────────────────────────────────────────────────────────────
 

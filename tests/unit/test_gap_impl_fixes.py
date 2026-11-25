@@ -601,46 +601,6 @@ class TestInteractionToolsUnsubscribeOnException:
 
 
 # ---------------------------------------------------------------------------
-# BUG-12: session_registry — redundant status assignment removed
-# ---------------------------------------------------------------------------
-class TestSessionRegistryStatusUpdate:
-    def test_update_to_running_sets_status_once(self):
-        """update_session_status(RUNNING) must set status correctly (no double-assign)."""
-        from src.core.orchestration.session_registry import (
-            SessionRegistry,
-            SessionStatus,
-        )
-
-        reg = SessionRegistry()
-        reg.register_session("s1", metadata={"task": "test"})
-
-        result = reg.update_session_status("s1", SessionStatus.RUNNING)
-        assert result is True
-
-        info = reg.get_session("s1")
-        assert info is not None
-        assert info.status == SessionStatus.RUNNING
-
-    def test_update_to_failed_sets_status(self):
-        """update_session_status(FAILED) must set status to FAILED."""
-        from src.core.orchestration.session_registry import (
-            SessionRegistry,
-            SessionStatus,
-        )
-
-        reg = SessionRegistry()
-        reg.register_session("s2")
-
-        reg.update_session_status("s2", SessionStatus.RUNNING)
-        reg.update_session_status("s2", SessionStatus.FAILED, error="boom")
-
-        info = reg.get_session("s2")
-        assert info is not None
-        assert info.status == SessionStatus.FAILED
-        assert info.error_count == 1
-
-
-# ---------------------------------------------------------------------------
 # BUG-13: preview_service — diff uses actual file path, not workdir
 # ---------------------------------------------------------------------------
 class TestPreviewServiceDiffPath:
@@ -720,40 +680,6 @@ class TestAgentSessionManagerSingleton:
 
         # Restore original (if any)
         AgentSessionManager._instance = original
-
-
-# ---------------------------------------------------------------------------
-# BUG-15: file_lock_manager — singleton thread-safe
-# ---------------------------------------------------------------------------
-class TestFileLockManagerSingleton:
-    def test_concurrent_get_instance_returns_same_object(self, tmp_path):
-        """Multiple threads calling get_instance() simultaneously must get the same object."""
-        from src.core.orchestration.file_lock_manager import FileLockManager
-
-        original = FileLockManager._instance
-        FileLockManager._instance = None
-
-        instances = []
-        errors = []
-
-        def get_it():
-            try:
-                instances.append(FileLockManager.get_instance(workdir=str(tmp_path)))
-            except Exception as e:
-                errors.append(e)
-
-        threads = [threading.Thread(target=get_it) for _ in range(20)]
-        for t in threads:
-            t.start()
-        for t in threads:
-            t.join()
-
-        assert not errors, f"Errors during concurrent get_instance: {errors}"
-        assert len(set(id(i) for i in instances)) == 1, (
-            "Multiple FileLockManager instances created — singleton not thread-safe"
-        )
-
-        FileLockManager._instance = original
 
 
 # ---------------------------------------------------------------------------

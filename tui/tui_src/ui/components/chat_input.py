@@ -12,13 +12,14 @@ No src.core imports — this widget is purely UI.
 
 from __future__ import annotations
 
+import time
 from typing import Any
 
 from textual.message import Message
 from textual.widgets import TextArea
 from textual import events
 
-from .history_input import HistoryInput
+from .history_input import ESC_DOUBLE_TAP_MS, HistoryInput
 from ..logging import get_logger
 
 logger = get_logger("chat_input")
@@ -33,6 +34,8 @@ SLASH_COMMANDS: list[str] = [
     "/continue",
     "/interrupt",
     "/status",
+    "/doctor",
+    "/skills",
     "/fast",
     "/provider",
     "/model",
@@ -40,7 +43,12 @@ SLASH_COMMANDS: list[str] = [
     "/sessions",
     "/timeline",
     "/diff",
+    "/revert",
     "/fork",
+    "/rename",
+    "/export",
+    "/share",
+    "/worktree",
     "/mcp",
     "/quit",
 ]
@@ -55,6 +63,8 @@ SLASH_COMMAND_DESCRIPTIONS: dict[str, str] = {
     "/continue": "restore & re-run previous task",
     "/interrupt": "cancel running agent",
     "/status": "show agent/provider/model status",
+    "/doctor": "run local environment & provider health checks",
+    "/skills": "list available workspace and bundled skills",
     "/fast": "switch to fastest/smallest model (NANO tier)",
     "/provider": "list or switch provider",
     "/model": "list or switch model",
@@ -62,7 +72,12 @@ SLASH_COMMAND_DESCRIPTIONS: dict[str, str] = {
     "/sessions": "browse saved sessions",
     "/timeline": "view session message timeline",
     "/diff": "show working-directory diff since last snapshot",
+    "/revert": "revert working directory to previous snapshot",
     "/fork": "fork current session to a new independent copy",
+    "/rename": "rename the current session",
+    "/export": "export current session to portable JSONL",
+    "/share": "export a redacted shareable session transcript",
+    "/worktree": "manage isolated git worktrees for tasks",
     "/mcp": "manage MCP servers: list | add <name> <cmd…> | status",
     "/quit": "exit the application",
 }
@@ -105,6 +120,7 @@ class ChatTextArea(TextArea):
         self._tab_matches: list[str] = []
         self._tab_index: int = -1
         self._placeholder = placeholder
+        self._last_esc_time: float = 0.0
 
     # ── Relay TextArea.Changed so the app can update palette / picker ─────
 
@@ -148,9 +164,14 @@ class ChatTextArea(TextArea):
             event.prevent_default()
             return
 
-        # ── Escape: interrupt agent (single ESC when no overlay active) ───
+        # ── Escape: double-Esc interrupt guard when no overlay active ─────
         if key == "escape":
-            self.post_message(HistoryInput.InterruptSignal())
+            now = time.monotonic()
+            if (now - self._last_esc_time) < (ESC_DOUBLE_TAP_MS / 1000.0):
+                self._last_esc_time = 0.0
+                self.post_message(HistoryInput.InterruptSignal())
+            else:
+                self._last_esc_time = now
             event.prevent_default()
             return
 
@@ -210,31 +231,23 @@ class ChatTextArea(TextArea):
             self._tab_matches = []
             self._tab_index = -1
 
-        # ── Up → history (first line only, palette hidden) ────────────────
+        # ── Up → history (descending frecency: index 0 = most frequent/recent)
         if key == "up" and self.cursor_at_first_line and not palette_active:
             if (
                 self._prompt_history
                 and self.history_index < len(self._prompt_history) - 1
             ):
                 self.history_index += 1
-                self.load_text(
-                    self._prompt_history[
-                        len(self._prompt_history) - 1 - self.history_index
-                    ]
-                )
+                self.load_text(self._prompt_history[self.history_index])
                 self.move_cursor(self.document.end)
                 event.prevent_default()
             return
 
-        # ── Down → history (last line only, palette hidden) ───────────────
+        # ── Down → history (back toward most frequent/recent, then clear) ─
         if key == "down" and self.cursor_at_last_line and not palette_active:
             if self.history_index > 0:
                 self.history_index -= 1
-                self.load_text(
-                    self._prompt_history[
-                        len(self._prompt_history) - 1 - self.history_index
-                    ]
-                )
+                self.load_text(self._prompt_history[self.history_index])
                 self.move_cursor(self.document.end)
                 event.prevent_default()
             elif self.history_index == 0:

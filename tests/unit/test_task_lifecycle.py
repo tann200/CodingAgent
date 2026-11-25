@@ -246,21 +246,6 @@ class TestGetCurrentTaskIdImpl:
 
 
 # ---------------------------------------------------------------------------
-# get_file_lock_manager_impl
-# ---------------------------------------------------------------------------
-
-
-class TestGetFileLockManagerImpl:
-    def test_returns_file_lock_manager(self):
-        from src.core.orchestration.task_lifecycle import get_file_lock_manager_impl
-
-        orch = _make_orch()
-        flm = MagicMock()
-        orch.file_lock_manager = flm
-        assert get_file_lock_manager_impl(orch) is flm
-
-
-# ---------------------------------------------------------------------------
 # approve_plan_impl / reject_plan_impl
 # ---------------------------------------------------------------------------
 

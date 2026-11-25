@@ -18,8 +18,10 @@ from src.cli._helpers import (
 )
 
 
-def _active_provider() -> dict:
-    """Return ``{provider, model}`` for the active provider (UserPrefs over providers.json)."""
+def _active_provider(workdir: str | None = None) -> dict:
+    """Return ``{provider, model}`` for the active provider (UserPrefs + workspace settings)."""
+    provider_name = ""
+    model_name = ""
     try:
         import src.core.inference.provider_config as _pc
 
@@ -34,7 +36,7 @@ def _active_provider() -> dict:
             if not isinstance(p, dict):
                 continue
             if p.get("active") is True:
-                name = str(p.get("name") or p.get("type") or "")
+                provider_name = str(p.get("name") or p.get("type") or "")
                 model = p.get("default_model")
                 if not model:
                     models = p.get("models") or []
@@ -43,15 +45,57 @@ def _active_provider() -> dict:
                         model = first if isinstance(first, str) else (
                             first.get("id") or first.get("name") if isinstance(first, dict) else None
                         )
-                return {"provider": name, "model": str(model) if model else ""}
+                model_name = str(model) if model else ""
+                break
     except Exception:
         pass
-    return {"provider": "", "model": ""}
+
+    # Fallback / explicit overrides from UserPrefs
+    try:
+        from src.core.user_prefs import UserPrefs
+
+        prefs = UserPrefs.load()
+        if not provider_name and prefs.selected_model_provider:
+            provider_name = str(prefs.selected_model_provider)
+        if not model_name and prefs.selected_model_name:
+            model_name = str(prefs.selected_model_name)
+    except Exception:
+        pass
+
+    return {"provider": provider_name, "model": model_name}
+
+
+def _apply_workspace_provider_overrides(active: dict, workdir: str) -> dict:
+    """Layer workspace-scoped config/settings provider & model overrides if present."""
+    result = dict(active)
+    try:
+        from pathlib import Path
+
+        ctx_dir = Path(workdir) / ".codingAgent"
+        for fname in ("config.json", "config.local.json", "settings.json", "settings.local.json"):
+            p = ctx_dir / fname
+            if not p.is_file():
+                continue
+            try:
+                data = json.loads(p.read_text(encoding="utf-8"))
+            except Exception:
+                continue
+            if not isinstance(data, dict):
+                continue
+            ws_prov = data.get("default_provider") or data.get("provider")
+            ws_model = data.get("default_model") or data.get("model")
+            if isinstance(ws_prov, str) and ws_prov.strip():
+                result["provider"] = ws_prov.strip()
+            if isinstance(ws_model, str) and ws_model.strip():
+                result["model"] = ws_model.strip()
+    except Exception:
+        pass
+    return result
 
 
 def run_status(args: Any) -> int:
     workdir = resolve_workdir(getattr(args, "workdir", None))
-    active = _active_provider()
+    active = _apply_workspace_provider_overrides(_active_provider(), workdir)
 
     payload: dict = {
         "version": cli_version(),
@@ -66,9 +110,13 @@ def run_status(args: Any) -> int:
     }
 
     try:
-        from src.core.orchestration.session_store import list_sessions
+        from src.core.memory.session_store import SessionStore
 
-        payload["sessions_available"] = len(list_sessions(limit=100))
+        store = SessionStore(workdir=workdir)
+        try:
+            payload["sessions_available"] = len(store.list_sessions())
+        finally:
+            store.close()
     except Exception:
         payload["sessions_available"] = 0
 

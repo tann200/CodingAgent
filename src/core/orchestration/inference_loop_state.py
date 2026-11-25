@@ -134,7 +134,6 @@ def build_initial_state(
         "plan_mode_approved": None,
         "plan_mode_blocked_tool": None,
         "needs_clarification": None,
-        "_file_lock_manager": getattr(orch, "file_lock_manager", None),
         "_write_queue": [],
         "_agent_session_manager": getattr(orch, "agent_session_manager", None),
         "_context_controller": getattr(orch, "context_controller", None),

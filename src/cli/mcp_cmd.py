@@ -37,10 +37,23 @@ def _configured_servers(workdir: str) -> list:
     for s in servers if isinstance(servers, list) else []:
         if not isinstance(s, dict):
             continue
+        raw_cmd = s.get("cmd")
+        if isinstance(raw_cmd, list) and raw_cmd:
+            cmd_str = " ".join(str(x) for x in raw_cmd)
+        elif isinstance(raw_cmd, str) and raw_cmd.strip():
+            cmd_str = raw_cmd.strip()
+        elif s.get("command"):
+            args_val = s.get("args") or []
+            args_list = args_val if isinstance(args_val, list) else [args_val]
+            cmd_str = " ".join([str(s["command"])] + [str(a) for a in args_list])
+        elif s.get("url"):
+            cmd_str = str(s["url"])
+        else:
+            cmd_str = " ".join(str(x) for x in (s.get("args") or []))
         out.append(
             {
                 "name": s.get("name", "?"),
-                "cmd": " ".join(s.get("cmd") or s.get("args") or []),
+                "cmd": cmd_str,
                 "transport": s.get("transport", "stdio"),
                 "auto_register_tools": s.get("auto_register_tools", True),
             }

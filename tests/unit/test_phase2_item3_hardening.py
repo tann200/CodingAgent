@@ -13,7 +13,6 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from src.core.orchestration.file_lock_manager import FileLockManager
 from src.core.orchestration.session_lifecycle import (
     SessionLifecycleManager,
     ShutdownReason,
@@ -30,52 +29,6 @@ from src.core.orchestration.graph.state_schemas import (
 )
 from src.tools._file_io import write_file, delete_file, rename_file, create_directory
 from src.tools._edit_tools import _atomic_write
-
-
-# ---------------------------------------------------------------------------
-# 1. Per-Owner File Lock Guards
-# ---------------------------------------------------------------------------
-
-
-class TestPerOwnerLockGuards:
-    @pytest.mark.asyncio
-    async def test_stale_owner_cannot_cancel_new_owner_guard(self, tmp_path):
-        """When owner A's lock is acquired with a short timeout, and then owner B acquires
-        the lock, owner A releasing afterwards must NOT cancel owner B's auto-release guard.
-        """
-        manager = FileLockManager(str(tmp_path))
-        file_path = str(tmp_path / "shared.txt")
-
-        # Owner A acquires with 10s timeout
-        acq_a = await manager.acquire_write_async(file_path, "agent_A", timeout=10.0)
-        assert acq_a is True
-        guard_a = manager._lock_release_guards.get((file_path, "agent_A"))
-        assert guard_a is not None and not guard_a.done()
-
-        # Simulate lock transition to agent_B (e.g. after lock expiry or transfer)
-        async with manager._async_lock:
-            from src.core.orchestration.file_lock_manager import FileLock
-            manager._write_lock = FileLock(file_path, "agent_B", "write", time.time())
-            # Start guard for agent_B
-            guard_b = asyncio.ensure_future(
-                manager._auto_release_after_timeout(file_path, "agent_B", 10.0)
-            )
-            manager._lock_release_guards[(file_path, "agent_B")] = guard_b
-
-        # Now stale owner agent_A attempts to release
-        await manager.release_write(file_path, "agent_A")
-
-        # Guard B must NOT have been cancelled by agent_A's release!
-        assert not guard_b.cancelled()
-        assert (file_path, "agent_B") in manager._lock_release_guards
-
-        # And agent_B releasing properly cancels guard_b
-        await manager.release_write(file_path, "agent_B")
-        assert guard_b.cancelling() or guard_b.cancelled()
-        assert (file_path, "agent_B") not in manager._lock_release_guards
-
-        # Cleanup guard_a
-        guard_a.cancel()
 
 
 # ---------------------------------------------------------------------------

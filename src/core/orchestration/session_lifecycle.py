@@ -137,8 +137,6 @@ class SessionLifecycleManager:
         Returns:
             ShutdownResult with details
         """
-        from src.core.orchestration.session_registry import get_session_registry
-
         start_time = time.time()
         cleanup_actions: List[str] = []
         error: Optional[str] = None
@@ -176,50 +174,7 @@ class SessionLifecycleManager:
                 else:
                     cleanup_actions.append(f"hook:{name}")
 
-            # 2. Unregister from registry
-            # Use the public get_session() API so the registry's internal lock
-            # is respected; direct _sessions access was thread-unsafe.
-            registry = get_session_registry()
-            if registry.get_session(session_id) is not None:
-                registry.unregister_session(session_id, reason=reason.value)
-                cleanup_actions.append("registry:unregistered")
-
-            # 3. Cleanup P2P subscriptions (bounded by remaining timeout in daemon thread)
-            elapsed = time.time() - start_time
-            remaining = max(0.0, timeout - elapsed)
-            if remaining <= 0:
-                logger.warning("Shutdown timeout exceeded before P2P cleanup")
-                cleanup_actions.append("p2p:timeout")
-            else:
-                p2p_exc: List[Exception] = []
-
-                def _run_p2p():
-                    try:
-                        from src.core.orchestration.cross_session_bus import (
-                            get_cross_session_bus,
-                        )
-
-                        bus = get_cross_session_bus()
-                        bus.unsubscribe_session(session_id)
-                    except Exception as e:
-                        p2p_exc.append(e)
-
-                p2p_thread = threading.Thread(
-                    target=_run_p2p,
-                    name=f"shutdown-p2p-{session_id}",
-                    daemon=True,
-                )
-                p2p_thread.start()
-                p2p_thread.join(timeout=remaining)
-                if p2p_thread.is_alive():
-                    logger.warning("Shutdown timeout exceeded during P2P cleanup")
-                    cleanup_actions.append("p2p:timeout")
-                elif p2p_exc:
-                    logger.debug(f"P2P cleanup skipped: {p2p_exc[0]}")
-                else:
-                    cleanup_actions.append("p2p:unsubscribed")
-
-            # 4. Cancel any pending operations
+            # 2. Cancel any pending operations
             cleanup_actions.append("operations:cancelled")
 
             success = True
@@ -252,37 +207,8 @@ class SessionLifecycleManager:
         session_id: str,
         reason: ShutdownReason = ShutdownReason.PARENT_SHUTDOWN,
     ) -> List[ShutdownResult]:
-        """
-        Shutdown a session and all its child sessions.
-
-        Args:
-            session_id: Root session to shutdown
-            reason: Reason for shutdown
-
-        Returns:
-            List of ShutdownResult for all sessions shutdown
-        """
-        from src.core.orchestration.session_registry import get_session_registry
-
-        results: List[Any] = []
-
-        # Get session tree
-        registry = get_session_registry()
-        session_info = registry.get_session(session_id)
-
-        if not session_info:
-            logger.warning(f"Session {session_id} not found for cascade shutdown")
-            return results
-
-        # Shutdown children first (post-order)
-        for child_id in session_info.child_session_ids:
-            results.extend(self.cascade_shutdown(child_id, reason))
-
-        # Shutdown this session
-        result = self.shutdown_session(session_id, reason)
-        results.append(result)
-
-        return results
+        """Shutdown a session (TASK-26: dead SessionRegistry removed)."""
+        return [self.shutdown_session(session_id, reason)]
 
     def create_snapshot(
         self,
