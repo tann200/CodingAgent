@@ -62,6 +62,7 @@ In the interactive Textual TUI (`codingagent`), use slash commands in the prompt
 - `/status` — Inspect active provider, model, `ModelRuntimePolicy` tier, flat toolset, verification mode, parallel read limit, and character output ceiling.
 - `/doctor` — Run local model reachability, latency, context estimation, and tool schema diagnosis directly inside chat.
 - `/skills` or `/skills <name>` — List packaged skills or inspect skill instructions without leaving the TUI.
+- `/reasoning [off|low|medium|high|unset|status]` (aliases `/effort`, `/thinking`) — Control portable reasoning effort / thinking-token budgets across local (`llama-server`, Ollama) and cloud providers (also configurable headlessly via `--reasoning`).
 - `/compact` — Trigger deterministic compaction of conversation context.
 
 ## Safety Model

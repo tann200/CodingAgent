@@ -274,3 +274,29 @@ def _parse_qwen3_xml(text: str) -> Optional[Dict[str, Any]]:
             pass
 
     return {"name": tool_name, "arguments": {}}
+
+
+def parse_response_tool_call(
+    content: Optional[str],
+    reasoning_content: Optional[str] = None,
+) -> Optional[Dict[str, Any]]:
+    """Parse a tool call from assistant ``content``, rescuing from ``reasoning_content`` if empty.
+
+    TASK-29: Local reasoning servers (llama-server, LM Studio, Ollama) can
+    occasionally emit a JSON/XML tool call inside ``reasoning_content`` while
+    returning an empty ``content`` string. Trying ``reasoning_content`` as a
+    fallback rescues the turn instead of treating it as an empty response.
+    """
+    if content:
+        parsed = parse_tool_block(content)
+        if parsed:
+            return parsed
+    if reasoning_content and not (content or "").strip():
+        rescued = parse_tool_block(reasoning_content)
+        if rescued:
+            logger.info(
+                "tool_call_rescued_from_reasoning: rescued tool '%s' from reasoning_content",
+                rescued.get("name"),
+            )
+            return rescued
+    return None

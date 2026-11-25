@@ -206,6 +206,9 @@ class AppSlashCommandsMixin(AgentAppProtocol):
         elif cmd == "fast":
             await self._slash_fast()
 
+        elif cmd in ("reasoning", "effort", "thinking"):
+            await self._slash_reasoning(args)
+
         elif cmd == "provider":
             await self._slash_provider(args)
 
@@ -418,6 +421,50 @@ class AppSlashCommandsMixin(AgentAppProtocol):
 
             w = Static("\n".join(lines), classes="system_msg skill_detail", markup=True)
             await self._mount_chat_widget(w)
+
+    async def _slash_reasoning(self: AgentAppProtocol, args: str) -> None:
+        """TASK-29: /reasoning [off|low|medium|high|unset|reset|status] (aliases: /effort, /thinking)."""
+        from src.core.inference.thinking_utils import (
+            get_active_reasoning_effort,
+            reasoning_budget_tokens,
+            set_active_reasoning_effort,
+        )
+
+        arg = (args or "").strip().lower()
+        if not arg or arg == "status":
+            cur = get_active_reasoning_effort()
+            label = cur.value if cur is not None else "unset (tier default)"
+            budget = reasoning_budget_tokens(cur) if cur is not None else None
+            b_str = f" ({budget:,} tok budget)" if budget is not None else ""
+            w = Static(
+                f"[bold]Reasoning effort:[/] {escape(label)}{b_str}\n"
+                f"  Usage: /reasoning [off|low|medium|high|unset|status]",
+                classes="system_msg",
+                markup=True,
+            )
+            await self._mount_chat_widget(w)
+            return
+
+        try:
+            resolved = set_active_reasoning_effort(arg)
+        except ValueError:
+            w = Static(
+                f"[red]Invalid reasoning level:[/] {escape(arg)} "
+                f"(expected: off | low | medium | high | unset | reset | status)",
+                classes="error_msg",
+                markup=True,
+            )
+            await self._mount_chat_widget(w)
+            return
+
+        budget = reasoning_budget_tokens(resolved)
+        b_str = f" ({budget:,} tok budget)" if budget is not None else ""
+        w = Static(
+            f"[green]✓ Reasoning effort set to[/] [bold]{escape(resolved.value)}[/]{b_str}",
+            classes="system_msg",
+            markup=True,
+        )
+        await self._mount_chat_widget(w)
 
     async def _slash_fast(self: AgentAppProtocol) -> None:
         """S8-C: /fast — switch to the smallest/fastest configured model (NANO tier)."""

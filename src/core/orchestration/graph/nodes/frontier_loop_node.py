@@ -10,6 +10,7 @@ from __future__ import annotations
 import asyncio
 import functools
 import logging
+import os
 from typing import Any, Dict, cast
 
 from src.core.inference.kv_cache_governor import (
@@ -76,7 +77,7 @@ from src.core.orchestration.graph.nodes.tool_output_truncation import (
 from src.core.orchestration.graph.nodes.tool_result_safety import sanitize_tool_result
 from src.core.orchestration.graph.runtime_policy import resolve_effective_tool_schemas
 from src.core.orchestration.graph.state import StateLike
-from src.core.orchestration.tool_parser import parse_tool_block
+from src.core.orchestration.tool_parser import parse_response_tool_call, parse_tool_block
 from src.core.security.redaction import redact_secrets
 
 # Re-exported for backwards compatibility with the legacy test surface
@@ -209,12 +210,14 @@ async def _call_llm_for_turn(
         )
 
     _llm_timeout: int | None = 120
+    if (provider_name or "").lower() in ("", "ollama", "llama_server", "lm_studio", "mlx_lm"):
+        _llm_timeout = int(float(os.getenv("CODINGAGENT_LOCAL_TIMEOUT", "600")))
     try:
         from src.core.orchestration.project_settings import get_active_settings as _gas_fl
 
         _ps_fl = _gas_fl()
-        if _ps_fl is not None:
-            _llm_timeout = _ps_fl.max_llm_wait_seconds or None
+        if _ps_fl is not None and _ps_fl.max_llm_wait_seconds:
+            _llm_timeout = _ps_fl.max_llm_wait_seconds
     except Exception:
         pass
 
@@ -223,11 +226,18 @@ async def _call_llm_for_turn(
     )
     if thinking_mode == "off":
         _call_kwargs["disable_thinking"] = True
+    _pol_tier = getattr(runtime_policy, "policy_tier", None) if runtime_policy is not None else None
+    if _pol_tier:
+        _call_kwargs["policy_tier"] = str(_pol_tier)
+    _ver_retries = int(getattr(orchestrator, "_last_verification_retries", 0) or 0)
+    if _ver_retries > 0:
+        _call_kwargs["verification_retries"] = _ver_retries
     response = await asyncio.wait_for(call_model(**_call_kwargs), timeout=_llm_timeout)
 
     content_text = _extract_content_text(response)
 
     tool_calls: list[Any] = []
+    reasoning_text: str | None = None
     if isinstance(response, dict):
         choices = response.get("choices", [])
         if choices and len(choices) > 0:
@@ -235,6 +245,7 @@ async def _call_llm_for_turn(
             msg = choice.get("message", {}) if isinstance(choice, dict) else {}
             if isinstance(msg, dict):
                 tool_calls = list(msg.get("tool_calls") or [])
+                reasoning_text = msg.get("reasoning_content") or msg.get("thinking")
             if not tool_calls and isinstance(choice, dict):
                 tool_calls = list(choice.get("tool_calls") or [])
         if not tool_calls and response.get("tool_calls"):
@@ -242,21 +253,17 @@ async def _call_llm_for_turn(
     else:
         tool_calls = list(getattr(response, "tool_calls", None) or [])
 
-    # Text-based tool parser fallback (non-native models or inline YAML/JSON blocks)
-    if not tool_calls and content_text:
+    # Text-based tool parser fallback + reasoning_content rescue (TASK-29)
+    if not tool_calls and (content_text or reasoning_text):
         try:
             import re
 
             content_for_parse = re.sub(
-                r"<\|channel\|>thought.*?<\|/channel\|>",
-                "",
-                content_text,
-                flags=re.DOTALL,
+                r"<\|channel\|>thought.*?<\|/channel\|>", "", content_text or "", flags=re.DOTALL,
             ).strip()
-            if content_for_parse:
-                parsed = parse_tool_block(content_for_parse)
-                if parsed and isinstance(parsed, dict) and (parsed.get("name") or parsed.get("tool")):
-                    tool_calls = [parsed]
+            parsed = parse_response_tool_call(content_for_parse, reasoning_text)
+            if parsed and isinstance(parsed, dict) and (parsed.get("name") or parsed.get("tool")):
+                tool_calls = [parsed]
         except Exception as exc:
             logger.debug("frontier_loop_node: tool parse error: %s", exc)
             tool_calls = []

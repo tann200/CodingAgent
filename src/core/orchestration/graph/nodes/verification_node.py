@@ -441,6 +441,8 @@ async def _verification_node_impl(state: StateLike, config: RunnerConfig) -> Dic
             # Deferred Rollback: keep open transaction & edits on disk for surgical fix
             attempt = prev_recoveries + 1
             run_state["recoveries"] = attempt
+            if orch is not None:
+                setattr(orch, "_last_verification_retries", attempt)
             run_state["status"] = "recovering"
             run_state["outcome"] = "continue"
             results["step_rollback"] = {

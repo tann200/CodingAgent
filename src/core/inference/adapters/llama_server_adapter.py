@@ -66,7 +66,8 @@ def discover_llama_server(
 class LlamaServerAdapter(OpenAICompatibleAdapter):
     """Adapter for ``llama.cpp`` ``llama-server`` OpenAI-compatible endpoint."""
 
-    DEFAULT_TIMEOUT: float = 120.0
+    # TASK-29: Patient local timeout for Apple Silicon Metal / CPU prefill
+    DEFAULT_TIMEOUT: float = float(os.getenv("CODINGAGENT_LOCAL_TIMEOUT", "600.0"))
     supports_native_tools: bool = True
 
     def __init__(
@@ -104,22 +105,37 @@ class LlamaServerAdapter(OpenAICompatibleAdapter):
         model_name: str,
         kwargs: Dict[str, Any],
     ) -> tuple[Dict[str, Any], Optional[str]]:
+        from src.core.inference.thinking_utils import (
+            apply_reasoning_to_payload,
+            resolve_reasoning_effort,
+        )
+
         kw = dict(kwargs)
         disable_thinking = bool(kw.pop("disable_thinking", False))
+        parallel_worker = bool(kw.pop("parallel_worker", False))
+        req_effort = kw.pop("reasoning_effort", None)
+        verification_retries = int(kw.pop("verification_retries", 0) or 0)
+        tier = kw.pop("policy_tier", None)
         if not disable_thinking:
             prov_cfg = getattr(self, "provider", None)
             if isinstance(prov_cfg, dict):
                 disable_thinking = bool(prov_cfg.get("disable_thinking", False))
         payload, ep = super()._build_payload(messages, model_name, kw)
         if isinstance(messages, (list, tuple)):
-            # Enable llama.cpp KV prefix slot reuse for multi-turn coding loops
+            # TASK-29: Enable llama.cpp KV prefix slot reuse + single-slot pinning
             payload.setdefault("cache_prompt", True)
-            if disable_thinking:
-                ctk = payload.get("chat_template_kwargs")
-                if isinstance(ctk, dict):
-                    ctk.setdefault("enable_thinking", False)
-                elif ctk is None:
-                    payload["chat_template_kwargs"] = {"enable_thinking": False}
-                payload.setdefault("think", False)
-                payload.setdefault("reasoning_budget", 0)
+            if not parallel_worker:
+                try:
+                    slot_id = int(os.getenv("CODINGAGENT_LLAMA_SLOT", "0"))
+                except ValueError:
+                    slot_id = 0
+                payload.setdefault("id_slot", slot_id)
+            effort = resolve_reasoning_effort(
+                session_effort=req_effort,
+                model_id=model_name,
+                tier=tier,
+                verification_retries=verification_retries,
+                disable_thinking=disable_thinking,
+            )
+            apply_reasoning_to_payload("llama_server", payload, effort, model_id=model_name)
         return payload, ep

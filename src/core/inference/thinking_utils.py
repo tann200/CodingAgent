@@ -204,3 +204,190 @@ def get_thinking_directive(model_id: str, enabled: bool) -> str | None:
     if enabled and model_id.lower().startswith("qwen3"):
         return None  # Qwen3 thinks by default, no directive needed
     return None
+
+
+# ---------------------------------------------------------------------------
+# TASK-29: Unified Reasoning Effort & Dynamic Thinking Budget Control
+# ---------------------------------------------------------------------------
+
+
+class ReasoningEffort(str, Enum):
+    """Portable reasoning/thinking effort level across local & cloud providers."""
+
+    OFF = "off"
+    LOW = "low"
+    MEDIUM = "medium"
+    HIGH = "high"
+    UNSET = "unset"
+
+
+_REASONING_BUDGET_TOKENS: dict[ReasoningEffort, int] = {
+    ReasoningEffort.OFF: 0,
+    ReasoningEffort.LOW: 1024,
+    ReasoningEffort.MEDIUM: 2560,
+    ReasoningEffort.HIGH: 6144,
+}
+
+_ACTIVE_REASONING_EFFORT: ReasoningEffort | None = None
+
+
+def set_active_reasoning_effort(effort: ReasoningEffort | str | None) -> ReasoningEffort:
+    """Set the globally active reasoning effort (CLI ``--reasoning`` or ``/reasoning``)."""
+    global _ACTIVE_REASONING_EFFORT
+    if effort is None:
+        _ACTIVE_REASONING_EFFORT = None
+        return ReasoningEffort.UNSET
+    if isinstance(effort, ReasoningEffort):
+        _ACTIVE_REASONING_EFFORT = None if effort == ReasoningEffort.UNSET else effort
+        return effort
+    norm = str(effort).strip().lower()
+    if norm in ("reset", "unset", "default", ""):
+        _ACTIVE_REASONING_EFFORT = None
+        return ReasoningEffort.UNSET
+    if norm == "none":
+        norm = "off"
+    resolved = ReasoningEffort(norm)
+    _ACTIVE_REASONING_EFFORT = resolved
+    return resolved
+
+
+def get_active_reasoning_effort() -> ReasoningEffort | None:
+    """Return the active global reasoning effort override, or ``None`` if unset."""
+    return _ACTIVE_REASONING_EFFORT
+
+
+def reasoning_budget_tokens(effort: ReasoningEffort) -> int | None:
+    """Return the target thinking-token budget for *effort* (``None`` for UNSET)."""
+    return _REASONING_BUDGET_TOKENS.get(effort)
+
+
+def resolve_reasoning_effort(
+    *,
+    cli_effort: ReasoningEffort | str | None = None,
+    session_effort: ReasoningEffort | str | None = None,
+    model_id: str = "",
+    tier: str | None = None,
+    verification_retries: int = 0,
+    disable_thinking: bool = False,
+) -> ReasoningEffort:
+    """Resolve effective reasoning effort with precedence and retry bumping.
+
+    Precedence:
+      1. Explicit ``disable_thinking=True`` → ``OFF``
+      2. ``cli_effort``
+      3. ``session_effort``
+      4. Active global override (``/reasoning`` / ``--reasoning``)
+      5. Tier default: ``compact``/``nano`` reasoning models default to ``LOW``
+         so distilled 9B models don't exhaust context/latency on routine edits;
+         other tiers default to ``UNSET``.
+
+    When ``verification_retries >= 1``, a ``LOW`` cap automatically bumps to
+    ``MEDIUM`` (and ``MEDIUM`` → ``HIGH``) to give deeper reasoning on fix turns.
+    """
+    if disable_thinking:
+        return ReasoningEffort.OFF
+
+    def _coerce(val: ReasoningEffort | str | None) -> ReasoningEffort | None:
+        if val is None:
+            return None
+        if isinstance(val, ReasoningEffort):
+            return None if val == ReasoningEffort.UNSET else val
+        s = str(val).strip().lower()
+        if s in ("", "unset", "reset", "default"):
+            return None
+        if s == "none":
+            return ReasoningEffort.OFF
+        try:
+            return ReasoningEffort(s)
+        except ValueError:
+            return None
+
+    chosen = (
+        _coerce(cli_effort)
+        or _coerce(session_effort)
+        or _ACTIVE_REASONING_EFFORT
+    )
+
+    if chosen is None:
+        # Respect legacy ThinkingMode.OFF if explicitly set
+        if _ACTIVE_THINKING_MODE == ThinkingMode.OFF:
+            return ReasoningEffort.OFF
+        norm_tier = (tier or "").strip().lower()
+        if norm_tier in ("nano", "compact", "compact-flat") and is_reasoning_model(model_id):
+            chosen = ReasoningEffort.LOW
+        else:
+            return ReasoningEffort.UNSET
+
+    if verification_retries >= 1:
+        if chosen == ReasoningEffort.LOW:
+            chosen = ReasoningEffort.MEDIUM
+        elif chosen == ReasoningEffort.MEDIUM:
+            chosen = ReasoningEffort.HIGH
+
+    return chosen
+
+
+def apply_reasoning_to_payload(
+    provider_kind: str,
+    payload: dict,
+    effort: ReasoningEffort,
+    *,
+    model_id: str = "",
+) -> dict:
+    """Apply portable *effort* defensively to a provider-specific request payload."""
+    if effort == ReasoningEffort.UNSET:
+        return payload
+
+    kind = (provider_kind or "").strip().lower().replace("-", "_")
+    budget = reasoning_budget_tokens(effort)
+
+    if kind in ("llama_server", "llamacpp", "llama_cpp"):
+        ctk = payload.get("chat_template_kwargs")
+        if not isinstance(ctk, dict):
+            ctk = {}
+            payload["chat_template_kwargs"] = ctk
+        if effort == ReasoningEffort.OFF:
+            ctk.setdefault("enable_thinking", False)
+            payload.setdefault("think", False)
+            payload.setdefault("reasoning_budget", 0)
+        else:
+            ctk.setdefault("enable_thinking", True)
+            if budget is not None:
+                payload.setdefault("reasoning_budget", budget)
+                cap = budget + 1024
+                cur_max = payload.get("max_tokens")
+                if cur_max is None or (isinstance(cur_max, int) and cur_max > cap):
+                    payload["max_tokens"] = cap
+        return payload
+
+    if kind == "ollama":
+        if effort == ReasoningEffort.OFF:
+            payload.setdefault("think", False)
+        else:
+            payload.setdefault("think", True)
+            if budget is not None:
+                opts = payload.get("options")
+                if not isinstance(opts, dict):
+                    opts = {}
+                    payload["options"] = opts
+                cap = budget + 1024
+                cur_pred = opts.get("num_predict")
+                if cur_pred is None or (isinstance(cur_pred, int) and cur_pred > cap):
+                    opts["num_predict"] = cap
+        return payload
+
+    if kind in ("anthropic",):
+        if effort != ReasoningEffort.OFF and budget is not None and budget > 0:
+            payload.setdefault("thinking", {"type": "enabled", "budget_tokens": budget})
+        return payload
+
+    if kind in ("openai", "openrouter"):
+        if effort == ReasoningEffort.OFF:
+            if is_reasoning_model(model_id):
+                payload.setdefault("reasoning_effort", "none")
+        else:
+            if kind == "openrouter" or is_reasoning_model(model_id):
+                payload.setdefault("reasoning_effort", effort.value)
+        return payload
+
+    return payload

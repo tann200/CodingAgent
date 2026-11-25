@@ -414,6 +414,16 @@ def _parse_args(argv: list) -> argparse.Namespace:
             "For models like Qwen3 that emit  thinking blocks."
         ),
     )
+    # TASK-29: --reasoning / --effort portable reasoning effort level
+    parser.add_argument(
+        "--reasoning",
+        "--effort",
+        dest="reasoning",
+        metavar="LEVEL",
+        default=None,
+        choices=["off", "low", "medium", "high", "unset"],
+        help="Control portable reasoning effort / thinking token budget (off|low|medium|high|unset).",
+    )
     # Phase 3.7: --provider / --model headless overrides (mirror TUI /provider + /model)
     parser.add_argument(
         "--provider",
@@ -1097,6 +1107,16 @@ def main(argv: Optional[list] = None) -> int:
             _dbg(f"[src.main] Thinking mode set to: {args.thinking}")
         except Exception as _th_err:
             _dbg(f"[src.main] Could not apply thinking mode: {_th_err}")
+
+    # TASK-29: Apply --reasoning / --effort flag
+    if getattr(args, "reasoning", None):
+        try:
+            from src.core.inference.thinking_utils import set_active_reasoning_effort
+
+            set_active_reasoning_effort(args.reasoning)
+            _dbg(f"[src.main] Reasoning effort set to: {args.reasoning}")
+        except Exception as _re_err:
+            _dbg(f"[src.main] Could not apply reasoning effort: {_re_err}")
 
     # CP-13 / CP-8: Load per-project settings and apply them (project settings
     # are applied *before* CLI flags so that CLI always wins).

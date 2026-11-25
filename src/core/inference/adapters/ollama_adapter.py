@@ -3,6 +3,7 @@ from typing import Any, Dict, List, Optional
 from pathlib import Path
 import json
 import logging
+import os
 import time
 import requests
 
@@ -140,8 +141,8 @@ OLLAMA_OPTIONS = {
 
 
 class OllamaAdapter(LLMClient):
-    # Increased timeout from 5 to 120 to allow for local model loading into VRAM
-    DEFAULT_TIMEOUT = 120.0
+    # TASK-29: Patient local timeout for VRAM loading & long Metal prefill
+    DEFAULT_TIMEOUT = float(os.getenv("CODINGAGENT_LOCAL_TIMEOUT", "600.0"))
 
     def __init__(
         self, config_path=None, name=None, base_url=None, api_key=None, models=None
@@ -909,16 +910,34 @@ class OllamaAdapter(LLMClient):
         if options:
             payload["options"] = options
 
-        # GAP-SMALL-6: disable thinking tokens for local models when configured.
-        # Ollama ≥0.6.5 accepts "think": false at the top-level payload.
-        _disable_think = False
+        # TASK-29: Unified reasoning effort & thinking-budget clamp for Ollama
+        _req_effort = payload_kwargs.pop("reasoning_effort", None)
+        _ver_retries = int(payload_kwargs.pop("verification_retries", 0) or 0)
+        _tier = payload_kwargs.pop("policy_tier", None)
+        _disable_think = bool(payload_kwargs.pop("disable_thinking", False))
         try:
-            if self.provider and isinstance(self.provider, dict):
+            if not _disable_think and self.provider and isinstance(self.provider, dict):
                 _disable_think = bool(self.provider.get("disable_thinking", False))
         except Exception as exc:
             _logger.debug("ollama_adapter: disable_thinking check failed: %s", exc)
-        if _disable_think and "think" not in payload:
-            payload["think"] = False
+        try:
+            from src.core.inference.thinking_utils import (
+                apply_reasoning_to_payload,
+                resolve_reasoning_effort,
+            )
+
+            _eff = resolve_reasoning_effort(
+                session_effort=_req_effort,
+                model_id=model_name,
+                tier=_tier,
+                verification_retries=_ver_retries,
+                disable_thinking=_disable_think,
+            )
+            apply_reasoning_to_payload("ollama", payload, _eff, model_id=model_name)
+        except Exception as exc:
+            if _disable_think and "think" not in payload:
+                payload["think"] = False
+            _logger.debug("ollama_adapter: reasoning effort resolution skipped: %s", exc)
 
         if format_json and "format" not in payload:
             payload["format"] = "json"
