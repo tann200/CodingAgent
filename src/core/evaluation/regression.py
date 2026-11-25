@@ -42,9 +42,10 @@ def _scenario_outcomes(results: list) -> Dict[str, Dict[str, Any]]:
             rec["tokens_used"] = int(tokens_used)
         tool_calls = _field(r, "tool_calls")
         if tool_calls is None:
-            # ScenarioResult stores total_tool_calls or tool_call_count in some paths
             tool_calls = _field(r, "total_tool_calls")
-        if tool_calls is not None:
+        if isinstance(tool_calls, (list, tuple)):
+            rec["tool_calls"] = len(tool_calls)
+        elif isinstance(tool_calls, (int, float)):
             rec["tool_calls"] = int(tool_calls)
         malformed = _field(r, "malformed_tool_calls")
         if malformed is not None:

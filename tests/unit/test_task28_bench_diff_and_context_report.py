@@ -128,6 +128,25 @@ class TestBenchDiff:
         assert rc == regression.EXIT_ERROR
         assert "not found or malformed" in capsys.readouterr().err
 
+    def test_scenario_outcomes_handles_list_tool_calls(self, tmp_path: Path) -> None:
+        from src.core.evaluation.scenario_evaluator import ScenarioResult
+
+        res = ScenarioResult(
+            scenario_name="s_list",
+            status="pass",
+            start_time="2026-11-25T23:00:00",
+            end_time="2026-11-25T23:00:03",
+            duration_seconds=3.2,
+            tool_calls=[{"name": "read_file"}, {"name": "edit_file"}],
+            prompt_tokens=400,
+            completion_tokens=120,
+        )
+        out = regression.save_baseline(tmp_path / "b.json", [res])
+        doc = regression.load_run_doc(out)
+        assert doc is not None
+        assert doc["scenarios"]["s_list"]["tool_calls"] == 2
+        assert doc["scenarios"]["s_list"]["tokens_used"] == 520
+
     def test_top_level_cli_bench_diff_json(self, tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
         base = _write_json(tmp_path / "b.json", _baseline_doc({"s1": {"status": "fail"}}))
         cand = _write_json(tmp_path / "c.json", _baseline_doc({"s1": {"status": "pass"}}))
