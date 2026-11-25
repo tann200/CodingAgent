@@ -92,10 +92,14 @@ from typing import (  # noqa: E402
     TypedDict,
     List,
     Dict,
+    Mapping,
     Any,
     Annotated,
     TYPE_CHECKING,
 )
+
+RunnerConfig = Mapping[str, Any]
+RunnableConfig = RunnerConfig
 
 from src.core.orchestration.graph.policy import (  # noqa: F401, E402
     LastAction,

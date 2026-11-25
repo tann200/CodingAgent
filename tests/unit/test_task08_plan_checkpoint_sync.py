@@ -156,9 +156,12 @@ class TestTask08JsonCheckpointingAndSync:
             "channel_versions": {"count": 1},
             "versions_seen": {},
         }
-        with patch("src.core.orchestration.graph.checkpoint_saver.pickle.loads", side_effect=AssertionError("pickle must not be used")):
-            saver.put(cfg, ckpt, {"step": 1}, {"count": 1})
-            tup = saver.get_tuple(cfg)
+        # Verify pickle is completely removed from checkpoint_saver
+        import src.core.orchestration.graph.checkpoint_saver as _cs_mod
+
+        assert not hasattr(_cs_mod, "pickle")
+        saver.put(cfg, ckpt, {"step": 1}, {"count": 1})
+        tup = saver.get_tuple(cfg)
 
         assert tup is not None
         assert tup.checkpoint["channel_values"]["count"] == 2

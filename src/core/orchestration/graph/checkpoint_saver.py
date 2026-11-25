@@ -24,29 +24,45 @@ from __future__ import annotations
 
 import base64
 import json
-import pickle
 import sys
 import threading
 import time
 from pathlib import Path
-from typing import Any, Callable, Dict, Iterator, List, Optional, Sequence
-
-from langgraph.checkpoint.base import (
-    BaseCheckpointSaver,
-    CheckpointTuple,
-    get_checkpoint_id,
-    get_checkpoint_metadata,
-)
+from typing import Any, Callable, Dict, Iterator, List, NamedTuple, Optional, Sequence
 
 from src.core.logger import logger as guilogger
+
+
+class CheckpointTuple(NamedTuple):
+    """Pure-Python checkpoint tuple (zero langgraph dependency)."""
+
+    config: Dict[str, Any]
+    checkpoint: Dict[str, Any]
+    metadata: Dict[str, Any]
+    parent_config: Optional[Dict[str, Any]] = None
+    pending_writes: Optional[List[Any]] = None
+
+
+def get_checkpoint_id(config: Any) -> Optional[str]:
+    if isinstance(config, dict):
+        cfg = config.get("configurable")
+        if isinstance(cfg, dict):
+            cid = cfg.get("checkpoint_id")
+            return str(cid) if cid is not None else None
+    return None
+
+
+def get_checkpoint_metadata(config: Any, metadata: Any) -> Dict[str, Any]:
+    return dict(metadata) if isinstance(metadata, dict) else {}
+
 
 _LOCK = threading.RLock()
 
 _checkpointer_instance: Optional["JsonlCheckpointSaver"] = None
 _checkpointer_lock = threading.Lock()
 
-# Channels that carry live per-run (or unpicklable) objects.  They are not
-# persisted in snapshots; rehydrated initial state rebuilds them fresh.
+# Channels that carry live per-run objects.  They are not persisted in
+# snapshots; rehydrated initial state rebuilds them fresh.
 LIVE_CHANNELS = frozenset(
     {
         "cancel_event",
@@ -64,18 +80,6 @@ _MAX_RECORDS_PER_THREAD = 500
 # thread_id -> resolved checkpoint dir, so lookups can still recover the
 # storage location when no orchestrator object is on hand.
 _DIR_REGISTRY: Dict[str, str] = {}
-
-
-class PickleSerde:
-    """Minimal (type, blob) serializer round-tripping arbitrary objects."""
-
-    @staticmethod
-    def dumps_typed(obj: Any) -> tuple:
-        return "pickle", pickle.dumps(obj, protocol=pickle.HIGHEST_PROTOCOL)
-
-    @staticmethod
-    def loads_typed(data: tuple) -> Any:
-        return pickle.loads(data[1])
 
 
 def _b64(data: bytes) -> str:
@@ -353,15 +357,14 @@ def purge_thread_checkpoint(orch: Any) -> None:
         pass
 
 
-class JsonlCheckpointSaver(BaseCheckpointSaver):
-    """Crash-durable langgraph saver: each thread lands in its own JSONL file."""
+class JsonlCheckpointSaver:
+    """Pure-Python crash-durable JSONL checkpointer (zero langgraph/pickle)."""
 
     def __init__(
         self,
         *,
         dir_resolver: Optional[Callable[[Any], Optional[Path]]] = None,
     ) -> None:
-        super().__init__(serde=PickleSerde())
         self._dir_resolver: Callable[[Any], Optional[Path]] = (
             dir_resolver or default_dir_resolver
         )

@@ -14,20 +14,18 @@ import asyncio
 import logging
 from typing import Any, Dict, Mapping
 
-from langchain_core.runnables import RunnableConfig
-
 from src.core.messaging.event_types import PlanRequested
 from src.core.orchestration.graph.nodes.node_utils import (
     _resolve_orchestrator,
     span_node as _span_node,
 )
 from src.core.orchestration.graph.policy import compute_action_digest
-from src.core.orchestration.graph.state import StateLike
+from src.core.orchestration.graph.state import RunnerConfig, StateLike
 
 logger = logging.getLogger(__name__)
 
 
-async def _wait_for_user(state: StateLike, config: RunnableConfig) -> Dict[str, Any]:
+async def _wait_for_user(state: StateLike, config: RunnerConfig) -> Dict[str, Any]:
     """Suspend execution until user confirms/rejects preview or approves/rejects plan.
 
     Inlined from legacy ``wait_for_user_node.py`` (TASK-25 Stage A).
@@ -124,13 +122,13 @@ async def _wait_for_user(state: StateLike, config: RunnableConfig) -> Dict[str, 
         }
 
 
-async def approval_node(state: StateLike, config: RunnableConfig) -> Dict[str, Any]:
+async def approval_node(state: StateLike, config: RunnerConfig) -> Dict[str, Any]:
     """Thin OTel-span wrapper — delegates to _approval_node_impl."""
     with _span_node("approval", {"step": state.get("current_step", 0)}):
         return await _approval_node_impl(state, config)
 
 
-async def _approval_node_impl(state: StateLike, config: RunnableConfig) -> Dict[str, Any]:
+async def _approval_node_impl(state: StateLike, config: RunnerConfig) -> Dict[str, Any]:
     """Handle action approval and validation."""
     logger.info("=== approval_node START ===")
     run_state = dict(state.get("run") or {})

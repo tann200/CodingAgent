@@ -13,8 +13,6 @@ dependencies = [
   "python-dotenv>=1.0.0,<2.0.0",
   "typing-extensions>=4.11.0",
   "PyYAML>=6.0.2,<7.0.0",
-  "langgraph>=1.1.0,<2.0.0",
-  "langchain-core>=1.0.0,<2.0.0",
   "pydantic>=2.7.0,<3.0.0",
   "tomli>=2.0.0",
 ]

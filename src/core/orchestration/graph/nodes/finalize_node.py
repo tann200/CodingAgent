@@ -15,13 +15,11 @@ import logging
 from pathlib import Path
 from typing import Any, Dict
 
-from langchain_core.runnables import RunnableConfig
-
 from src.core.orchestration.graph.nodes.node_utils import (
     _resolve_orchestrator,
     span_node as _span_node,
 )
-from src.core.orchestration.graph.state import StateLike, replace_state_list
+from src.core.orchestration.graph.state import RunnerConfig, StateLike, replace_state_list
 
 try:
     from src.core.memory.distiller import distill_context
@@ -132,13 +130,13 @@ def _finalize_memory_sync(state: StateLike) -> Dict[str, Any]:
     return out
 
 
-async def finalize_node(state: StateLike, config: RunnableConfig) -> Dict[str, Any]:
+async def finalize_node(state: StateLike, config: RunnerConfig) -> Dict[str, Any]:
     """Thin OTel-span wrapper — delegates to _finalize_node_impl."""
     with _span_node("finalize", {"turn": state.get("turn_count", 0)}):
         return await _finalize_node_impl(state, config)
 
 
-async def _finalize_node_impl(state: StateLike, config: RunnableConfig) -> Dict[str, Any]:
+async def _finalize_node_impl(state: StateLike, config: RunnerConfig) -> Dict[str, Any]:
     """Terminal execution node with fail-closed Transaction Settlement Guard."""
     logger.info("=== finalize_node START ===")
     run_state = dict(state.get("run") or {})

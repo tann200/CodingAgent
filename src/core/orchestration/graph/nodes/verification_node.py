@@ -5,8 +5,6 @@ import py_compile as _pyc
 from pathlib import Path
 from typing import Any, Dict, Mapping
 
-from langchain_core.runnables import RunnableConfig
-
 from src.core.orchestration.graph.nodes.node_utils import (
     _resolve_orchestrator,
     span_node as _span_node,
@@ -23,7 +21,7 @@ from src.core.orchestration.graph.nodes.verification_helpers import (
     run_rust_verification,
     run_targeted_ruff,
 )
-from src.core.orchestration.graph.state import StateLike, replace_state_list
+from src.core.orchestration.graph.state import RunnerConfig, StateLike, replace_state_list
 from src.tools import verification_tools
 
 logger = logging.getLogger(__name__)
@@ -72,13 +70,13 @@ _WRITE_TOOLS_ALWAYS_VERIFY = {
 }
 
 
-async def verification_node(state: StateLike, config: RunnableConfig) -> Dict[str, Any]:
+async def verification_node(state: StateLike, config: RunnerConfig) -> Dict[str, Any]:
     """Thin OTel-span wrapper — delegates to _verification_node_impl."""
     with _span_node("verification", {"step": state.get("current_step", 0)}):
         return await _verification_node_impl(state, config)
 
 
-async def _verification_node_impl(state: StateLike, config: RunnableConfig) -> Dict[str, Any]:
+async def _verification_node_impl(state: StateLike, config: RunnerConfig) -> Dict[str, Any]:
     """Polyglot, SHA-256-deduplicated verification node with Deferred Rollback."""
     logger.info("=== verification_node START ===")
 

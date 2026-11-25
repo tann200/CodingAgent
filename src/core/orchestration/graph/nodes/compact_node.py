@@ -16,11 +16,9 @@ import json
 import logging
 from typing import Any, Dict, List, Mapping
 
-from langchain_core.runnables import RunnableConfig
-
 from src.core.orchestration.graph.nodes.node_utils import span_node as _span_node
 from src.core.orchestration.graph.nodes.tool_output_truncation import prune_tool_outputs
-from src.core.orchestration.graph.state import StateLike, replace_state_list
+from src.core.orchestration.graph.state import RunnerConfig, StateLike, replace_state_list
 
 logger = logging.getLogger(__name__)
 
@@ -208,13 +206,13 @@ def compact_history_atomic(
     return compacted
 
 
-async def compact_node(state: StateLike, config: RunnableConfig) -> Dict[str, Any]:
+async def compact_node(state: StateLike, config: RunnerConfig) -> Dict[str, Any]:
     """Thin OTel-span wrapper — delegates to _compact_node_impl."""
     with _span_node("compact", {"turn": state.get("turn_count", 0)}):
         return await _compact_node_impl(state, config)
 
 
-async def _compact_node_impl(state: StateLike, config: RunnableConfig) -> Dict[str, Any]:
+async def _compact_node_impl(state: StateLike, config: RunnerConfig) -> Dict[str, Any]:
     """TurnGroup-atomic deterministic history reduction."""
     logger.info("=== compact_node START ===")
     run_state = dict(state.get("run") or {})

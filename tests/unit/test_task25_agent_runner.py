@@ -218,3 +218,15 @@ def test_agent_run_state_roundtrip() -> None:
     d = st.to_dict()
     assert d["task"] == "hello"
     assert d["custom_flag"] is True
+
+
+def test_zero_langgraph_or_langchain_imports_in_src() -> None:
+    repo_root = Path(__file__).resolve().parents[2]
+    offenders: list[str] = []
+    for py_file in (repo_root / "src").rglob("*.py"):
+        text = py_file.read_text(encoding="utf-8", errors="ignore")
+        for line in text.splitlines():
+            stripped = line.strip()
+            if stripped.startswith(("import langgraph", "from langgraph", "import langchain", "from langchain")):
+                offenders.append(f"{py_file.relative_to(repo_root)}: {stripped}")
+    assert offenders == [], f"Unexpected LangGraph/LangChain imports in src/: {offenders}"

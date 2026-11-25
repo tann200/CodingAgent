@@ -23,9 +23,8 @@ import logging
 from dataclasses import dataclass, field
 from typing import Any, Callable, Mapping, Optional
 
-from langchain_core.runnables import RunnableConfig
-
 from src.core.messaging.event_types import NodeResultValidationFailed
+from src.core.orchestration.graph.state import RunnerConfig
 
 _logger = logging.getLogger(__name__)
 
@@ -243,7 +242,7 @@ def wrap_node(
 
         async def _async_wrapper(
             state: Mapping[str, Any],
-            config: Optional[RunnableConfig] = None,
+            config: Optional[RunnerConfig] = None,
             *args: Any,
             **kwargs: Any,
         ):
@@ -262,7 +261,7 @@ def wrap_node(
 
     def _sync_wrapper(
         state: Mapping[str, Any],
-        config: Optional[RunnableConfig] = None,
+        config: Optional[RunnerConfig] = None,
         *args: Any,
         **kwargs: Any,
     ):

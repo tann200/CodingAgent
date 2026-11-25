@@ -13,9 +13,8 @@ from pathlib import Path
 
 import pytest
 
-from langgraph.graph import END, START, StateGraph
-
 from src.core.orchestration.graph import checkpoint_saver as cs
+from src.core.orchestration.runner import AgentRunner
 
 
 # ---------------------------------------------------------------------------
@@ -60,32 +59,20 @@ def _base_config(orch: _Orch) -> typing.Any:
 
 
 # ---------------------------------------------------------------------------
-# TestPickleSerde
+# TestJsonBlobSerde
 # ---------------------------------------------------------------------------
 
 
-class TestPickleSerde:
-    class _Sample:
-        def __init__(self, n: int) -> None:
-            self.n = n
+class TestJsonBlobSerde:
+    def test_round_trip_json_primitives(self) -> None:
+        for payload in (42, "hi", {"a": [1, 2]}):
+            blob = cs._encode_json_blob(payload)
+            assert isinstance(blob, str)
+            assert cs._decode_json_blob(blob) == payload
 
-        def __eq__(self, other: object) -> bool:
-            return isinstance(other, TestPickleSerde._Sample) and other.n == self.n
-
-    def test_round_trip_primitive_and_objects(self) -> None:
-        for payload in (42, "hi", {"a": [1, 2]}, self._Sample(7)):
-            blob = cs.PickleSerde.dumps_typed(payload)
-            assert isinstance(blob, tuple)
-            assert blob[0] == "pickle"
-            loaded = cs.PickleSerde.loads_typed(blob)
-            if isinstance(payload, self._Sample):
-                assert isinstance(loaded, self._Sample) and loaded.n == 7
-            else:
-                assert loaded == payload
-
-    def test_threading_event_unpicklable(self) -> None:
-        with pytest.raises(Exception):
-            cs.PickleSerde.dumps_typed(threading.Event())
+    def test_threading_event_rejected(self) -> None:
+        with pytest.raises(ValueError):
+            cs._encode_json_blob(threading.Event())
 
 
 # ---------------------------------------------------------------------------
@@ -275,14 +262,19 @@ class TestResumeIntegration:
         assert "cancel_event" not in merged
 
     def test_has_resumable_cancel_guard(self, orch: _Orch) -> None:
-        class St(typing.TypedDict, total=False):
-            x: int
+        async def _noop(state, cfg):
+            return {"run": {"status": "completed", "outcome": "complete"}}
 
-        sg = StateGraph(St)
-        sg.add_node("a", lambda s: {"x": 1})
-        sg.add_edge(START, "a")
-        sg.add_edge("a", END)
-        graph = sg.compile()
+        graph = AgentRunner(
+            nodes={
+                "initialize": _noop,
+                "agent_loop": _noop,
+                "approval": _noop,
+                "verify": _noop,
+                "compact": _noop,
+                "finalize": _noop,
+            }
+        )
         assert cs.has_resumable_checkpoint(graph, orch) is False
         cs.save_thread_state(orch, {"turn_count": 1})
         assert cs.has_resumable_checkpoint(graph, orch) is True
@@ -293,32 +285,30 @@ class TestResumeIntegration:
         assert cs.has_resumable_checkpoint(graph, orch) is False
 
     def test_crash_round_recovery(self, orch: _Orch) -> None:
-        class S(typing.TypedDict, total=False):
-            count: int
-            history: list
-            label: str
-
         calls: list[str] = []
 
-        def node(name: str, label: str):
-            def run(state: S) -> dict:
+        def make_stage(name: str, label: str, outcome: str):
+            async def run(state: dict, cfg: dict) -> dict:
                 calls.append(name)
                 return {
                     "count": (state.get("count") or 0) + 1,
                     "label": label,
-                    "history": state.get("history", []) + [{"role": "assistant", "content": label}],
+                    "history": [{"role": "assistant", "content": label}],
+                    "run": {"status": "completed" if outcome == "complete" else "running", "outcome": outcome},
                 }
             return run
 
-        g = StateGraph(S)
-        g.add_node("a", node("a", "A"))
-        g.add_node("b", node("b", "B"))
-        g.add_node("c", node("c", "C"))
-        g.add_edge(START, "a")
-        g.add_edge("a", "b")
-        g.add_edge("b", "c")
-        g.add_edge("c", END)
-        app: typing.Any = g.compile(checkpointer=cs.JsonlCheckpointSaver())
+        app = AgentRunner(
+            nodes={
+                "initialize": make_stage("initialize", "A", "continue"),
+                "agent_loop": make_stage("agent_loop", "B", "complete"),
+                "approval": make_stage("approval", "P", "complete"),
+                "verify": make_stage("verify", "V", "complete"),
+                "compact": make_stage("compact", "C", "complete"),
+                "finalize": make_stage("finalize", "F", "complete"),
+            },
+            checkpointer=cs.JsonlCheckpointSaver(),
+        )
         cfg = _base_config(orch)
         svc = app.invoke({"count": 0, "history": [], "label": ""}, cfg)
 
@@ -326,7 +316,7 @@ class TestResumeIntegration:
         cs.save_thread_state(orch, svc)
         assert cs.has_resumable_checkpoint(app, orch) is True
 
-        # "Process crash": drop the langgraph thread files, keep the round snapshot.
+        # "Process crash": drop the thread files, keep the round snapshot.
         saver = cs.JsonlCheckpointSaver()
         saver.delete_thread(cs.thread_key(orch))
         calls.clear()
@@ -336,7 +326,7 @@ class TestResumeIntegration:
         prior = cs.load_thread_state(orch)
         assert prior is not None and prior["count"] > 0
         state = cs.rehydrate_initial_state(fresh, prior)
-        out = app.invoke(state, cfg)  # type: ignore[call-overload]
+        out = app.invoke(state, cfg)
 
         assert out["count"] > 0
         assert out["history"][0]["content"] == "A"
