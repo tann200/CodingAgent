@@ -244,6 +244,50 @@ def _parse_args(argv: list) -> argparse.Namespace:
     skill_val.add_argument("--all", action="store_true", help="Validate all available skills.")
     skill_val.add_argument("--json", action="store_true")
 
+    # TASK-28: `context-report` subcommand — offline prompt & tool-schema token budget report
+    ctx_report_parser = subparsers.add_parser(
+        "context-report",
+        help="Print offline token breakdown for static system prompt, instructions, skills, and tool schemas.",
+    )
+    ctx_report_parser.add_argument(
+        "--tier",
+        choices=("compact-flat", "standard-flat", "frontier-flat"),
+        default="compact-flat",
+        help="Flat toolset tier to measure (default: compact-flat).",
+    )
+    ctx_report_parser.add_argument(
+        "--workdir",
+        metavar="DIR",
+        default=None,
+        help="Working directory to inspect.",
+    )
+    ctx_report_parser.add_argument(
+        "--json",
+        action="store_true",
+        default=False,
+        help="Output context report as JSON.",
+    )
+
+    # TASK-28: `bench-diff` subcommand — benchmark-driven regression gate
+    bench_diff_parser = subparsers.add_parser(
+        "bench-diff",
+        help="Compare baseline and candidate evaluation JSONs (exit 0 improved, 1 regressed, 2 noise, 3 error).",
+    )
+    bench_diff_parser.add_argument("baseline", help="Baseline JSON file or directory.")
+    bench_diff_parser.add_argument("candidate", help="Candidate JSON file or directory.")
+    bench_diff_parser.add_argument(
+        "--threshold",
+        type=float,
+        default=0.02,
+        help="Minimum pass-rate delta for improved/regressed classification (default: 0.02).",
+    )
+    bench_diff_parser.add_argument(
+        "--json",
+        action="store_true",
+        default=False,
+        help="Output diff verdict as JSON.",
+    )
+
     # Global (non-subcommand) flags
     parser.add_argument(
         "--output-format",
@@ -990,6 +1034,18 @@ def main(argv: Optional[list] = None) -> int:
         from src.cli.skill_cmd import run_skill
 
         return run_skill(args)
+
+    # TASK-28: Dispatch `context-report` subcommand
+    if getattr(args, "subcommand", None) == "context-report":
+        from src.cli.context_report_cmd import run_context_report
+
+        return run_context_report(args)
+
+    # TASK-28: Dispatch `bench-diff` subcommand
+    if getattr(args, "subcommand", None) == "bench-diff":
+        from src.core.evaluation.cli import _cmd_bench_diff
+
+        return _cmd_bench_diff(args)
 
     # UX-2: Dispatch --validate-config flag
     if getattr(args, "validate_config", False):

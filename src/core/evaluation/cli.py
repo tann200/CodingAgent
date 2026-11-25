@@ -226,6 +226,20 @@ def _build_parser() -> argparse.ArgumentParser:
     cp.add_argument("--samples", type=int, default=1)
     cp.add_argument("--workdir", default=None)
     cp.add_argument("--output", default=None, help="Write JSON comparison report here")
+
+    bd = sub.add_parser(
+        "bench-diff",
+        help="Compare a baseline and candidate run (exit 0 improved, 1 regressed, 2 noise, 3 error)",
+    )
+    bd.add_argument("baseline", help="Baseline JSON file or directory containing one")
+    bd.add_argument("candidate", help="Candidate JSON file or directory containing one")
+    bd.add_argument(
+        "--threshold",
+        type=float,
+        default=0.02,
+        help="Minimum pass-rate delta to classify as improved/regressed (default: 0.02)",
+    )
+    bd.add_argument("--json", action="store_true", help="Print verdict as JSON")
     return parser
 
 
@@ -420,6 +434,49 @@ def _cmd_compare(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_bench_diff(args: argparse.Namespace) -> int:
+    base_doc = regression.load_run_doc(args.baseline)
+    if base_doc is None:
+        print(f"Baseline not found or malformed: {args.baseline}", file=sys.stderr)
+        return regression.EXIT_ERROR
+    cand_doc = regression.load_run_doc(args.candidate)
+    if cand_doc is None:
+        print(f"Candidate not found or malformed: {args.candidate}", file=sys.stderr)
+        return regression.EXIT_ERROR
+
+    verdict = regression.diff_runs(
+        base_doc, cand_doc, threshold=float(args.threshold)
+    )
+    if getattr(args, "json", False):
+        print(json.dumps(verdict.to_dict(), indent=2, ensure_ascii=False))
+    else:
+        print(
+            f"\nBenchmark Diff Verdict: {verdict.verdict.upper()} (exit {verdict.exit_code})"
+        )
+        print(
+            f"  Baseline  : {verdict.baseline_passed}/{verdict.baseline_total} "
+            f"({verdict.baseline_pass_rate:.1%})"
+        )
+        print(
+            f"  Candidate : {verdict.candidate_passed}/{verdict.candidate_total} "
+            f"({verdict.candidate_pass_rate:.1%})"
+        )
+        print(
+            f"  Delta     : {verdict.pass_rate_delta:+.1%} (threshold ±{verdict.threshold:.1%})"
+        )
+        if verdict.hard_regressions:
+            print(f"  Regressed : {', '.join(verdict.hard_regressions)}")
+        if verdict.improvements:
+            print(f"  Improved  : {', '.join(verdict.improvements)}")
+        if verdict.duration_delta_seconds is not None:
+            print(f"  Duration  : {verdict.duration_delta_seconds:+.2f}s")
+        if verdict.tokens_delta is not None:
+            print(f"  Tokens    : {verdict.tokens_delta:+,d}")
+        if verdict.tool_calls_delta is not None:
+            print(f"  Tool calls: {verdict.tool_calls_delta:+,d}")
+    return verdict.exit_code
+
+
 def main(argv: Optional[List[str]] = None) -> int:
     parser = _build_parser()
     args = parser.parse_args(argv)
@@ -433,6 +490,8 @@ def main(argv: Optional[List[str]] = None) -> int:
         return _cmd_swebench(args)
     if args.command == "compare":
         return _cmd_compare(args)
+    if args.command == "bench-diff":
+        return _cmd_bench_diff(args)
     parser.error(f"unknown command {args.command!r}")
     return 2
 
