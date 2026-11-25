@@ -28,7 +28,10 @@ from src.tools._diff_gate import (
     pop_preview_rejection as _pop_preview_rejection,
     register_preview_gate as _register_preview_gate,
 )
-from src.tools._workspace_guard import WorkspaceGuard  # type: ignore[assignment]
+from src.tools._workspace_guard import (
+    WorkspaceGuard,  # type: ignore[assignment]
+    check_file_safety as _check_file_safety,
+)
 from src.tools._lint_verify import verify_candidate_content as _verify_write_candidate
 from src.tools.guardrails import (
     check_read_before_write as _check_read_before_write,
@@ -130,7 +133,13 @@ def _pre_write_check(
     check_binary: bool = True,
     check_read: bool = True,
 ) -> tuple[Path | None, Dict[str, Any] | None]:
-    """Unified pre-write guardrail sequence: safe_resolve -> WorkspaceGuard -> deny_write -> read-before-write -> binary check."""
+    """Unified pre-write guardrail sequence: check_file_safety -> safe_resolve -> WorkspaceGuard -> deny_write -> read-before-write -> binary check."""
+    safety_err = _check_file_safety(
+        path, workdir=workdir, for_write=True, allow_secret_override=user_approved
+    )
+    if safety_err is not None:
+        return None, safety_err
+
     guard = WorkspaceGuard(workspace_root=workdir.resolve())
     guard_result = guard.guard_operation(operation, path, user_approved)
     if guard_result.get("status") == "error":
@@ -495,6 +504,9 @@ def read_file(
     """Read UTF-8 contents of a file, optionally sliced to 1-based inclusive [start_line, end_line]."""
     if workdir is None:
         workdir = Path.cwd()
+    safety_err = _check_file_safety(path, workdir=workdir, for_write=False)
+    if safety_err is not None:
+        return safety_err
     p = _safe_resolve(path, workdir)
     if not p.exists():
         return {"path": str(p), "status": "not_found"}

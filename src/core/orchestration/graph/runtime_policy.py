@@ -421,6 +421,13 @@ def resolve_effective_tool_schemas(
 
             if selected_names:
                 bounded_names = selected_names[: max(1, tool_limit)]
+                from src.core.orchestration.pipeline.permissions import assert_lethal_trifecta_isolated
+
+                assert_lethal_trifecta_isolated(
+                    bounded_names,
+                    role=active_role,
+                    explore_mode=bool(getattr(orchestrator, "explore_mode", False)),
+                )
                 return reg.filter_by_names(bounded_names).get_openai_functions()
             if getattr(orchestrator, "explore_mode", False) or (active_role or "operational") not in ("operational", "general"):
                 return []

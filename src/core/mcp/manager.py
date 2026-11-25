@@ -54,8 +54,27 @@ class McpServerState:
         return "disconnected"
 
 
+def _wrap_mcp_output(value: Any, tool_name: str) -> Any:
+    """Wrap untrusted string payloads returned by MCP servers in a nonce-fenced envelope."""
+    from src.core.security.untrusted_envelopes import PROCESS_NONCE, wrap_untrusted
+
+    marker = f'<mcp_result nonce="{PROCESS_NONCE}"'
+    if isinstance(value, str):
+        if value.startswith(marker):
+            return value
+        return wrap_untrusted("mcp_result", value, attrs={"tool": tool_name})
+    if isinstance(value, dict):
+        wrapped = dict(value)
+        for key in ("content", "output", "text", "result"):
+            val = wrapped.get(key)
+            if isinstance(val, str) and val and not val.startswith(marker):
+                wrapped[key] = wrap_untrusted("mcp_result", val, attrs={"tool": tool_name})
+        return wrapped
+    return value
+
+
 class _LoopTaggingRegistryProxy:
-    """Proxy around a ToolRegistry that stamps ``_mcp_loop`` onto MCP tool callables."""
+    """Proxy around a ToolRegistry that stamps ``_mcp_loop`` and wraps MCP outputs."""
 
     def __init__(self, target: Any, loop: Optional[asyncio.AbstractEventLoop]) -> None:
         self._target = target
@@ -63,18 +82,22 @@ class _LoopTaggingRegistryProxy:
 
     def register(self, name: str, fn: Any, *args: Any, **kwargs: Any) -> Any:
         tagged = fn
-        if self._loop is not None and callable(fn):
-            try:
-                setattr(fn, "_mcp_loop", self._loop)
-            except Exception:
-                if inspect.iscoroutinefunction(fn):
-                    _orig = fn
+        if callable(fn):
+            _orig = fn
+            if inspect.iscoroutinefunction(fn):
+                async def _wrapped_async(*a: Any, **kw: Any) -> Any:
+                    return _wrap_mcp_output(await _orig(*a, **kw), name)
 
-                    async def _bound(*a: Any, **kw: Any) -> Any:
-                        return await _orig(*a, **kw)
+                if self._loop is not None:
+                    setattr(_wrapped_async, "_mcp_loop", self._loop)
+                tagged = _wrapped_async
+            else:
+                def _wrapped_sync(*a: Any, **kw: Any) -> Any:
+                    return _wrap_mcp_output(_orig(*a, **kw), name)
 
-                    setattr(_bound, "_mcp_loop", self._loop)
-                    tagged = _bound
+                if self._loop is not None:
+                    setattr(_wrapped_sync, "_mcp_loop", self._loop)
+                tagged = _wrapped_sync
         return self._target.register(name, tagged, *args, **kwargs)
 
     def __getattr__(self, item: str) -> Any:

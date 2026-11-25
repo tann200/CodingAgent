@@ -150,7 +150,9 @@ def _build_checkpoint_summary(
     if tools_used:
         lines.append(f"Tools executed in compacted turns: {', '.join(tools_used[:12])}")
     lines.append("</context_checkpoint>")
-    return {"role": "system", "content": "\n".join(lines)}
+    from src.core.security.untrusted_envelopes import wrap_untrusted
+
+    return {"role": "system", "content": wrap_untrusted("compaction_summary", "\n".join(lines))}
 
 
 def compact_history_atomic(

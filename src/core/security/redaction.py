@@ -98,6 +98,15 @@ SECRET_DIR_NAMES: Set[str] = {
     ".kube",
     ".docker",
     ".azure",
+    ".claude",
+    ".codex",
+}
+
+# Explicit doc/public allowlist that must stay readable
+_SAFE_DOC_VARIANTS: Set[str] = {
+    ".env.example",
+    ".env.sample",
+    ".env.template",
 }
 
 # Protected secret file names
@@ -107,10 +116,16 @@ SECRET_FILE_NAMES: Set[str] = {
     ".pgpass",
     ".pypirc",
     ".npmrc",
+    ".my.cnf",
+    ".git-credentials",
+    ".bash_history",
+    ".zsh_history",
+    ".psql_history",
+    ".python_history",
+    ".node_repl_history",
+    "fish_history",
     "id_rsa",
-    "id_rsa.pub",
     "id_ed25519",
-    "id_ed25519.pub",
     "id_ecdsa",
     "id_dsa",
     "authorized_keys",
@@ -119,6 +134,9 @@ SECRET_FILE_NAMES: Set[str] = {
     "service-account.json",
     "client_secret.json",
     "token.json",
+    "logins.json",
+    "key4.db",
+    "cert9.db",
 }
 
 # Protected secret file extensions
@@ -132,6 +150,111 @@ SECRET_EXTENSIONS: Set[str] = {
     ".keystore",
 }
 
+# Browser profile directory markers paired with credential stores
+_BROWSER_PROFILE_MARKERS: Set[str] = {
+    "google/chrome",
+    "chromium",
+    "firefox/profiles",
+    "arc/user data",
+    "brave-browser",
+    "microsoft edge",
+}
+_BROWSER_SECRET_FILES: Set[str] = {
+    "cookies",
+    "login data",
+    "web data",
+    "local state",
+    "logins.json",
+    "key4.db",
+    "cert9.db",
+}
+
+# Negated glob patterns appended after model globs in grep/ripgrep searches
+SECRET_SEARCH_EXCLUDE_GLOBS: tuple[str, ...] = (
+    ".env",
+    ".env.local",
+    ".env.production",
+    ".env.staging",
+    ".env.development",
+    ".env.secret",
+    "*.pem",
+    "*.key",
+    "*.p12",
+    "*.pfx",
+    "*.jks",
+    "*.keystore",
+    ".netrc",
+    ".pgpass",
+    ".pypirc",
+    ".npmrc",
+    ".my.cnf",
+    ".git-credentials",
+    ".bash_history",
+    ".zsh_history",
+    ".psql_history",
+    ".python_history",
+    ".node_repl_history",
+    "fish_history",
+    "id_rsa",
+    "id_ed25519",
+    "id_ecdsa",
+    "id_dsa",
+    "*-service-account*.json",
+    "firebase-adminsdk-*.json",
+    "client_secret*.json",
+)
+
+SECRET_SEARCH_EXCLUDE_DIRS: tuple[str, ...] = (
+    ".ssh",
+    ".aws",
+    ".gnupg",
+    ".kube",
+    ".docker",
+    ".azure",
+    ".claude",
+    ".codex",
+    ".git",
+)
+
+
+def is_git_internals_path(
+    path: Union[str, Path, None],
+    *,
+    for_write: bool = False,
+) -> bool:
+    """Return True if *path* targets protected git internal files/directories.
+
+    - ``for_write=True``: blocks ALL mutations under ``.git/**`` (or ``.git`` file).
+    - ``for_write=False``: blocks reads of ``.git/config``, ``.git/credentials``,
+      ``.git/hooks/**``, ``.git/modules/**/config``, and ``.git-credentials``.
+    """
+    if not path:
+        return False
+    p = Path(path)
+    parts_low = [part.lower() for part in p.parts]
+    name_low = p.name.lower()
+
+    if name_low == ".git-credentials":
+        return True
+
+    if ".git" not in parts_low:
+        return False
+
+    git_idx = parts_low.index(".git")
+    subparts = parts_low[git_idx + 1 :]
+    if for_write:
+        return True
+    if not subparts:
+        return False
+    first = subparts[0]
+    if first in ("config", "credentials", "hooks"):
+        return True
+    if first == "modules" and subparts[-1] == "config":
+        return True
+    if first == "worktrees" and subparts[-1] in ("config", "credentials"):
+        return True
+    return False
+
 
 def is_secret_path(path: Union[str, Path, None]) -> bool:
     """Determine whether a given path points to a secret-bearing file or credential."""
@@ -139,30 +262,49 @@ def is_secret_path(path: Union[str, Path, None]) -> bool:
         return False
     path_obj = Path(path)
     name = path_obj.name.lower()
+    norm_str = str(path_obj).replace("\\", "/").lower()
+
+    # 0. Explicit doc-variant & public-key allowlist (never secret unless inside a secret dir for non-pub)
+    if name in _SAFE_DOC_VARIANTS:
+        return False
+    if name.endswith(".pub") and not any(
+        d in {part.lower() for part in path_obj.parts}
+        for d in (".aws", ".gnupg", ".kube", ".docker", ".azure")
+    ):
+        return False
 
     # 1. Exact secret filenames
     if name in SECRET_FILE_NAMES or path_obj.name in SECRET_FILE_NAMES:
         return True
 
-    # 2. .env files (.env, .env.local, .env.production, etc., except .env.example)
-    if name.startswith(".env") and name != ".env.example":
+    # 2. .env files (.env, .env.local, .env.production, etc., except allowlisted doc variants)
+    if name.startswith(".env") and name not in _SAFE_DOC_VARIANTS:
         return True
 
     # 3. Secret extensions (.pem, .key, etc.)
     if path_obj.suffix.lower() in SECRET_EXTENSIONS:
         return True
 
-    # 4. Check directory components (.ssh/, .aws/, etc.)
-    parts = set(part.lower() for part in path_obj.parts)
+    # 4. Check directory components (.ssh/, .aws/, .claude/, .codex/, etc.)
+    parts = {part.lower() for part in path_obj.parts}
     if any(secret_dir in parts for secret_dir in SECRET_DIR_NAMES):
         return True
 
-    # 5. Sensitive token/credential file patterns (e.g. client_secret_*.json, id_rsa_*)
+    # 5. Browser credential stores
+    if name in _BROWSER_SECRET_FILES and any(m in norm_str for m in _BROWSER_PROFILE_MARKERS):
+        return True
+
+    # 6. Sensitive token/credential/key patterns
+    # Extension-less id_* private keys (e.g. id_rsa, id_ed25519, id_work)
+    if name.startswith("id_") and "." not in name:
+        return True
     if (
         name.startswith("id_rsa")
         or name.startswith("id_ed25519")
         or "client_secret" in name
         or "service_account" in name
+        or "service-account" in name
+        or name.startswith("firebase-adminsdk-")
     ):
         return True
 

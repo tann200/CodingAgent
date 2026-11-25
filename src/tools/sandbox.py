@@ -234,11 +234,79 @@ def _sbpl_escape(p: str) -> str:
     return p.replace("\\", "\\\\").replace('"', '\\"')
 
 
+# TASK-31: Host credential directories masked inside OS sandboxes by default
+_MASKED_HOME_DIRS: tuple[str, ...] = (".ssh", ".aws", ".gnupg", ".kube", ".docker")
+_MASKED_XDG_DIRS: tuple[str, ...] = ("gh", "gcloud", "op", "sops/age")
+
+
+def _resolve_sandbox_expose(sandbox_expose: Optional[List[str]] = None) -> List[Path]:
+    """Combine explicit *sandbox_expose* paths with ``CODINGAGENT_SANDBOX_EXPOSE`` env var."""
+    raw_items: List[str] = list(sandbox_expose or [])
+    env_val = os.environ.get("CODINGAGENT_SANDBOX_EXPOSE", "").strip()
+    if env_val:
+        for part in env_val.split(os.pathsep):
+            if part.strip():
+                raw_items.append(part.strip())
+    resolved: List[Path] = []
+    for item in raw_items:
+        try:
+            p = Path(item).expanduser().resolve()
+            if p not in resolved:
+                resolved.append(p)
+        except Exception:
+            continue
+    return resolved
+
+
+def _resolve_masked_credential_dirs(
+    cwd: Path,
+    sandbox_expose: Optional[List[str]] = None,
+    *,
+    only_existing: bool = False,
+) -> tuple[List[Path], List[Path]]:
+    """Return ``(masked_dirs, exposed_dirs)`` for sandbox credential isolation.
+
+    Respects ``XDG_CONFIG_HOME`` when absolute, falling back to ``~/.config``.
+    Never masks a directory that is an ancestor of *cwd*.
+    """
+    home = Path.home()
+    xdg_raw = os.environ.get("XDG_CONFIG_HOME", "").strip()
+    if xdg_raw and os.path.isabs(xdg_raw):
+        xdg_base = Path(xdg_raw)
+    else:
+        xdg_base = home / ".config"
+
+    candidates: List[Path] = [home / rel for rel in _MASKED_HOME_DIRS]
+    candidates += [xdg_base / rel for rel in _MASKED_XDG_DIRS]
+
+    cwd_res = cwd.resolve()
+    exposed = _resolve_sandbox_expose(sandbox_expose)
+    masked: List[Path] = []
+    for cand in candidates:
+        try:
+            cand_res = cand.resolve()
+        except Exception:
+            cand_res = cand
+        if only_existing and not cand_res.exists():
+            continue
+        # Never mask an ancestor of cwd (e.g. if user is running inside a test dir under ~/.config)
+        try:
+            cwd_res.relative_to(cand_res)
+            continue
+        except ValueError:
+            pass
+        if cand_res not in masked:
+            masked.append(cand_res)
+
+    return masked, exposed
+
+
 def _build_sandbox_exc_profile(
     cwd: Path,
     level: str,
     private_tmp: Optional[Path] = None,
     network: bool = False,
+    sandbox_expose: Optional[List[str]] = None,
 ) -> str:
     """Generate a sandbox-exec profile string for the given *level*.
 
@@ -246,6 +314,9 @@ def _build_sandbox_exc_profile(
     - Allows read-only access to /usr, /bin, /sbin, /System, /Library
     - Denies all writes by default
     - Allows writable access to *cwd* and private temporary dir only
+    - Denies reads of host credential dirs (~/.ssh, ~/.aws, ~/.gnupg, ~/.kube,
+      ~/.docker, $XDG_CONFIG_HOME/{gh,gcloud,op,sops/age}) using SBPL
+      last-match-wins ordering, with explicit *sandbox_expose* overrides after.
     - Denies network unless *network=True*
     """
     cwd_str = _sbpl_escape(str(cwd.resolve()))
@@ -293,6 +364,24 @@ def _build_sandbox_exc_profile(
         if Path(d).exists():
             lines.append(f'(allow file-read* (subpath "{d}"))')
 
+    # TASK-31: SBPL uses last-match-wins — deny credential dirs AFTER broad allows,
+    # and place explicit --sandbox-expose allows AFTER the deny block.
+    masked_dirs, exposed_dirs = _resolve_masked_credential_dirs(
+        cwd, sandbox_expose=sandbox_expose, only_existing=False
+    )
+    if masked_dirs:
+        lines += ["", ";; ---- mask host credential directories (last-match-wins) ----"]
+        lines.append("(deny file-read*")
+        for mdir in masked_dirs:
+            lines.append(f'    (subpath "{_sbpl_escape(str(mdir))}")')
+        lines.append(")")
+    if exposed_dirs:
+        lines += ["", ";; ---- explicit --sandbox-expose overrides ----"]
+        lines.append("(allow file-read*")
+        for edir in exposed_dirs:
+            lines.append(f'    (subpath "{_sbpl_escape(str(edir))}")')
+        lines.append(")")
+
     if level == "full":
         lines += [
             "",
@@ -307,6 +396,7 @@ def _write_sandbox_exc_profile(
     level: str,
     private_tmp: Optional[Path] = None,
     network: bool = False,
+    sandbox_expose: Optional[List[str]] = None,
 ) -> str:
     """Write a temporary sandbox-exec profile and return its path.
 
@@ -314,7 +404,7 @@ def _write_sandbox_exc_profile(
     process exits (deleted by the OS on close in /tmp).
     """
     profile_content = _build_sandbox_exc_profile(
-        cwd, level, private_tmp=private_tmp, network=network
+        cwd, level, private_tmp=private_tmp, network=network, sandbox_expose=sandbox_expose
     )
     # Use a named temp file so sandbox-exec can read it
     fd, path = tempfile.mkstemp(suffix=".sb", prefix="codingagent-sandbox-")
@@ -381,6 +471,7 @@ def _build_bwrap_args(
     cwd: Path,
     level: str,
     extra_writable_dirs: Optional[List[str]] = None,
+    sandbox_expose: Optional[List[str]] = None,
 ) -> List[str]:
     """Build the bwrap command prefix for the given *level*."""
     args: List[str] = [_BWRAP_PATH or "bwrap"]
@@ -441,6 +532,16 @@ def _build_bwrap_args(
         if d_str.startswith("/tmp/"):
             args += ["--dir", d_str]
         args += ["--bind", d_str, d_str]
+
+    # TASK-31: Mask host credential dirs with empty tmpfs mounts; re-bind explicit --sandbox-expose after
+    masked_dirs, exposed_dirs = _resolve_masked_credential_dirs(
+        cwd, sandbox_expose=sandbox_expose, only_existing=True
+    )
+    for mdir in masked_dirs:
+        args += ["--tmpfs", str(mdir)]
+    for edir in exposed_dirs:
+        if edir.exists():
+            args += ["--ro-bind", str(edir), str(edir)]
 
     if level in ("workspace", "full"):
         # Isolate PID namespace
@@ -544,6 +645,7 @@ def run_sandboxed(
     timeout: float = 60.0,
     network: bool = False,
     sandbox_level: Optional[str] = None,
+    sandbox_expose: Optional[List[str]] = None,
     **kwargs,
 ) -> subprocess.CompletedProcess:
     """Run *cmd* optionally inside a sandbox.
@@ -584,7 +686,7 @@ def run_sandboxed(
     # 2. Try bwrap (Linux / installed manually)
     if _bwrap_available():
         try:
-            prefix = _build_bwrap_args(cwd, level)
+            prefix = _build_bwrap_args(cwd, level, sandbox_expose=sandbox_expose)
             if network:
                 # Remove --unshare-net if present
                 try:
@@ -626,7 +728,7 @@ def run_sandboxed(
                 private_tmp = Path(_tf.mkdtemp(prefix="codingagent-sandbox-tmp-"))
                 try:
                     profile_path = _write_sandbox_exc_profile(
-                        cwd, level, private_tmp=private_tmp, network=network
+                        cwd, level, private_tmp=private_tmp, network=network, sandbox_expose=sandbox_expose
                     )
                 except TypeError:
                     # Backwards compatibility for tests mocking 3-arg _write_sandbox_exc_profile

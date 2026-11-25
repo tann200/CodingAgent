@@ -314,6 +314,16 @@ def _parse_args(argv: list) -> argparse.Namespace:
         help="Bash sandbox strictness (overrides CODINGAGENT_SANDBOX_LEVEL env var).",
     )
     parser.add_argument(
+        "--sandbox-expose",
+        metavar="PATH",
+        action="append",
+        default=None,
+        help=(
+            "Explicitly expose a host path read-only inside the OS sandbox "
+            "(overrides default credential-directory masking; repeatable)."
+        ),
+    )
+    parser.add_argument(
         "--autonomous",
         action="store_true",
         default=False,
@@ -1069,6 +1079,12 @@ def main(argv: Optional[list] = None) -> int:
             set_sandbox_level(args.sandbox_level)
         except Exception:
             pass
+
+    if getattr(args, "sandbox_expose", None):
+        existing_expose = os.environ.get("CODINGAGENT_SANDBOX_EXPOSE", "").strip()
+        parts = [p for p in existing_expose.split(os.pathsep) if p] if existing_expose else []
+        parts.extend(str(p) for p in args.sandbox_expose if p)
+        os.environ["CODINGAGENT_SANDBOX_EXPOSE"] = os.pathsep.join(parts)
 
     # AUTO-01: Apply autonomous mode flag
     if args.autonomous:

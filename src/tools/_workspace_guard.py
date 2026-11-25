@@ -6,7 +6,10 @@ When the core module is unavailable (e.g., during testing), a no-op fallback is 
 """
 
 import logging
-from typing import Dict
+import os
+import stat
+from pathlib import Path
+from typing import Any, Dict, Optional, Union
 
 
 class WorkspaceGuard:
@@ -49,3 +52,95 @@ except ImportError:
         "Could not import real WorkspaceGuard from src.core.orchestration.workspace_guard; "
         "using no-op fallback. Security checks will be bypassed."
     )
+
+
+def check_file_safety(
+    path: Union[str, Path],
+    *,
+    workdir: Optional[Path] = None,
+    for_write: bool = False,
+    allow_secret_override: bool = False,
+) -> Optional[Dict[str, Any]]:
+    """Defense-in-depth lexical + realpath file safety check (TASK-31).
+
+    Checks:
+      1. Git internals protection (all writes under ``.git/**``; reads of
+         ``.git/{config,credentials,hooks/**,modules/**/config}``).
+      2. Secret path protection on both lexical path and ``os.path.realpath()``.
+      3. Dangling symlink write refusal (``is_symlink() and not exists()``).
+      4. Multi-hardlink regular file protection (``st_nlink > 1`` via ``lstat``)
+         to prevent hardlinking host credentials (e.g. ``~/.ssh/id_rsa``) into
+         the workspace.
+
+    Returns ``None`` when safe, or a structured error dict with ``reason_code``
+    and ``recoverable=False`` when blocked.
+    """
+    from src.core.security.redaction import is_git_internals_path, is_secret_path as _is_sec
+
+    raw_p = Path(path)
+    lexical = raw_p if raw_p.is_absolute() else ((workdir or Path.cwd()) / raw_p)
+    try:
+        real = Path(os.path.realpath(str(lexical)))
+    except Exception:
+        real = lexical
+
+    # 1. Git internals protection (both lexical and realpath)
+    if is_git_internals_path(lexical, for_write=for_write) or is_git_internals_path(
+        real, for_write=for_write
+    ):
+        return {
+            "path": str(lexical),
+            "status": "error",
+            "error": (
+                f"Access denied: '{raw_p}' targets protected git internals. "
+                "Direct access to git config, credentials, hooks, or .git mutations is restricted."
+            ),
+            "reason_code": "git_internals_protected",
+            "recoverable": False,
+        }
+
+    # 2. Secret path protection (both lexical and realpath)
+    if not allow_secret_override and (_is_sec(lexical) or _is_sec(real)):
+        return {
+            "path": str(lexical),
+            "status": "error",
+            "error": (
+                f"Protected secret file: '{raw_p.name}'. Access denied; "
+                "reading or modifying credentials and private keys is restricted."
+            ),
+            "reason_code": "secret_file_protected",
+            "recoverable": False,
+        }
+
+    # 3. Dangling symlink refusal on writes (before following symlink)
+    try:
+        if for_write and lexical.is_symlink() and not lexical.exists():
+            return {
+                "path": str(lexical),
+                "status": "error",
+                "error": f"Write denied: '{raw_p}' is a dangling symlink.",
+                "reason_code": "dangling_symlink_protected",
+                "recoverable": False,
+            }
+    except OSError:
+        pass
+
+    # 4. Hardlink laundering guard (lstat before open; refuse regular files with st_nlink > 1)
+    for probe in (lexical, real):
+        try:
+            st = os.lstat(probe)
+            if stat.S_ISREG(st.st_mode) and st.st_nlink > 1:
+                return {
+                    "path": str(lexical),
+                    "status": "error",
+                    "error": (
+                        f"Access denied: '{raw_p}' has multiple hardlinks (st_nlink={st.st_nlink}). "
+                        "Multi-linked files are blocked to prevent credential laundering."
+                    ),
+                    "reason_code": "multi_link_file_protected",
+                    "recoverable": False,
+                }
+        except OSError:
+            continue
+
+    return None

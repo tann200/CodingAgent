@@ -358,3 +358,43 @@ def _run_permission_gate(
     if not granted or denied:
         return {"ok": False, "error": f"Tool '{name}' was denied by the user."}
     return None
+
+
+_LETHAL_TRIFECTA_MUTATING_TOOLS: frozenset[str] = frozenset(
+    {
+        "write_file",
+        "edit_file",
+        "edit_file_atomic",
+        "edit_by_line_range",
+        "multiedit",
+        "apply_patch",
+        "delete_file",
+        "rename_file",
+        "create_directory",
+        "bash",
+        "run_tests",
+        "git_commit",
+        "delegate_task",
+    }
+)
+_READONLY_INGESTION_ROLES: frozenset[str] = frozenset(
+    {"scout", "analyst", "explore", "researcher", "planner", "strategic"}
+)
+
+
+def assert_lethal_trifecta_isolated(
+    tool_names: Collection[str],
+    *,
+    role: str = "",
+    explore_mode: bool = False,
+) -> None:
+    """Fail closed if a read-only / untrusted-ingestion role admits any mutating tool (TASK-31)."""
+    norm_role = (role or "").strip().lower()
+    if not explore_mode and norm_role not in _READONLY_INGESTION_ROLES:
+        return
+    admitted_mutating = sorted(set(tool_names) & _LETHAL_TRIFECTA_MUTATING_TOOLS)
+    if admitted_mutating:
+        raise PermissionError(
+            f"Lethal-trifecta isolation violation: read-only role '{norm_role or 'explore'}' "
+            f"cannot admit mutating tools {admitted_mutating}."
+        )

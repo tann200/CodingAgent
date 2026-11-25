@@ -77,7 +77,7 @@ codingagent --task "Plan an upgrade" --dry-run
 
 `--autonomous` does not approve gated tools unless their canonical names are explicitly passed with `--autonomous-approve`. Do not use `--autonomous-approve '*'` unless you accept every gated action.
 
-Shell containment fails closed by default when an enforcing sandbox backend is unavailable (or can be configured via `CODINGAGENT_SANDBOX_ALLOW_UNENFORCED=1`). Treat server-enabled deployments as trusted local use only.
+Shell containment fails closed by default when an enforcing sandbox backend is unavailable (or can be configured via `CODINGAGENT_SANDBOX_ALLOW_UNENFORCED=1`). Inside enforcing sandboxes (`bwrap` / macOS `sandbox-exec`), host credential directories (`~/.ssh`, `~/.aws`, `~/.gnupg`, `~/.kube`, `~/.docker`, `$XDG_CONFIG_HOME/{gh,gcloud,op,sops/age}`) are masked by default; pass `--sandbox-expose <path>` (repeatable) to expose a specific path read-only when required. File reads/writes and `grep` enforce lexical + realpath checks blocking secret files (while keeping `.env.example`/`.sample`/`.template` and `*.pub` readable), `.git` internals, dangling symlink writes, and multi-hardlink (`st_nlink > 1`) files. Treat server-enabled deployments as trusted local use only.
 
 ## Test And Quality Commands
 

@@ -231,4 +231,6 @@ def render_instruction_files(files: list[InstructionFile]) -> str:
         sections.append(f"## {label}")
         sections.append(raw)
 
-    return "\n\n".join(sections)
+    from src.core.security.untrusted_envelopes import wrap_untrusted
+
+    return wrap_untrusted("project_instructions", "\n\n".join(sections))

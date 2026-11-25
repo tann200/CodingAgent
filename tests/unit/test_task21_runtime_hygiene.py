@@ -351,10 +351,11 @@ def test_mcp_tool_call_after_run_deferred_init_sync_uses_live_loop_and_closes_cl
             # Execute the registered MCP tool through the live Orchestrator dispatch boundary
             tool_res = orch.execute_tool({"name": "demo/ping", "arguments": {"msg": "hello"}})
             assert tool_res.get("ok") is True
-            assert tool_res.get("output") == "pong:hello" or (
-                isinstance(tool_res.get("result"), dict)
-                and tool_res["result"].get("output") == "pong:hello"
+            out_text = tool_res.get("output") or (
+                tool_res["result"].get("output") if isinstance(tool_res.get("result"), dict) else ""
             )
+            assert "pong:hello" in str(out_text)
+            assert "<mcp_result nonce=" in str(out_text)
             assert lifecycle["call_loop"] is lifecycle["connect_loop"]
             assert lifecycle["calls"] == [("ping", "hello")]
         finally:

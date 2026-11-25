@@ -484,10 +484,17 @@ def read_web_page(url: str, format: str = "markdown") -> Dict[str, Any]:
             content = _strip_html(content)
 
         truncated = len(content) > _MAX_WEB_PAGE_CHARS or stream_capped
+        from src.core.security.untrusted_envelopes import wrap_untrusted
+
+        wrapped_content = wrap_untrusted(
+            "web_content",
+            content[:_MAX_WEB_PAGE_CHARS],
+            attrs={"url": final_url},
+        )
         return {
             "status": "ok",
             "url": final_url,
-            "content": content[:_MAX_WEB_PAGE_CHARS],
+            "content": wrapped_content,
             "truncated": truncated,
         }
     except PermissionError as pe:

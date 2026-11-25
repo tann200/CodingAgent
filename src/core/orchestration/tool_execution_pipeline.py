@@ -221,6 +221,8 @@ def execute_tool_impl(orch: Any, tool_call: Dict[str, Any]) -> Dict[str, Any]:
         except Exception:
             pass
 
+    # TASK-31: PreToolUse hooks run strictly AFTER PermissionPolicy/_run_permission_gate;
+    # a hook can deny an already-permitted call but can NEVER escalate a deny/ask verdict.
     try:
         hook_runner = getattr(orch, "_tool_hook_runner", None)
         if hook_runner is None:
@@ -230,6 +232,7 @@ def execute_tool_impl(orch: Any, tool_call: Dict[str, Any]) -> Dict[str, Any]:
             hook_runner = ToolHookRunner(
                 working_dir=orch.working_dir,
                 trusted=is_trusted(orch),
+                require_hash_trust=True,
             )
             orch._tool_hook_runner = hook_runner
         hook_result = hook_runner.run_pre(name, args)

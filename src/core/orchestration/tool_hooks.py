@@ -39,6 +39,7 @@ from __future__ import annotations
 
 import asyncio
 import fnmatch
+import hashlib
 import json
 import logging
 import os
@@ -58,6 +59,60 @@ _STDERR_CAP = 500  # chars from hook stderr reported back to caller
 _GLOBAL_HOOKS_PATH = get_hooks_path()
 
 
+def _trusted_hooks_store_path() -> Path:
+    override = os.environ.get("CODINGAGENT_TRUSTED_HOOKS_PATH", "").strip()
+    if override:
+        return Path(override)
+    return Path.home() / ".codingagent" / "trusted_hooks.json"
+
+
+def compute_hook_sha256(path: Path) -> str:
+    """Return the hex SHA-256 digest of a project hook config or script file."""
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def _load_trusted_hook_hashes() -> Dict[str, str]:
+    store = _trusted_hooks_store_path()
+    if not store.is_file():
+        return {}
+    try:
+        data = json.loads(store.read_text(encoding="utf-8"))
+        if isinstance(data, dict):
+            return {str(k): str(v) for k, v in data.items()}
+    except Exception:
+        pass
+    return {}
+
+
+def approve_project_hook(path: Path) -> str:
+    """Record the current SHA-256 digest of *path* in the user's trusted-hooks store."""
+    resolved = path.resolve()
+    digest = compute_hook_sha256(resolved)
+    store = _trusted_hooks_store_path()
+    hashes = _load_trusted_hook_hashes()
+    hashes[str(resolved)] = digest
+    store.parent.mkdir(parents=True, exist_ok=True)
+    store.write_text(json.dumps(hashes, indent=2, sort_keys=True), encoding="utf-8")
+    return digest
+
+
+def is_project_hook_hash_trusted(path: Path) -> bool:
+    """Return True iff *path*'s current on-disk SHA-256 matches an explicitly approved hash."""
+    if os.environ.get("CODINGAGENT_AUTO_TRUST_HOOKS", "").strip().lower() in ("1", "true", "yes"):
+        return True
+    try:
+        resolved = path.resolve()
+        if not resolved.is_file():
+            return False
+        hashes = _load_trusted_hook_hashes()
+        expected = hashes.get(str(resolved))
+        if not expected:
+            return False
+        return compute_hook_sha256(resolved) == expected
+    except Exception:
+        return False
+
+
 @dataclass
 class HookResult:
     allowed: bool = True
@@ -74,12 +129,15 @@ def _load_hook_config(
     working_dir: Optional[Path],
     *,
     trusted: Optional[bool] = None,
+    require_hash_trust: bool = False,
 ) -> _HookConfig:
     """Merge global hooks.json with workspace .codingAgent/hooks.json.
 
     Workspace entries and stub scripts are ONLY loaded when the workspace is
-    trusted (``trusted=True`` or ``is_trusted()``). Untrusted repositories must
-    never execute repo-controlled hook commands automatically.
+    trusted (``trusted=True`` or ``is_trusted()``). When *require_hash_trust*
+    is True, each project hook file must also match its approved SHA-256 hash
+    in ``~/.codingagent/trusted_hooks.json`` (fail-closed on first encounter or
+    tampering).
     """
     entries: Dict[str, List] = {"pre_tool": [], "post_tool": []}
     if trusted is None:
@@ -92,12 +150,19 @@ def _load_hook_config(
     else:
         ws_trusted = bool(trusted)
 
-    paths: List[Optional[Path]] = [_GLOBAL_HOOKS_PATH]
+    paths: List[tuple[Optional[Path], bool]] = [(_GLOBAL_HOOKS_PATH, False)]
     if ws_trusted:
-        paths.append(_workspace_hooks_path(working_dir))
+        paths.append((_workspace_hooks_path(working_dir), True))
 
-    for path in paths:
+    for path, is_project in paths:
         if path is None or not path.is_file():
+            continue
+        if is_project and require_hash_trust and not is_project_hook_hash_trusted(path):
+            logger.warning(
+                "tool_hooks: skipping unapproved or modified project hook config %s "
+                "(approve SHA-256 digest before execution)",
+                path,
+            )
             continue
         try:
             data = json.loads(path.read_text(encoding="utf-8"))
@@ -110,16 +175,11 @@ def _load_hook_config(
 
     # Auto-detect .codingAgent/hooks/pre_tool.sh / post_tool.sh stubs ONLY in trusted workspaces.
     if ws_trusted and working_dir is not None:
-        # Resolve the configured agent-context directory using the central
-        # helper when available; fall back to the legacy location if needed.
         try:
             from src.tools.tools_config import agent_context_path
 
             stub_dir = agent_context_path(working_dir) / "hooks"
         except Exception:
-            # Fallback to legacy logic: configured ctx name env var or configured
-            # default. Use .agent-context as a safe legacy fallback when tools_config
-            # is not importable.
             import os as _os
 
             ctx_name = _os.getenv("CODINGAGENT_CONTEXT_DIR") or ".codingAgent"
@@ -130,6 +190,12 @@ def _load_hook_config(
         )
         for key, stub_path in _sh_map:
             if not entries[key] and stub_path.is_file():
+                if require_hash_trust and not is_project_hook_hash_trusted(stub_path):
+                    logger.warning(
+                        "tool_hooks: skipping unapproved or modified project hook script %s",
+                        stub_path,
+                    )
+                    continue
                 entries[key].append({"match": "*", "cmd": str(stub_path)})
                 logger.debug("tool_hooks: auto-wired stub %s", stub_path)
 
@@ -220,14 +286,20 @@ class ToolHookRunner:
         self,
         working_dir: Optional[Path] = None,
         trusted: Optional[bool] = None,
+        require_hash_trust: bool = False,
     ) -> None:
         self._working_dir = working_dir
         self._trusted = trusted
+        self._require_hash_trust = require_hash_trust
         self._config: Optional[_HookConfig] = None
 
     def _get_config(self) -> _HookConfig:
         if self._config is None:
-            self._config = _load_hook_config(self._working_dir, trusted=self._trusted)
+            self._config = _load_hook_config(
+                self._working_dir,
+                trusted=self._trusted,
+                require_hash_trust=self._require_hash_trust,
+            )
         return self._config
 
     def reload(self) -> None:

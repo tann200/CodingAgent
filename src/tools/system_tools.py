@@ -67,6 +67,20 @@ def grep(
     except PermissionError as e:
         return ToolResult.failure(str(e), ErrorCode.PERMISSION).to_dict()
 
+    from src.tools._workspace_guard import check_file_safety as _check_file_safety
+    from src.core.security.redaction import (
+        SECRET_SEARCH_EXCLUDE_DIRS,
+        SECRET_SEARCH_EXCLUDE_GLOBS,
+        is_git_internals_path,
+    )
+
+    safety_err = _check_file_safety(path, workdir=workdir, for_write=False)
+    if safety_err is not None:
+        return ToolResult.failure(
+            str(safety_err.get("error") or "Access denied"),
+            ErrorCode.PERMISSION,
+        ).to_dict()
+
     if is_secret_path(search_path):
         return ToolResult.failure(
             f"Access denied: '{search_path.name}' is a protected secret file.",
@@ -82,17 +96,11 @@ def grep(
         ]
         if include:
             cmd += [f"--include={include}"]
-        cmd += [
-            "--exclude=.env*",
-            "--exclude=*.pem",
-            "--exclude=*.key",
-            "--exclude=.netrc",
-            "--exclude=.pgpass",
-            "--exclude-dir=.ssh",
-            "--exclude-dir=.aws",
-            "--exclude-dir=.kube",
-            "--exclude-dir=.git",
-        ]
+        # Always append negated secret globs AFTER model-provided --include globs (TASK-31)
+        for pat in SECRET_SEARCH_EXCLUDE_GLOBS:
+            cmd.append(f"--exclude={pat}")
+        for d in SECRET_SEARCH_EXCLUDE_DIRS:
+            cmd.append(f"--exclude-dir={d}")
         if context > 0:
             cmd += ["-C", str(context)]
         cmd += ["-e", pattern, "--", str(search_path)]
@@ -169,7 +177,9 @@ def grep(
         for p in candidates:
             if not p.is_file():
                 continue
-            if is_secret_path(p):
+            if is_secret_path(p) or is_git_internals_path(p, for_write=False):
+                continue
+            if _check_file_safety(p, workdir=workdir, for_write=False) is not None:
                 continue
             if include and not (
                 fnmatch.fnmatch(p.name, include)

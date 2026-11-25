@@ -81,21 +81,25 @@
 
 ### 4.2 File Safety & Pre-Write Guardrail Parity
 All mutating file/AST/LSP/Git tools (`write_file`, `edit_file`, `edit_file_atomic`, `edit_by_line_range`, `multiedit`, `edit_code_block`, `apply_patch`, `delete_file`, `rename_file`, `create_directory`, `ast_rename`, `lsp_rename`, `git_restore`) MUST enforce in order:
-1. `safe_resolve(path, workdir)` confinement (`Path.cwd()` MUST NOT substitute for `workdir`).
-2. `WorkspaceGuard` check (exact basename / path-boundary suffix matching, never unanchored `.endswith()`).
-3. `_check_project_deny_write` check (normalized relative to resolved `workdir`).
-4. `check_read_before_write` (resolving against `workdir`).
-5. Binary & UTF-8 text validation before textual edits (rejecting `\x00` or invalid UTF-8 cleanly; storing binary snapshots losslessly without `errors="replace"` corruption on rollback).
-6. Atomic writes via `mkstemp` + `os.replace` (`_atomic_write`).
+1. `check_file_safety()` lexical + `os.path.realpath()` check blocking `.git` internals (`git_internals_protected`), secret files (while keeping `.env.example`/`.sample`/`.template` and `*.pub` readable), dangling symlink writes (`dangling_symlink_protected`), and multi-hardlink regular files (`st_nlink > 1`, `multi_link_file_protected`).
+2. `safe_resolve(path, workdir)` confinement (`Path.cwd()` MUST NOT substitute for `workdir`).
+3. `WorkspaceGuard` check (exact basename / path-boundary suffix matching, never unanchored `.endswith()`).
+4. `_check_project_deny_write` check (normalized relative to resolved `workdir`).
+5. `check_read_before_write` (resolving against `workdir`; a Context-Aware Read Guard preview MUST NOT satisfy full-file overwrite).
+6. Binary & UTF-8 text validation before textual edits (rejecting `\x00` or invalid UTF-8 cleanly; storing binary snapshots losslessly without `errors="replace"` corruption on rollback).
+7. Atomic writes via `mkstemp` + `os.replace` (`_atomic_write`).
 
 ### 4.3 Shell Security, Sandboxing & Network Isolation
 - `_check_workdir_confinement()` MUST NOT exempt `bash` or `run_tests` from `PermissionPolicy` / `PermissionLevel` gating.
+- `PreToolUse` hooks MUST run strictly after `PermissionPolicy` / permission gating (never escalating a `deny`/`ask` verdict), and project `.codingAgent/hooks*` files require SHA-256 trust confirmation in live runs.
+- Read-only / untrusted-ingestion roles (`scout`, `analyst`, `explore`, `researcher`, `planner`, `strategic`) MUST fail closed via `assert_lethal_trifecta_isolated()` if any mutating tool is admitted.
 - Shell analysis in both `bash()` and `bash_readonly()` MUST enforce recursive interpreter/flag checks across `env`, `xargs`, `find -exec`, versioned binaries (`python3.11`), and combined short flags (`-Bc`), plus `is_secret_path` argument blocking.
 - `run_sandboxed()` (`src/tools/sandbox.py`) MUST:
   1. Execute via `_run_subprocess_proc_group()` so timeouts and cancellations kill the entire process tree.
   2. Reject `sandbox_level="off"` whenever mandatory enforcement (`_REQUIRE_ENFORCEMENT` or autonomous mode) is active.
   3. Distinguish `env={}` from `env=None` and scrub sensitive environment variables (`*_KEY`, `*_TOKEN`, `*_SECRET`, `*_PASSWORD`) by default.
-  4. Never allow callers (`lint_dispatch.py`, `verification_tools.py`, `tool_execution_pipeline.py`) to catch sandbox `RuntimeError` and fall back to unsandboxed `subprocess.run()`.
+  4. Mask host credential directories (`~/.ssh`, `~/.aws`, `~/.gnupg`, `~/.kube`, `~/.docker`, `$XDG_CONFIG_HOME/{gh,gcloud,op,sops/age}`) using SBPL last-match-wins `(deny file-read*)` or `bwrap --tmpfs`, honoring explicit `--sandbox-expose` overrides placed after the deny/tmpfs mask.
+  5. Never allow callers (`lint_dispatch.py`, `verification_tools.py`, `tool_execution_pipeline.py`) to catch sandbox `RuntimeError` and fall back to unsandboxed `subprocess.run()`.
 - Network tools (`web_tools.py`, `remote_skills.py`) MUST reject octal/hex/private/link-local IPs, fail closed on DNS failures, disable automatic redirects and revalidate every redirect hop, pin validated socket peer IPs, and sanitize remote cache filenames.
 - Parallel subagents (`delegate_tasks_parallel`) MUST isolate permissions via thread-local `_ACTIVE_AGENT_CTX` (`ContextVar`), MUST NOT mutate shared `parent_orchestrator.active_agent`, and MUST keep `"delegate"` and `"batch"` inside `DELEGATION_DENYLIST` where appropriate.
 
