@@ -70,7 +70,42 @@ jobs:
           python -m ruff check src tests tui --select=E,F,W --ignore=E501
       - name: Type check (mypy)
         run: |
-          python -m mypy src/server src/core/evaluation src/core/telemetry src/core/observability src/core/security src/core/scheduler src/core/plugin src/cli src/core/inference/provider_utils.py src/core/orchestration/tool_contracts.py src/core/orchestration/tool_parser.py --ignore-missing-imports --follow-imports=silent --disable-error-code=import-untyped --no-error-summary
+          python -m mypy \
+            src/server \
+            src/core/evaluation \
+            src/core/telemetry \
+            src/core/observability \
+            src/core/security \
+            src/core/scheduler \
+            src/core/plugin \
+            src/core/mcp \
+            src/cli \
+            src/core/inference/provider_utils.py \
+            src/core/inference/kv_cache_governor.py \
+            src/core/inference/model_tiers.py \
+            src/core/inference/hardware_capability_profile.py \
+            src/core/inference/local_runtime_autotune.py \
+            src/core/inference/adapters/llama_server_adapter.py \
+            src/core/inference/adapters/mlx_adapter.py \
+            src/core/orchestration/runner.py \
+            src/core/orchestration/pipeline \
+            src/core/orchestration/tool_contracts.py \
+            src/core/orchestration/tool_parser.py \
+            src/core/orchestration/graph/builder.py \
+            src/core/orchestration/graph/canonical_routing.py \
+            src/core/orchestration/graph/state.py \
+            src/core/orchestration/graph/state_schemas.py \
+            src/core/orchestration/graph/policy.py \
+            src/core/orchestration/graph/runtime_policy.py \
+            src/core/memory/jsonl_io.py \
+            src/core/memory/session_store.py \
+            src/core/memory/compaction_engine.py \
+            src/core/memory/compaction_service.py \
+            src/core/messaging/events.py \
+            src/core/messaging/event_types.py \
+            src/core/indexing/vector_store.py \
+            src/tools/bash_security.py \
+            --ignore-missing-imports --follow-imports=silent --disable-error-code=import-untyped --no-error-summary
 
   unit-tests:
     runs-on: ubuntu-latest

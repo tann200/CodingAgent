@@ -761,12 +761,23 @@ def build_doctor_diagnosis(args: Any = None) -> Dict[str, Any]:
     elif any(p.get("status") in ("warning", "no_credentials") for p in provider_results):
         overall_status = "warning"
 
+    # Zero-config local runtime auto-tune profile (TASK-27)
+    try:
+        from src.core.inference.local_runtime_autotune import detect_local_runtime_profile
+
+        local_autotune = detect_local_runtime_profile(
+            existing_provider_results=provider_results
+        )
+    except Exception:
+        local_autotune = {}
+
     return {
         "status": overall_status,
         "system": sys_diag,
         "hardware": hw_diag,
         "sandbox": sb_diag,
         "providers": provider_results,
+        "local_autotune": local_autotune,
         "recommendations": all_recommendations,
         "online_count": online_count,
         "provider_filter": provider_filter,
@@ -796,6 +807,14 @@ def format_doctor_tui_markup(diag: Dict[str, Any]) -> str:
     lines.append(f"  • Hardware:    {mem_str} | {hw.get('cpu_cores', 0)} cores ({hw.get('cpu_threads', 0)} threads)")
     rec_ctx = hw.get("recommended_context") or {}
     lines.append(f"  • Context Cap: Compact 9–14B: [green]{rec_ctx.get('compact_9b_14b', 0):,} tokens[/] | Standard: {rec_ctx.get('standard_15b_70b', 0):,} tokens")
+    autotune_rec = (diag.get("local_autotune") or {}).get("recommended") or {}
+    if autotune_rec:
+        lines.append(
+            f"  • Auto-Tune:   Headroom: {autotune_rec.get('headroom_gb', 0)} GB | "
+            f"n_ctx: [green]{autotune_rec.get('recommended_n_ctx', 0):,}[/] | "
+            f"KV: {autotune_rec.get('kv_cache_quant', 'q8_0')} | "
+            f"Toolset: [bold]{autotune_rec.get('recommended_toolset', 'compact-flat')}[/]"
+        )
 
     lines.append("")
     lines.append("[bold]Execution Sandbox Security[/]")
@@ -877,6 +896,17 @@ def run_doctor(args: Any) -> int:
     print(f"  • Hardware:     {mem_info} | {hw_diag['cpu_cores']} cores ({hw_diag['cpu_threads']} threads)")
     rec = hw_diag["recommended_context"]
     print(f"  • Context Cap:  Compact 9–14B: {_C_GREEN}{rec['compact_9b_14b']:,} tokens{_C_RESET} | Standard 15–70B: {rec['standard_15b_70b']:,} tokens")
+    autotune = payload.get("local_autotune") or {}
+    autotune_rec = autotune.get("recommended") or {}
+    if autotune_rec:
+        sel = autotune.get("selected")
+        sel_label = f"{sel['provider']} @ {sel['endpoint']}" if isinstance(sel, dict) else "none online (hardware profile)"
+        print(
+            f"  • Auto-Tune:    Engine: {sel_label} | Headroom: {autotune_rec.get('headroom_gb', 0)} GB | "
+            f"n_ctx: {_C_GREEN}{autotune_rec.get('recommended_n_ctx', 0):,}{_C_RESET} | "
+            f"KV: {autotune_rec.get('kv_cache_quant', 'q8_0')} | "
+            f"Toolset: {_C_BOLD}{autotune_rec.get('recommended_toolset', 'compact-flat')}{_C_RESET}"
+        )
 
     # Section 2: Sandbox Security
     print(f"\n{_C_BOLD}[2] Execution Sandbox Security{_C_RESET}")

@@ -241,7 +241,8 @@ def resolve_runtime_policy(
             try:
                 from src.core.inference.provider_utils import resolve_provider_and_model
 
-                _, resolved_model = resolve_provider_and_model(orchestrator)
+                _, _prov_model = resolve_provider_and_model(orchestrator)
+                resolved_model = _prov_model or ""
             except Exception:
                 resolved_model = getattr(orchestrator, "_model", "") or ""
         if resolved_ctx <= 0:

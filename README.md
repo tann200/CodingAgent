@@ -40,10 +40,11 @@ codingagent init --dir /path/to/repository
 
 `init` creates `.codingAgent/` with agent configuration, hooks, and a project instruction file. Use `codingagent --help` for the complete command surface. Key commands include `init`, `system-prompt`, `session`, `status`, `doctor`, `skill`, `mcp`, and `diff`.
 
-Diagnose local model engines (Ollama, LM Studio, MLX, llama-server, vLLM, LiteLLM) and validate native tool schemas:
+Diagnose local model engines (Ollama, LM Studio, MLX, llama-server, vLLM, LiteLLM), inspect zero-config local runtime auto-tuning (`n_ctx`, KV quant, RAM headroom, recommended flat toolset), and validate native tool schemas:
 
 ```bash
 codingagent doctor
+codingagent doctor --json
 codingagent doctor --provider ollama --validate-tools
 ```
 
@@ -100,7 +101,8 @@ The CI workflow defines the maintained quality (including TUI single-source tree
 
 ## Current Limitations
 
-- The live graph uses a unified 6-node canonical topology (`initialize -> agent_loop -> [approval | verify | compact | finalize] -> END`) across all model profiles (`nano` `<8.5B` and `compact` `9-14B` with 12 flat tools, `standard` `15-70B` dense/MoE with 18 flat tools, and `frontier` with 25 flat tools); `ModelRuntimePolicy` scales budgets, read-only wave parallelism, and targeted vs. full verification rather than diverging graph topology.
+- The live execution engine uses a native async 6-stage `AgentRunner` (`initialize -> agent_loop -> [approval | verify | compact | finalize] -> END`) across all model profiles (`nano` `<8.5B` and `compact` `9-14B` with 12 flat tools, `standard` `15-70B` dense/MoE with 18 flat tools, and `frontier` with 25 flat tools); `ModelRuntimePolicy` scales budgets, read-only wave parallelism, and targeted vs. full verification rather than diverging pipeline topology.
+- Session persistence uses a single canonical SQLite `SessionStore` (WAL + FTS5) with portable redacted JSONL export/import (`jsonl_io.py`), transactional file rollback via `RollbackManager`, on-demand `TurnGroup`-atomic compaction (`CompactionEngine`), and strictly opt-in `VectorStore` semantic embeddings (`CODINGAGENT_ENABLE_VECTOR_STORE=1`).
 - Mutating task completion is governed by evidence-based completion contracts, polyglot verification with Deferred Rollback during bounded retries, and a fail-closed Transaction Settlement Guard in `finalize` that rolls back unverified snapshots on failure or cancellation.
 - Code retrieval is symbol-oriented and is not guaranteed before every planning or editing path.
 - HTTP task execution, when enabled, must remain loopback-bound and restricted to approved workspace roots; it is not a multi-tenant service boundary.
