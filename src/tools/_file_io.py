@@ -432,6 +432,55 @@ def write_file(
     return result
 
 
+def _resolve_read_guard_limits() -> tuple[int | None, int | None]:
+    """Return ``(char_limit, line_limit)`` for Context-Aware Read Guard when an orchestrator is active."""
+    try:
+        from src.tools.subagent_tools import _PARENT_ORCHESTRATOR_VAR
+
+        orch = _PARENT_ORCHESTRATOR_VAR.get(None)
+    except Exception:
+        orch = None
+    if orch is None:
+        return None, None
+
+    try:
+        from src.core.orchestration.pipeline.post_hooks import resolve_tool_output_max_chars
+
+        max_chars = resolve_tool_output_max_chars(orch)
+    except Exception:
+        max_chars = 12_000
+
+    remaining_chars: int | None = None
+    try:
+        tm = getattr(orch, "token_monitor", None)
+        if tm is not None and hasattr(tm, "get_budget"):
+            sid = getattr(orch, "_current_task_id", "default")
+            budget = tm.get_budget(session_id=sid)
+            max_tok = int(getattr(budget, "max_tokens", 0) or 0)
+            used_tok = int(getattr(budget, "used_tokens", 0) or 0)
+            if max_tok > 0:
+                remaining_chars = max(0, (max_tok - used_tok) * 4)
+    except Exception:
+        remaining_chars = None
+
+    policy_tier = ""
+    pol = getattr(orch, "_runtime_policy", None) or getattr(orch, "runtime_policy", None)
+    if pol is not None:
+        raw_tier = pol.get("policy_tier") if isinstance(pol, dict) else getattr(pol, "policy_tier", "")
+        policy_tier = str(raw_tier or "").lower()
+        if remaining_chars is None:
+            ctx_w = pol.get("context_window") if isinstance(pol, dict) else getattr(pol, "context_window", 0)
+            if isinstance(ctx_w, int) and ctx_w > 0:
+                remaining_chars = ctx_w * 4
+
+    char_limit = max_chars
+    if remaining_chars is not None:
+        char_limit = min(max_chars, max(500, int(remaining_chars * 0.40)))
+
+    line_limit = 500 if policy_tier in ("compact", "nano") else None
+    return char_limit, line_limit
+
+
 @tool(
     tags=["coding", "planning", "debug", "review"],
     permission_kind=PermissionKind.READ_FILE,
@@ -439,9 +488,11 @@ def write_file(
 def read_file(
     path: str,
     summarize: bool = False,
+    start_line: int | None = None,
+    end_line: int | None = None,
     workdir: Path | None = None,
 ) -> Dict[str, Any]:
-    """Read the complete UTF-8 contents of a file at the specified path."""
+    """Read UTF-8 contents of a file, optionally sliced to 1-based inclusive [start_line, end_line]."""
     if workdir is None:
         workdir = Path.cwd()
     p = _safe_resolve(path, workdir)
@@ -495,6 +546,61 @@ def read_file(
         }
 
     content = _redact_secrets(content)
+    all_lines = content.splitlines(keepends=True)
+    total_lines = len(all_lines)
+
+    # Explicit line-range slicing (1-based inclusive)
+    if start_line is not None or end_line is not None:
+        s = max(1, int(start_line)) if start_line is not None else 1
+        e = min(total_lines, int(end_line)) if end_line is not None else total_lines
+        if s > total_lines and total_lines > 0:
+            sliced_lines: list[str] = []
+        else:
+            sliced_lines = all_lines[s - 1 : max(s - 1, e)]
+        sliced = "".join(
+            (ln[:_READ_FILE_MAX_LINE] + "… [line truncated]\n")
+            if len(ln) > _READ_FILE_MAX_LINE
+            else ln
+            for ln in sliced_lines
+        )
+        try:
+            _mark_file_read(str(p.resolve()))
+        except Exception:
+            pass
+        return {
+            "path": str(p),
+            "status": "ok",
+            "content": sliced,
+            "start_line": s,
+            "end_line": min(e, total_lines),
+            "total_lines": total_lines,
+        }
+
+    # TASK-30: Context-Aware Read Guard (triggered only when no line range requested)
+    if not summarize:
+        char_limit, line_limit = _resolve_read_guard_limits()
+        exceeds_chars = char_limit is not None and len(content) > char_limit
+        exceeds_lines = line_limit is not None and total_lines > line_limit
+        if exceeds_chars or exceeds_lines:
+            preview_lines = [
+                (ln[:_READ_FILE_MAX_LINE] + "… [line truncated]\n")
+                if len(ln) > _READ_FILE_MAX_LINE
+                else ln
+                for ln in all_lines[:30]
+            ]
+            # CRITICAL: Do NOT call _mark_file_read here — a preview must not unlock blind full-file overwrite.
+            return {
+                "path": str(p),
+                "status": "ok",
+                "truncated_by_read_guard": True,
+                "total_lines": total_lines,
+                "total_chars": len(content),
+                "content": "".join(preview_lines),
+                "hint": (
+                    f"File is large ({total_lines} lines, {len(content)} chars). "
+                    f"Use grep or read_file(path={path!r}, start_line=..., end_line=...) to inspect relevant sections."
+                ),
+            }
 
     # GAP-S1: Mark file as read for guardrail enforcement
     try:
@@ -516,10 +622,9 @@ def read_file(
         return {"path": str(p), "status": "ok", "content": summary, "truncated": True}
 
     # Per-line cap: single pass — avoids scanning lines twice.
-    lines = content.splitlines(keepends=True)
     capped = []
     any_capped = False
-    for ln in lines:
+    for ln in all_lines:
         if len(ln) > _READ_FILE_MAX_LINE:
             capped.append(ln[:_READ_FILE_MAX_LINE] + "… [line truncated]\n")
             any_capped = True

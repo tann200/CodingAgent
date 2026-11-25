@@ -112,7 +112,7 @@ class TestTuiCanonicalGraphBridge:
         assert st["model"] == "qwen2.5-coder:14b"
         assert st["policy"]["policy_tier"] == "compact"
         assert st["policy"]["toolset_name"] == "compact-flat"
-        assert st["policy"]["tool_limit"] == 12
+        assert st["policy"]["tool_limit"] == 13
         assert st["policy"]["tool_output_max_chars"] == 12_000
 
     @pytest.mark.asyncio

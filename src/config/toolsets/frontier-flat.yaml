@@ -1,7 +1,8 @@
 name: frontier-flat
-description: Flat single-purpose full toolset for 2026 frontier and reasoning models (25 tools)
+description: Flat single-purpose full toolset for 2026 frontier and reasoning models (26 tools)
 tools:
   - read_file
+  - read_tool_output
   - list_files
   - glob
   - grep

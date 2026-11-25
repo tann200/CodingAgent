@@ -1,7 +1,8 @@
 name: compact-flat
-description: Flat single-purpose core primitives for 9-14B compact models (12 tools)
+description: Flat single-purpose core primitives for 9-14B compact models (13 tools)
 tools:
   - read_file
+  - read_tool_output
   - list_files
   - glob
   - grep

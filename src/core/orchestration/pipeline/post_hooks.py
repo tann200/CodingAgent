@@ -130,14 +130,23 @@ def _record_file_side_effects(
     tool: Any,
     path_arg: Optional[str],
     lock_ctx: Any,
+    res: Any = None,
 ) -> None:
     """Update read/modified file tracking and publish file events after a successful call."""
     wd = Path(orch.working_dir or ".")
     if name in ("read_file", "fs.read", "read_file_chunk", "read_file_bytes", "files_read") and path_arg:
         try:
             resolved_path = str((wd / path_arg).resolve())
-            with lock_ctx:
-                orch._session_read_files.add(resolved_path)
+            if isinstance(res, dict) and res.get("truncated_by_read_guard"):
+                with lock_ctx:
+                    previews = getattr(orch, "_session_previewed_files", None)
+                    if not isinstance(previews, dict):
+                        previews = {}
+                        setattr(orch, "_session_previewed_files", previews)
+                    previews[resolved_path] = str(res.get("content") or "")
+            else:
+                with lock_ctx:
+                    orch._session_read_files.add(resolved_path)
         except Exception:
             pass
     elif name == "batched_file_read":
@@ -233,7 +242,10 @@ def _run_post_execution(
 
     res = orch._normalize_tool_result(res)
     max_chars = resolve_tool_output_max_chars(orch)
-    res = _truncate_result_strings(res, max_chars=max_chars)
+    from src.core.orchestration.tool_output_reducer import get_or_create_output_store, reduce_tool_result
+    res = reduce_tool_result(
+        res, tool_name=name, args=args, max_chars=max_chars, store=get_or_create_output_store(orch),
+    )
     res = redact_data(res)
 
     if name in ("plan_enter", "plan_exit") and isinstance(res, dict) and res.get("ok"):
@@ -312,7 +324,7 @@ def _run_post_execution(
         pass
 
     if res.get("status") == "ok" or res.get("ok") is True:
-        _record_file_side_effects(orch, name, args, tool, path_arg, _lock_ctx)
+        _record_file_side_effects(orch, name, args, tool, path_arg, _lock_ctx, res=res)
 
     try:
         from src.core.orchestration.change_log import record_change

@@ -60,6 +60,9 @@ def _check_read_before_write(
             orch._session_read_files.add(resolved_path)
 
         if target.exists() and resolved_path not in orch._session_read_files:
+            from src.core.orchestration.tool_output_reducer import is_surgical_preview_edit_allowed
+            if is_surgical_preview_edit_allowed(orch, name, args, resolved_path):
+                return None
             return {
                 "ok": False,
                 "error": (

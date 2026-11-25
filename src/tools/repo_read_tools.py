@@ -964,3 +964,40 @@ def _analyze_rust_files(files: List[Path]) -> Dict[str, Any]:
         "summaries": summaries,
         "imports": imports,
     }
+
+
+@tool(
+    side_effects=[],
+    tags=["repo", "coding", "debug", "review", "planning"],
+    permission_kind=PermissionKind.READ_FILE,
+)
+def read_tool_output(
+    handle: str,
+    offset: int = 0,
+    limit: int = 8000,
+) -> Dict[str, Any]:
+    """Read a slice of raw (secret-redacted) tool output stored under *handle* (e.g. 'out_1')."""
+    try:
+        from src.tools.subagent_tools import _PARENT_ORCHESTRATOR_VAR
+
+        orch = _PARENT_ORCHESTRATOR_VAR.get(None)
+    except Exception:
+        orch = None
+
+    if orch is None:
+        return {
+            "status": "error",
+            "error": "No active session tool-output store is bound for this call.",
+            "recoverable": True,
+        }
+
+    from src.core.orchestration.tool_output_reducer import get_or_create_output_store
+
+    store = get_or_create_output_store(orch)
+    if store is None:
+        return {
+            "status": "error",
+            "error": "Tool-output store unavailable.",
+            "recoverable": True,
+        }
+    return store.read(handle, offset=offset, limit=limit)

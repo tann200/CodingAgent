@@ -49,6 +49,7 @@ DEFAULT_PERMISSION_LEVEL = PermissionLevel.WORKSPACE_WRITE
 TOOL_PERMISSIONS: Dict[str, PermissionLevel] = {
     # --- read-only ---
     "read_file": PermissionLevel.READ_ONLY,
+    "read_tool_output": PermissionLevel.READ_ONLY,
     "read_file_chunk": PermissionLevel.READ_ONLY,
     "read_file_bytes": PermissionLevel.READ_ONLY,
     "batched_file_read": PermissionLevel.READ_ONLY,

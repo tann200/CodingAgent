@@ -58,7 +58,7 @@ def select_workflow(runtime: RuntimeProfile) -> WorkflowConfig:
         return WorkflowConfig(
             workflow_type=WorkflowType.SINGLE_LOOP,
             context_limit=min(runtime.safe_context_tokens, 16384),
-            tool_limit=min(runtime.tool_limit, 12),
+            tool_limit=min(runtime.tool_limit, 13),
             max_turns=min(runtime.max_turns, 20),
             thinking_mode=ThinkingMode.OFF,
             use_verification=False,

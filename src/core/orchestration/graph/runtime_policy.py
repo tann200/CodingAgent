@@ -115,7 +115,7 @@ NANO_RUNTIME_POLICY = ModelRuntimePolicy(
     policy_tier="nano",
     target_tier="medium",
     toolset_name="compact-flat",
-    tool_limit=12,
+    tool_limit=13,
     turn_limit=16,
     recovery_limit=1,
     compaction_limit=1,
@@ -134,7 +134,7 @@ COMPACT_RUNTIME_POLICY = ModelRuntimePolicy(
     policy_tier="compact",
     target_tier="medium",
     toolset_name="compact-flat",
-    tool_limit=12,
+    tool_limit=13,
     turn_limit=24,
     recovery_limit=2,
     compaction_limit=2,
@@ -153,7 +153,7 @@ STANDARD_RUNTIME_POLICY = ModelRuntimePolicy(
     policy_tier="standard",
     target_tier="medium",
     toolset_name="standard-flat",
-    tool_limit=18,
+    tool_limit=19,
     turn_limit=36,
     recovery_limit=2,
     compaction_limit=2,
@@ -172,7 +172,7 @@ FRONTIER_RUNTIME_POLICY = ModelRuntimePolicy(
     policy_tier="frontier",
     target_tier="frontier",
     toolset_name="frontier-flat",
-    tool_limit=25,
+    tool_limit=26,
     turn_limit=60,
     recovery_limit=3,
     compaction_limit=3,
@@ -348,7 +348,7 @@ def _is_tool_permitted_for_context(
             # Allow flat read primitives (glob, grep, git_status, git_diff) on read/review roles
             if not (
                 norm_role in ("reviewer", "strategic")
-                and tool_name in {"glob", "grep", "git_status", "git_diff", "git_log", "find_symbol"}
+                and tool_name in {"glob", "grep", "git_status", "git_diff", "git_log", "find_symbol", "read_tool_output"}
             ):
                 return False
 

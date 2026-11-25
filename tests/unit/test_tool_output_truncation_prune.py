@@ -208,9 +208,10 @@ def test_execute_tool_impl_applies_tier_adaptive_truncation(tmp_path):
 
     res = execute_tool_impl(orch, {"name": "read_dummy", "arguments": {}})
     assert res["ok"] is True
-    # For nano tier, output inside res["result"]["data"] must be truncated to 6,000 chars
+    # For nano tier, output inside res["result"]["data"] is reduced within 6,000 chars with a handle
     inner_data = res["result"]["data"]
-    assert "[truncated: 7000 chars omitted]" in inner_data
+    assert "chars omitted" in inner_data
+    assert 'read_tool_output(handle="out_1"' in inner_data
     assert inner_data.startswith("line of data\n")
-    assert len(inner_data) == 6_000 + len("\n... [truncated: 7000 chars omitted]")
+    assert len(inner_data) <= 6_050
 

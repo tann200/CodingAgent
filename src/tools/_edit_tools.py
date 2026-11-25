@@ -516,13 +516,26 @@ def edit_file_atomic(
         workdir = Path.cwd()
     from src.tools._file_io import _pre_write_check
 
+    _check_read = True
+    try:
+        from src.tools.subagent_tools import _PARENT_ORCHESTRATOR_VAR
+        from src.core.orchestration.tool_output_reducer import is_surgical_preview_edit_allowed
+
+        _orch = _PARENT_ORCHESTRATOR_VAR.get(None)
+        if _orch is not None and is_surgical_preview_edit_allowed(
+            _orch, "edit_file_atomic", {"old_string": old_string}, str((Path(workdir) / path).resolve())
+        ):
+            _check_read = False
+    except Exception:
+        pass
+
     p, pre_err = _pre_write_check(
         path,
         Path(workdir),
         operation="edit_file_atomic",
         user_approved=user_approved,
         check_binary=True,
-        check_read=True,
+        check_read=_check_read,
     )
     if pre_err is not None or p is None:
         return pre_err or {"path": path, "status": "error", "error": "Pre-write check failed"}

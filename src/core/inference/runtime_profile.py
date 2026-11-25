@@ -99,8 +99,8 @@ def merge_profiles(
     safe_context = min(safe_context, model_profile.max_context)
 
     if model_tier == ModelTier.SMALL and not is_nano:
-        # 8.5B–14.9B compact models: 12 flat tools + targeted verification enabled
-        tool_limit = min(12, model_profile.tool_limit)
+        # 8.5B–14.9B compact models: 13 flat tools + targeted verification enabled
+        tool_limit = min(13, model_profile.tool_limit)
         max_turns = min(24, model_profile.max_turns)
         use_verification = True
         use_replan = True

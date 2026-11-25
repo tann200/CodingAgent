@@ -51,7 +51,7 @@ class TestModelCapabilityProfile:
         assert profile.params_total == 9.0
         assert profile.architecture == Architecture.GDN
         assert profile.thinking_mode == ThinkingMode.OFF
-        assert profile.tool_limit == 12
+        assert profile.tool_limit == 13
 
     def test_get_gemma_profile(self):
         profile = get_model_profile("gemma-4-27b-a4b")

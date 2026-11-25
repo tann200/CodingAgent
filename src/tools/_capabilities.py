@@ -897,6 +897,7 @@ LEGACY_TO_CAPABILITY: Dict[str, Tuple[str, str]] = {
     "read_file": ("files_read", "read"),
     "read_file_chunk": ("files_read", "chunk"),
     "read_file_bytes": ("files_read", "bytes"),
+    "read_tool_output": ("files_read", "read"),
     "batched_file_read": ("files_read", "read"),
     "tail_log_file": ("files_read", "tail"),
     "read": ("files_read", "read"),
