@@ -2,6 +2,8 @@ from textual.widgets import Static
 from rich.text import Text
 import threading
 
+from ..terminal_sanitize import strip_terminal_controls
+
 
 class StreamView(Static):
     def __init__(self, role: str = "Agent", **kwargs):
@@ -11,12 +13,22 @@ class StreamView(Static):
         self._flush_pending = False
         self._flush_lock = threading.Lock()
 
-    def append_chunk(self, chunk: str) -> None:
+    def on_mount(self) -> None:
         with self._flush_lock:
-            self._raw += chunk
-            if not self._flush_pending:
+            has_pending = bool(self._raw) or self._flush_pending
+        if has_pending:
+            self._flush()
+
+    def append_chunk(self, chunk: str) -> None:
+        clean = strip_terminal_controls(chunk)
+        with self._flush_lock:
+            self._raw += clean
+            if not self._flush_pending and self.is_mounted:
                 self._flush_pending = True
-                self.call_later(self._flush)
+                try:
+                    self.call_later(self._flush)
+                except Exception:
+                    self._flush_pending = False
 
     def _flush(self) -> None:
         with self._flush_lock:

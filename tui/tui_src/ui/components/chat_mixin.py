@@ -126,11 +126,19 @@ class ChatDisplayMixin(AgentAppProtocol):
             self._update_status_bar()  # provided by StatusBarMixin at runtime
 
     def _prune_chat_log(self: AgentAppProtocol) -> None:
-        """Remove oldest widgets from chat_log when it exceeds _MAX_CHAT_WIDGETS."""
+        """Remove oldest widgets from chat_log when it exceeds _MAX_CHAT_WIDGETS.
+
+        TASK-37: ``Widget.remove()`` is asynchronous in Textual and does not
+        synchronously shrink ``chat_log.children``. Slice the excess once in a
+        bounded loop instead of ``while len(children) > max`` (which freezes).
+        """
         try:
             chat_log = self.query_one("#chat_log", VerticalScroll)
-            while len(chat_log.children) > _MAX_CHAT_WIDGETS:
-                chat_log.children[0].remove()
+            children = list(chat_log.children)
+            excess = len(children) - _MAX_CHAT_WIDGETS
+            if excess > 0:
+                for child in children[:excess]:
+                    child.remove()
         except Exception:
             pass
 
@@ -304,19 +312,37 @@ class ChatDisplayMixin(AgentAppProtocol):
     def _expand_at_tokens(self: AgentAppProtocol, text: str) -> str:
         """Replace '@path' tokens with file content wrapped in XML tags.
 
-        Only expands tokens that resolve to readable files within the workspace.
-        Leaves bare '@word' tokens that don't match files unchanged.
+        TASK-37: Enforces strict ``Path.is_relative_to(wd)`` confinement (closing
+        the sibling-directory prefix bypass) and refuses secret files / ``.git``
+        internals before reading.
         """
         try:
             wd = Path(self._bridge.working_dir or os.getcwd()).resolve()
         except Exception:
             return text
 
+        try:
+            from src.core.security.redaction import is_secret_path as _is_secret_path
+        except Exception:
+            _is_secret_path = None  # type: ignore[assignment]
+
+        def _is_git_internal(p: Path) -> bool:
+            parts = [part.lower() for part in p.parts]
+            return ".git" in parts
+
         def _replace(m: re.Match) -> str:
             rel = m.group(1)
             try:
                 target = (wd / rel).resolve()
-                if not str(target).startswith(str(wd)):
+                if not target.is_relative_to(wd):
+                    return m.group(0)
+                if _is_git_internal(target) or (
+                    _is_secret_path is not None and (_is_secret_path(rel) or _is_secret_path(target))
+                ):
+                    try:
+                        self.notify(f"Blocked secret/protected @file reference: {rel}", severity="warning")
+                    except Exception:
+                        pass
                     return m.group(0)
                 if target.is_file():
                     content = target.read_text(errors="replace")[:_AT_FILE_MAX_CHARS]
@@ -549,13 +575,16 @@ class ChatDisplayMixin(AgentAppProtocol):
 
         text = event.text
         first_line = text.split("\n", 1)[0]
-        if first_line.startswith("/"):
-            matches = [c for c in SLASH_COMMANDS if c.startswith(first_line.rstrip())]
-            if matches:
-                self._palette_active = True
-                self._palette_matches = matches
-                self._palette_index = 0
-                return
+        if first_line.startswith("/") and " " not in first_line.strip():
+            stripped = first_line.strip()
+            # TASK-37: Do not trap Enter when user has already typed a complete command
+            if stripped not in SLASH_COMMANDS:
+                matches = [c for c in SLASH_COMMANDS if c.startswith(stripped)]
+                if matches:
+                    self._palette_active = True
+                    self._palette_matches = matches
+                    self._palette_index = 0
+                    return
         if self._palette_active:
             self._palette_active = False
             self._palette_matches = []

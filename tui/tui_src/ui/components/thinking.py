@@ -8,6 +8,8 @@ from textual import on, events
 from rich.markdown import Markdown
 from rich.text import Text
 
+from ..terminal_sanitize import strip_terminal_controls
+
 _log = logging.getLogger(__name__)
 
 
@@ -17,18 +19,18 @@ class ThinkingProcess(Vertical):
         self.end_time = time.monotonic()
         self.elapsed = self.end_time - (start_time or self.end_time)
         clean_text = str(content) if not isinstance(content, str) else content.replace("Thinking:", "").strip()
-        self.raw_content = clean_text
+        self.raw_content = strip_terminal_controls(clean_text)
         self.is_expanded = False
 
     def compose(self) -> ComposeResult:
         time_str = f"{self.elapsed:.2f}s"
         content_str = self.raw_content if isinstance(self.raw_content, str) else str(self.raw_content)
         summary = content_str[:80].replace("\n", " ") + "..."
-        yield Label(f"  Thinking: {summary} [ {time_str} ]", classes="header", markup=False)
+        yield Label(Text(f"  Thinking: {summary} [ {time_str} ]"), classes="header", markup=False)
         try:
             md = Markdown(content_str)
         except Exception:
-            safe = "".join(ch for ch in content_str if ord(ch) >= 32 or ch in "\n\t")
+            safe = strip_terminal_controls(content_str)
             try:
                 md = Markdown(safe)
             except Exception as _err:
@@ -47,7 +49,7 @@ class ThinkingProcess(Vertical):
         header = self.query_one(".header", Label)
         time_str = f"{self.elapsed:.2f}s"
         if self.is_expanded:
-            header.update(f"  Reasoning Chain [ {time_str} ]")
+            header.update(Text(f"  Reasoning Chain [ {time_str} ]"))
         else:
             summary = self.raw_content[:80].replace("\n", " ") + "..."
-            header.update(f"  Thinking: {summary} [ {time_str} ]")
+            header.update(Text(f"  Thinking: {summary} [ {time_str} ]"))

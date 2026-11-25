@@ -7,6 +7,8 @@ from rich.console import RenderableType
 from rich.text import Text
 import logging
 
+from ..terminal_sanitize import strip_terminal_controls
+
 _log = logging.getLogger(__name__)
 
 
@@ -35,11 +37,12 @@ class AgentArtifact(Static):
         self._stream_content = self._content_str
 
     def _sanitize(self, text: str) -> str:
-        return "".join(ch for ch in text if ord(ch) >= 32 or ch in "\n\t")
+        return strip_terminal_controls(text)
 
     def _build_renderable(self, content_str: str) -> RenderableType:
         if not content_str:
             return Text("")
+        content_str = self._sanitize(content_str)
 
         if self.kind == "diff":
             syntax = Syntax(

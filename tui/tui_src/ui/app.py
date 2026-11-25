@@ -114,7 +114,7 @@ class AgentApp(
     AppSlashCommandsMixin,
     AppStatusHandlersMixin,
 ):
-    COMMAND_PALETTE = False
+    ENABLE_COMMAND_PALETTE = False
     BINDINGS = [
         ("tab", "toggle_mode", "agents"),
         ("ctrl+l", "toggle_console", "console"),
@@ -282,12 +282,13 @@ class AgentApp(
         self.post_message(RequestSystemSettings())
         self._bridge.publish_session_request()
 
-        # P3-2: Show session browser on launch if previous sessions exist.
+        # TASK-37: Do not block startup with a modal unless user explicitly opts in.
         try:
-            _sessions_dir = self._get_sessions_dir()
-            if _sessions_dir and any(_sessions_dir.iterdir()):
-                from .screens.session_screen import SessionScreen
-                self.call_later(self.push_screen, SessionScreen())
+            if self._settings.get("show_sessions_on_startup", False):
+                _sessions_dir = self._get_sessions_dir()
+                if _sessions_dir and any(_sessions_dir.iterdir()):
+                    from .screens.session_screen import SessionScreen
+                    self.call_later(self.push_screen, SessionScreen())
         except Exception:
             pass
 
@@ -297,20 +298,24 @@ class AgentApp(
         if getattr(self, "_shutdown_done", False):
             return
         self._shutdown_done = True
+        # TASK-37: Discard pending queued prompts on quit instead of dispatching LLM runs during teardown.
         if getattr(self, "_queued_messages", None):
-            while self._queued_messages:
-                try:
-                    msg = self._queued_messages.popleft()
-                    logger.warning("Draining queued message on shutdown: %s", msg[:60])
-                    self._bridge.send_prompt(msg)
-                except Exception as _drain_err:
-                    logger.debug("shutdown drain send failed: %s", _drain_err)
+            dropped = len(self._queued_messages)
+            self._queued_messages.clear()
+            logger.info("Discarded %d queued message(s) on shutdown", dropped)
         self._save_session_snapshot()
         if hasattr(self, "_worktree_mgr") and self._worktree_mgr is not None:
             try:
-                import shutil
+                import subprocess
                 for wt_path in list(getattr(self._worktree_mgr, "active", {}).values()):
-                    shutil.rmtree(wt_path, ignore_errors=True)
+                    try:
+                        subprocess.run(
+                            ["git", "worktree", "remove", "--force", str(wt_path)],
+                            capture_output=True,
+                            timeout=10,
+                        )
+                    except Exception:
+                        pass
             except Exception:
                 pass
         self._bridge.interrupt()
@@ -384,7 +389,7 @@ class AgentApp(
             "action_toggle_sidebar": self.action_toggle_sidebar,
             "action_quit": self.action_quit_app,
             "action_new_session": lambda: self.post_message(SlashCommand("new")),
-            "action_check_providers": lambda: self.notify("Provider check not connected"),
+            "action_check_providers": lambda: self.post_message(SlashCommand("doctor")),
             "action_compact_memory": lambda: self.post_message(SlashCommand("compact")),
             "action_open_sessions": self.action_open_sessions,
             "action_open_editor": self.action_open_editor,

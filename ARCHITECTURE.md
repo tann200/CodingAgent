@@ -45,7 +45,7 @@ The live orchestration pipeline executes a single self-contained invocation of t
 ### Entry Points And UI
 
 - `src/main.py` parses CLI flags, initializes runtime settings, and selects headless or Textual execution.
-- `tui/tui_src/ui/` implements the Textual client. `AgentBridge` is the boundary between UI state and core orchestration/events. `_app_slash_commands_mixin.py` provides interactive slash commands (`/status`, `/doctor`, `/skills`, `/compact`, `/fast`, `/provider`, `/model`) for in-session runtime policy monitoring, local model diagnostics, and skill inspection.
+- `tui/tui_src/ui/` implements the Textual client (`AgentBridge` is the boundary between UI state and core orchestration/events), including terminal control-sequence sanitization (`terminal_sanitize.py`), bounded async chat-log pruning, sequential message-queue draining, and strict `Path.is_relative_to` + secret/git-internal blocking on `@file` expansions. `_app_slash_commands_mixin.py` provides interactive slash commands (`/status`, `/doctor`, `/skills`, `/reasoning`, `/compact`, `/fast`, `/provider`, `/model`).
 - `src/cli/` implements the headless `session`, `status`, `doctor`, `skill`, `mcp`, and `diff` subcommands.
 
 ### Orchestration

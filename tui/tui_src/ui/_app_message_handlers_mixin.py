@@ -82,8 +82,11 @@ class AppMessageHandlersMixin(AgentAppProtocol):
             self.call_later(self._drain_message_queue)
 
     def _drain_message_queue(self: AgentAppProtocol) -> None:
-        while self._queued_messages and not self.agent_running:
+        # TASK-37: Dispatch strictly ONE queued message at a time and wait for
+        # AgentRunningEvent(running=False) before popping the next.
+        if self._queued_messages and not self.agent_running:
             msg = self._queued_messages.popleft()
+            self.agent_running = True
             logger.info(f"Draining queued message: {msg[:60]}")
             self._bridge.send_prompt(msg)
 

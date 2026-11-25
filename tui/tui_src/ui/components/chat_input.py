@@ -122,6 +122,8 @@ class ChatTextArea(TextArea):
         # Disable syntax highlighting and line numbers — plain prompt input
         kwargs.setdefault("language", None)
         kwargs.setdefault("show_line_numbers", False)
+        if placeholder:
+            kwargs.setdefault("placeholder", placeholder)
         super().__init__(**kwargs)
         self._prompt_history: list[str] = []
         self.history_index: int = -1
@@ -191,13 +193,31 @@ class ChatTextArea(TextArea):
                     _nav(key)
                 event.prevent_default()
                 return
-            if key in ("enter", "tab"):
+            if key == "tab":
                 _complete = getattr(self.app, "_palette_complete", None)
                 completed: str = str(_complete()) if callable(_complete) else ""
                 if completed:
                     self.load_text(completed)
                     self.move_cursor(self.document.end)
                     self.post_message(self.TextChanged(text=completed))
+                event.prevent_default()
+                return
+            if key == "enter":
+                # TASK-37: If text is already a complete slash command or has args,
+                # submit immediately instead of trapping Enter in a completion loop.
+                raw_stripped = self.text.strip()
+                if raw_stripped in SLASH_COMMANDS or " " in raw_stripped:
+                    _complete = getattr(self.app, "_palette_complete", None)
+                    if callable(_complete):
+                        _complete()
+                    self.post_message(self.Submitted(text=self.text.rstrip("\n"), text_area=self))
+                    event.prevent_default()
+                    return
+                _complete = getattr(self.app, "_palette_complete", None)
+                completed_enter: str = str(_complete()) if callable(_complete) else ""
+                if completed_enter:
+                    self.load_text(completed_enter)
+                    self.move_cursor(self.document.end)
                 event.prevent_default()
                 return
 

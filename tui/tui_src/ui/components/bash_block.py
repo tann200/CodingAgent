@@ -21,6 +21,8 @@ from textual.widget import Widget
 from textual.widgets import Label, Static
 from rich.text import Text
 
+from ..terminal_sanitize import strip_terminal_controls
+
 MAX_VISIBLE_LINES = 40
 _EXPAND_HINT = "[dim](... click to expand)[/]"
 _COLLAPSE_HINT = "[dim](click to collapse)[/]"
@@ -37,6 +39,8 @@ class BashBlock(Widget):
 
     DEFAULT_CSS = """
     BashBlock {
+        layout: vertical;
+        height: auto;
         border: round #3f3f46;
         padding: 0 1;
         margin-bottom: 1;
@@ -93,13 +97,13 @@ class BashBlock(Widget):
 
     def append_output(self, line: str) -> None:
         """Append a single output line and refresh the visible area."""
-        self._output_lines.append(line)
+        self._output_lines.append(strip_terminal_controls(line))
         if self.is_mounted:
             self._refresh_output()
 
     def set_output(self, lines: list[str]) -> None:
         """Replace all output lines at once."""
-        self._output_lines = list(lines)
+        self._output_lines = [strip_terminal_controls(ln) for ln in lines]
         if self.is_mounted:
             self._refresh_output()
 
