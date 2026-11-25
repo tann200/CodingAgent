@@ -56,7 +56,6 @@ Header { background: #161616; color: #efefef; height: 1; text-style: bold; }
 .approval_row Button { border: none; height: 1; padding: 0 2; margin: 0 1; min-width: 9; }
 
 /* ── Input ─────────────────────────────────────────────────────────────── */
-HistoryInput          { height: 3; margin: 0; border: solid #333333; background: #1a1a1a; dock: bottom; }
 #user_input           { height: 3; border: round #333333; }
 #user_input.input_locked { border: round #555555; background: #111111; }
 

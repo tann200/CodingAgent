@@ -19,10 +19,11 @@ from textual.message import Message
 from textual.widgets import TextArea
 from textual import events
 
-from .history_input import ESC_DOUBLE_TAP_MS, HistoryInput
 from ..logging import get_logger
 
 logger = get_logger("chat_input")
+
+ESC_DOUBLE_TAP_MS: int = 500
 
 SLASH_COMMANDS: list[str] = [
     "/help",
@@ -110,6 +111,11 @@ class ChatTextArea(TextArea):
             super().__init__()
             self.text = text
 
+    class InterruptSignal(Message):
+        """Posted when the user double-taps Escape to interrupt the running agent."""
+
+        pass
+
     def __init__(self, placeholder: str = "", **kwargs: Any) -> None:
         # Disable syntax highlighting and line numbers — plain prompt input
         kwargs.setdefault("language", None)
@@ -169,7 +175,7 @@ class ChatTextArea(TextArea):
             now = time.monotonic()
             if (now - self._last_esc_time) < (ESC_DOUBLE_TAP_MS / 1000.0):
                 self._last_esc_time = 0.0
-                self.post_message(HistoryInput.InterruptSignal())
+                self.post_message(self.InterruptSignal())
             else:
                 self._last_esc_time = now
             event.prevent_default()

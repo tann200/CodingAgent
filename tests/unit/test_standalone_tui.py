@@ -517,7 +517,7 @@ class TestComponentsInit:
 
     def test_existing_exports_still_present(self):
         from ui.components import (  # type: ignore[import]
-            HistoryInput,
+            ChatTextArea,
             AgentArtifact,
             ThinkingProcess,
             StreamView,
@@ -526,7 +526,7 @@ class TestComponentsInit:
         )
 
         for cls in [
-            HistoryInput,
+            ChatTextArea,
             AgentArtifact,
             ThinkingProcess,
             StreamView,

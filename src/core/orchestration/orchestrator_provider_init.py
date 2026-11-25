@@ -83,10 +83,32 @@ def _select_default_adapter(orch: Any, pm: Any) -> None:
 
     if active_name and active_name in providers:
         name = active_name
-    elif "lm_studio" in providers:
-        name = "lm_studio"
     else:
-        name = providers[0]
+        auto_name = None
+        if not bool(getattr(orch, "_defer_provider_probe", False)):
+            try:
+                import os as _os
+                import sys as _sys
+
+                if (
+                    "pytest" not in _sys.modules
+                    and _os.environ.get("CODINGAGENT_AUTO_DETECT_LOCAL", "1").strip().lower()
+                    not in ("0", "false", "no")
+                ):
+                    from src.core.inference.local_runtime_autotune import (
+                        select_local_autotune_provider,
+                    )
+
+                    auto_name = select_local_autotune_provider(providers, timeout=0.25)
+            except Exception:
+                auto_name = None
+
+        if auto_name and auto_name in providers:
+            name = auto_name
+        elif "lm_studio" in providers:
+            name = "lm_studio"
+        else:
+            name = providers[0]
 
     orch._adapter = pm.get_provider(name)
     guilogger.info(

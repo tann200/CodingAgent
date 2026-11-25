@@ -204,8 +204,39 @@ def detect_local_runtime_profile(
     }
 
 
+def select_local_autotune_provider(
+    available_providers: List[str],
+    *,
+    timeout: float = 0.25,
+    probe_fn: Optional[ProbeFn] = None,
+) -> Optional[str]:
+    """Return the highest-priority reachable local provider registered in *available_providers*.
+
+    Used as a zero-config startup fallback when no explicit provider is active.
+    Never blocks for long (default 250ms per local endpoint) and returns ``None``
+    when no local engine is online.
+    """
+    if not available_providers:
+        return None
+    avail_norm = {
+        str(p).lower().replace("-", "_"): str(p) for p in available_providers
+    }
+    fn = probe_fn or _default_probe_endpoint
+    for pname, url, _ in LOCAL_RUNTIME_ENDPOINTS:
+        if pname not in avail_norm:
+            continue
+        try:
+            online, _, _, _ = fn(pname, url, timeout)
+            if online:
+                return avail_norm[pname]
+        except Exception:
+            continue
+    return None
+
+
 __all__ = [
     "LOCAL_RUNTIME_ENDPOINTS",
     "compute_safe_local_defaults",
     "detect_local_runtime_profile",
+    "select_local_autotune_provider",
 ]

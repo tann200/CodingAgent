@@ -1,7 +1,6 @@
 import typing as _t
 
 _LAZY_MODULES: dict[str, str] = {
-    "HistoryInput": ".history_input",
     "AgentArtifact": ".artifact",
     "ThinkingProcess": ".thinking",
     "StreamView": ".stream_view",

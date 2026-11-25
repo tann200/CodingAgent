@@ -27,7 +27,7 @@ from .bus import (
     UsageTurnSummaryEvent,
     WorkerError,
 )
-from .components import ChatTextArea, HistoryInput
+from .components import ChatTextArea
 from .events import AgentInterrupt, SlashCommand, ToolPermissionApproved
 from .logging import get_logger
 
@@ -320,9 +320,9 @@ class AppMessageHandlersMixin(AgentAppProtocol):
     def on_chat_text_area_changed(self: AgentAppProtocol, event) -> None:
         self._chat_handle_text_changed(event)
 
-    # ── Interrupt signal from HistoryInput (kept for compat) ──────────────
+    # ── Interrupt signal from ChatTextArea double-Esc ─────────────────────
 
-    @on(HistoryInput.InterruptSignal)
+    @on(ChatTextArea.InterruptSignal)
     def handle_interrupt(self: AgentAppProtocol, event) -> None:
         logger.warning("Double-Esc interrupt signal received")
         self._bridge.force_interrupt()

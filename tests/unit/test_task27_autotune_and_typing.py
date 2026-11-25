@@ -100,3 +100,20 @@ def test_doctor_diagnosis_includes_local_autotune_and_renders_cleanly(capsys) ->
         assert rc == 0
         out = json.loads(capsys.readouterr().out)
         assert "local_autotune" in out
+
+
+def test_select_local_autotune_provider_respects_priority_and_available_list() -> None:
+    from pathlib import Path
+    from src.core.inference.local_runtime_autotune import select_local_autotune_provider
+
+    def fake_probe(provider: str, url: str, timeout: float):
+        if provider in ("ollama", "lm_studio"):
+            return True, ["qwen3.5:9b"], None, 2.0
+        return False, [], None, None
+
+    assert select_local_autotune_provider(["lm_studio", "ollama"], probe_fn=fake_probe) == "ollama"
+    assert select_local_autotune_provider(["openai", "anthropic"], probe_fn=fake_probe) is None
+
+    # Verify unused history_input.py has been retired
+    repo_root = Path(__file__).resolve().parents[2]
+    assert not (repo_root / "tui/tui_src/ui/components/history_input.py").exists()
