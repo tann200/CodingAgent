@@ -116,8 +116,9 @@ class BridgeToolsMixin(AgentBridgeProtocol):
                     result_text[:_MAX_TUI_OUTPUT_CHARS]
                     + f"\n... [{extra} characters truncated for display]"
                 )
-        res_dict = payload.get("result") if isinstance(payload.get("result"), dict) else {}
-        ok = payload.get("ok", res_dict.get("ok", True))
+        raw_res_obj = payload.get("result")
+        res_dict: dict = raw_res_obj if isinstance(raw_res_obj, dict) else {}
+        ok = bool(payload.get("ok", res_dict.get("ok", True)))
         if res_dict.get("ok") is False or res_dict.get("error"):
             ok = False
         self._post(

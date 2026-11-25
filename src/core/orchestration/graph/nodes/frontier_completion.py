@@ -249,10 +249,12 @@ def handle_no_tool_completion(
     modified_files: set[str] = set()
     if orchestrator and hasattr(orchestrator, "_session_modified_files") and orchestrator._session_modified_files:
         modified_files.update(orchestrator._session_modified_files)
-    if state.get("modified_files"):
-        modified_files.update(state.get("modified_files"))
-    if state.get("_session_modified_files"):
-        modified_files.update(state.get("_session_modified_files"))
+    _sm1 = state.get("modified_files")
+    if isinstance(_sm1, (list, set, tuple)):
+        modified_files.update(_sm1)
+    _sm2 = state.get("_session_modified_files")
+    if isinstance(_sm2, (list, set, tuple)):
+        modified_files.update(_sm2)
 
     effective_last_result = last_result if last_result is not None else state.get("last_result")
     effective_errors = errors if errors is not None else state.get("errors")
@@ -388,8 +390,9 @@ def finalize_frontier_exit(
         and orchestrator._session_modified_files
     ):
         mod_files.update(orchestrator._session_modified_files)
-    if state.get("modified_files"):
-        mod_files.update(state.get("modified_files"))
+    _mod_state = state.get("modified_files")
+    if isinstance(_mod_state, (list, set, tuple)):
+        mod_files.update(_mod_state)
 
     result = build_exit_result(
         history=history,

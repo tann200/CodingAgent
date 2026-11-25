@@ -99,7 +99,7 @@ def _is_url_blocked(url: str) -> bool:
         try:
             infos = socket.getaddrinfo(host, None)
             for info in infos:
-                addr_str = info[4][0]
+                addr_str = str(info[4][0])
                 if _is_ip_blocked(addr_str):
                     return True
         except (socket.gaierror, OSError):
@@ -179,7 +179,7 @@ def _is_ssrf_blocked(url: str) -> None:
             ) from exc
 
         for info in infos:
-            addr_str = info[4][0]
+            addr_str = str(info[4][0])
             try:
                 addr = ipaddress.ip_address(addr_str)
 

@@ -86,7 +86,7 @@ class SubagentDetailScreen(ModalScreen[None]):
         super().__init__(**kwargs)
         self._child_session_id = child_session_id
         self._role = role
-        self._task = task
+        self._task_text = task
         # Cross-platform sessions directory — prefer core.paths.get_sessions_dir()
         from .._core_paths_loader import get_sessions_dir as _get_sessions_dir_helper
 
@@ -121,12 +121,12 @@ class SubagentDetailScreen(ModalScreen[None]):
                 n_msgs = self._session_data.get("message_count", 0)
                 meta = (
                     f"{date_str}  ·  {status}  ·  {n_msgs} messages\n"
-                    f"[dim]Task:[/dim] {escape(self._task[:72])}"
+                    f"[dim]Task:[/dim] {escape(self._task_text[:72])}"
                 )
                 yield Static(meta, id="detail_meta", markup=True)
             else:
                 yield Static(
-                    f"[dim]Task:[/dim] {escape(self._task[:72])}\n"
+                    f"[dim]Task:[/dim] {escape(self._task_text[:72])}\n"
                     f"[dim]Session file not yet available (still running or not saved)[/dim]",
                     id="detail_meta",
                     markup=True,

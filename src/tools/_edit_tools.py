@@ -317,8 +317,8 @@ def edit_file(
 
     # Read original content BEFORE modification for diff generation
     original_content, err_dict = _read_original_content(p)
-    if err_dict is not None:
-        return err_dict
+    if err_dict is not None or original_content is None:
+        return err_dict or {"path": str(p), "status": "error", "error": "Unable to read file"}
 
     if not patch.strip().startswith("---") and not patch.strip().startswith("@@"):
         return {
@@ -426,8 +426,8 @@ def edit_by_line_range(
         return {"path": str(p), "status": "not_found"}
 
     original_content, err_dict = _read_original_content(p)
-    if err_dict is not None:
-        return err_dict
+    if err_dict is not None or original_content is None:
+        return err_dict or {"path": str(p), "status": "error", "error": "Unable to read file"}
     original_lines = original_content.splitlines(keepends=True)
     total_lines = len(original_lines)
 
@@ -530,8 +530,8 @@ def edit_file_atomic(
         return {"path": str(p), "status": "not_found"}
 
     original_content, err_dict = _read_original_content(p)
-    if err_dict is not None:
-        return err_dict
+    if err_dict is not None or original_content is None:
+        return err_dict or {"path": str(p), "status": "error", "error": "Unable to read file"}
 
     count = original_content.count(old_string)
     if count > 1:
@@ -710,8 +710,8 @@ def multiedit(
         return {"path": str(p), "status": "not_found"}
 
     original_content, err_dict = _read_original_content(p)
-    if err_dict is not None:
-        return err_dict
+    if err_dict is not None or original_content is None:
+        return err_dict or {"path": str(p), "status": "error", "error": "Unable to read file"}
     working_content = original_content
 
     for i, edit in enumerate(edits):

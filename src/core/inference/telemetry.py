@@ -23,24 +23,28 @@ def publish_model_response(
     latency: float,
     extra: Optional[Dict[str, Any]] = None,
 ) -> None:
-    payload = {
-        "provider": provider,
-        "model": model,
-        "prompt_tokens": int(prompt_tokens or 0),
-        "completion_tokens": int(completion_tokens or 0),
-        "total_tokens": int(total_tokens or 0),
-        "latency": float(latency or 0.0),
-        "ts": time.time(),
-    }
+    payload_extra: Optional[Dict[str, Any]] = None
     if extra:
         try:
             from src.core.security.redaction import redact_data
-            payload["extra"] = redact_data(extra)
+            redacted = redact_data(extra)
+            payload_extra = redacted if isinstance(redacted, dict) else dict(extra)
         except Exception:
-            payload["extra"] = extra
+            payload_extra = dict(extra)
     try:
         if event_bus and hasattr(event_bus, "publish"):
-            event_bus.publish_typed(ModelResponse(**payload))
+            event_bus.publish_typed(
+                ModelResponse(
+                    provider=provider,
+                    model=model,
+                    prompt_tokens=int(prompt_tokens or 0),
+                    completion_tokens=int(completion_tokens or 0),
+                    total_tokens=int(total_tokens or 0),
+                    latency=float(latency or 0.0),
+                    ts=time.time(),
+                    extra=payload_extra,
+                )
+            )
     except Exception:
         # best-effort
         pass

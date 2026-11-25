@@ -327,7 +327,7 @@ async def _dispatch_tool_calls(
                     for (_cid, t_name, t_args, _otc) in active_items
                 ]
             )
-            paired_outcomes = [(item, raw_res, None) for item, raw_res in zip(active_items, raw_results)]
+            paired_outcomes: list[tuple[Any, Any, Any]] = [(item, raw_res, None) for item, raw_res in zip(active_items, raw_results)]
         else:
             item = active_items[0]
             call_id, tool_name, tool_args, _ = item
@@ -384,7 +384,7 @@ async def _dispatch_tool_calls(
 
             try:
                 if bus:
-                    from src.core.messaging.events import ToolResult
+                    from src.core.messaging.event_types import ToolResult
 
                     bus.publish_typed(ToolResult(tool=tool_name, result=tool_result, turn=turns_taken))
             except Exception:
@@ -454,7 +454,7 @@ async def frontier_loop_node(
     elif isinstance(runtime_policy, dict) and runtime_policy.get("turn_limit"):
         effective_max_turns = int(runtime_policy["turn_limit"])
     elif state.get("max_turns"):
-        effective_max_turns = int(state["max_turns"])
+        effective_max_turns = int(state.get("max_turns") or _MAX_FRONTIER_TURNS)
     else:
         effective_max_turns = _MAX_FRONTIER_TURNS
 
@@ -512,7 +512,7 @@ async def frontier_loop_node(
     kv_gov: KVCacheGovernor | None = None
     try:
         if model_name:
-            kv_gov = get_or_create_governor_for_orchestrator(orchestrator, model_name, state=state)
+            kv_gov = get_or_create_governor_for_orchestrator(orchestrator, model_name, state=dict(state))
     except Exception:
         pass
 

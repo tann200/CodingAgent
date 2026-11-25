@@ -84,10 +84,12 @@ async def _verification_node_impl(state: StateLike, config: RunnerConfig) -> Dic
     orch = _resolve_orchestrator(state, config)
     if orch and getattr(orch, "_session_modified_files", None):
         session_modified.update(orch._session_modified_files)
-    if state.get("modified_files"):
-        session_modified.update(state.get("modified_files"))
-    if state.get("_session_modified_files"):
-        session_modified.update(state.get("_session_modified_files"))
+    _state_mod = state.get("modified_files")
+    if isinstance(_state_mod, (list, set, tuple)):
+        session_modified.update(_state_mod)
+    _state_sess_mod = state.get("_session_modified_files")
+    if isinstance(_state_sess_mod, (list, set, tuple)):
+        session_modified.update(_state_sess_mod)
 
     last_action = state.get("last_action") or {}
     action_side_effects: list[str] = []
@@ -206,7 +208,8 @@ async def _verification_node_impl(state: StateLike, config: RunnerConfig) -> Dic
 
     rt = state.get("runtime")
     is_canonical_run = isinstance(rt, Mapping)
-    rt_policy = rt.get("policy") if is_canonical_run and isinstance(rt.get("policy"), Mapping) else {}
+    _raw_pol = rt.get("policy") if isinstance(rt, Mapping) else None
+    rt_policy: Mapping[str, Any] = _raw_pol if isinstance(_raw_pol, Mapping) else {}
     verification_mode = str(rt_policy.get("verification_mode") or "")
 
     verified_hashes: Dict[str, str] = dict(state.get("_verified_file_hashes") or {})

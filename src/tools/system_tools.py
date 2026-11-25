@@ -163,7 +163,7 @@ def grep(
 
         regex = re.compile(pattern)
         out_lines: list[str] = []
-        matches: list[dict] = []
+        matches = []
 
         candidates = [search_path] if search_path.is_file() else search_path.rglob("*")
         for p in candidates:

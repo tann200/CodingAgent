@@ -603,8 +603,8 @@ class Orchestrator:
         try:
             _dloop = getattr(self, "_deferred_loop", None)
             _dthread = getattr(self, "_deferred_loop_thread", None)
-            self._deferred_loop = None
-            self._deferred_loop_thread = None
+            setattr(self, "_deferred_loop", None)
+            setattr(self, "_deferred_loop_thread", None)
             if _dloop is not None and not _dloop.is_closed():
                 _dloop.call_soon_threadsafe(_dloop.stop)
             if _dthread is not None and _dthread.is_alive():

@@ -119,11 +119,12 @@ def _select_default_adapter(orch: Any, pm: Any) -> None:
 def _publish_startup_events(orch: Any, pm: Any) -> None:
     """Publish orchestrator startup events to the active event buses."""
     try:
-        payload = {"time": time.time(), "working_dir": str(orch.working_dir)}
+        now_ts = float(time.time())
+        wd_str = str(orch.working_dir)
         try:
             guilogger.info("Orchestrator: publishing startup to orch.event_bus")
             orch.event_bus.publish_typed(
-                OrchestratorStartup(time=payload["time"], working_dir=payload["working_dir"])
+                OrchestratorStartup(time=now_ts, working_dir=wd_str)
             )
         except Exception:
             pass
@@ -133,7 +134,7 @@ def _publish_startup_events(orch: Any, pm: Any) -> None:
             if pm_bus and pm_bus is not orch.event_bus:
                 guilogger.info("Orchestrator: publishing startup to pm_bus")
                 pm_bus.publish_typed(
-                    OrchestratorStartup(time=payload["time"], working_dir=payload["working_dir"])
+                    OrchestratorStartup(time=now_ts, working_dir=wd_str)
                 )
         except Exception:
             pass

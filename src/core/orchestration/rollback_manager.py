@@ -469,12 +469,12 @@ class RollbackManager:
                                 except Exception:
                                     pass
                         else:
-                            with os.fdopen(fd, "w", encoding="utf-8") as f:
+                            with os.fdopen(fd, "w", encoding="utf-8") as tf:
                                 fd = None
-                                f.write(snap.content)
+                                tf.write(snap.content)
                                 try:
-                                    f.flush()
-                                    os.fsync(f.fileno())
+                                    tf.flush()
+                                    os.fsync(tf.fileno())
                                 except Exception:
                                     pass
                         try:

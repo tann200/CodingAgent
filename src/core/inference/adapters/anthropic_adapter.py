@@ -147,7 +147,7 @@ class AnthropicAdapter(OpenAICompatibleAdapter):
     # ------------------------------------------------------------------
 
     @staticmethod
-    def _preprocess_messages(
+    def _preprocess_messages(  # type: ignore[override]
         messages: List[Dict[str, Any]],
     ) -> List[Dict[str, Any]]:
         """Split system prompt on the dynamic-boundary sentinel and wire cache_control.

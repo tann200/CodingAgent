@@ -43,7 +43,7 @@ except Exception:
     except Exception:
         import logging
 
-        def get_logger(name: str) -> logging.Logger:
+        def get_logger(name: str = "app") -> logging.Logger:
             return logging.getLogger(name)
 
 

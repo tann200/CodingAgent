@@ -47,11 +47,9 @@ async def _initialize_node_impl(state: StateLike, config: RunnerConfig) -> Dict[
             from src.core.inference.model_tiers import classify_model
             from src.core.inference.provider_utils import resolve_provider_and_model
 
-            provider, model = resolve_provider_and_model(orchestrator)
-            if not isinstance(provider, str):
-                provider = ""
-            if not isinstance(model, str):
-                model = ""
+            _p_raw, _m_raw = resolve_provider_and_model(orchestrator)
+            provider = _p_raw if isinstance(_p_raw, str) else ""
+            model = _m_raw if isinstance(_m_raw, str) else ""
             adapter = getattr(orchestrator, "_adapter", None) or getattr(orchestrator, "adapter", None)
             raw_ctx = getattr(adapter, "context_window", 0)
             ctx_window = int(raw_ctx) if isinstance(raw_ctx, (int, float)) else 0

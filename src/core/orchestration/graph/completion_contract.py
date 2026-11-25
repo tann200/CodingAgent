@@ -162,8 +162,8 @@ def evaluate_completion_contract(
         if isinstance(last_result, Mapping):
             last_ok = last_result.get("ok")
             last_status = last_result.get("status")
-            if last_ok is None and isinstance(last_result.get("result"), Mapping):
-                res_inner = last_result.get("result")
+            res_inner = last_result.get("result")
+            if last_ok is None and isinstance(res_inner, Mapping):
                 last_ok = res_inner.get("ok")
                 last_status = res_inner.get("status")
 

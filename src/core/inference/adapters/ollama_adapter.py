@@ -555,8 +555,8 @@ class OllamaAdapter(LLMClient):
 
     def _extract_ollama_options(self, kwargs: dict) -> tuple[dict, dict]:
         """Separates Ollama-specific options from generic kwargs."""
-        options = {}
-        payload_kwargs = {}
+        options: dict[str, Any] = {}
+        payload_kwargs: dict[str, Any] = {}
         for k, v in kwargs.items():
             if k == "kv_cache_quant":
                 if isinstance(v, str) and v.strip():
