@@ -171,19 +171,11 @@ class OllamaAdapter(LLMClient):
             self.provider = None
 
         # If base_url provided by caller, prefer that and consider provider present
-        raw_base_url = base_url or (
+        self.base_url = base_url or (
             self.provider.get("base_url")  # type: ignore[union-attr]
             if self.provider
             else "http://localhost:11434/api"
         )
-        # TASK-39: Normalize bare Ollama root URLs (e.g. http://127.0.0.1:11434 -> /api)
-        if isinstance(raw_base_url, str):
-            stripped = raw_base_url.rstrip("/")
-            if stripped and not stripped.endswith("/api") and not stripped.endswith("/v1"):
-                raw_base_url = f"{stripped}/api"
-            else:
-                raw_base_url = stripped
-        self.base_url = raw_base_url
         self.api_key = api_key or (
             self.provider.get("api_key") if self.provider else None  # type: ignore[union-attr]
         )
@@ -894,7 +886,10 @@ class OllamaAdapter(LLMClient):
         model_name = self._select_model_name(model)
         if model_name is None:
             raise ValueError("No model available for chat.")
-        url = f"{self.base_url}/chat"
+        # TASK-39: Normalize bare root URL at request time (preserves self.base_url verbatim)
+        _root = (self.base_url or "http://localhost:11434/api").rstrip("/")
+        _api_base = _root if (_root.endswith("/api") or _root.endswith("/v1")) else f"{_root}/api"
+        url = f"{_api_base}/chat"
 
         messages = self._format_outbound_messages(messages)
 

@@ -81,12 +81,20 @@ class TestSyntaxHintAndOllamaNormalization:
         assert res["ok"] is False
         assert "real newline characters" in res["error"]
 
-    def test_ollama_bare_url_normalized_to_api(self) -> None:
+    def test_ollama_bare_url_routes_chat_to_api_chat(self) -> None:
         adapter = OllamaAdapter(base_url="http://127.0.0.1:11434", models=["qwen3.8-9b-distill:latest"])
-        assert adapter.base_url == "http://127.0.0.1:11434/api"
+        assert adapter.base_url == "http://127.0.0.1:11434"
+        called_urls: list[str] = []
 
-        already = OllamaAdapter(base_url="http://127.0.0.1:11434/api/", models=["qwen3.8-9b-distill:latest"])
-        assert already.base_url == "http://127.0.0.1:11434/api"
+        def _fake_post(url: str, payload: Dict[str, Any], timeout: Any = None) -> Any:
+            called_urls.append(url)
+            resp = MagicMock()
+            resp.json.return_value = {"message": {"role": "assistant", "content": "ok"}}
+            return resp
+
+        with patch.object(adapter, "_post_generation_with_retry", side_effect=_fake_post):
+            adapter._chat_internal([{"role": "user", "content": "hi"}], model="qwen3.8-9b-distill:latest")
+        assert called_urls == ["http://127.0.0.1:11434/api/chat"]
 
     def test_ollama_generate_includes_usage_dict(self) -> None:
         adapter = OllamaAdapter(base_url="http://127.0.0.1:11434/api", models=["test-model"])
