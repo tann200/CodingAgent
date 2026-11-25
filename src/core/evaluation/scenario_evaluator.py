@@ -293,17 +293,37 @@ class ScenarioEvaluator:
                     ):
                         metrics["malformed_tool_calls"] += 1
 
-                def _on_model_response(payload: Any) -> None:
+                def _payload_int(payload: Any, key: str) -> int:
                     if isinstance(payload, dict):
-                        metrics["prompt_tokens"] += int(payload.get("prompt_tokens") or 0)
-                        metrics["completion_tokens"] += int(payload.get("completion_tokens") or 0)
-                        if metrics["prefill_latency_ms"] == 0.0 and payload.get("latency"):
-                            metrics["prefill_latency_ms"] = float(payload["latency"]) * 1000.0
+                        val = payload.get(key)
+                    else:
+                        val = getattr(payload, key, None)
+                    try:
+                        return int(val or 0)
+                    except (TypeError, ValueError):
+                        return 0
+
+                def _payload_float(payload: Any, key: str) -> float:
+                    if isinstance(payload, dict):
+                        val = payload.get(key)
+                    else:
+                        val = getattr(payload, key, None)
+                    try:
+                        return float(val or 0.0)
+                    except (TypeError, ValueError):
+                        return 0.0
+
+                def _on_model_response(payload: Any) -> None:
+                    metrics["prompt_tokens"] += _payload_int(payload, "prompt_tokens")
+                    metrics["completion_tokens"] += _payload_int(payload, "completion_tokens")
+                    lat = _payload_float(payload, "latency")
+                    if metrics["prefill_latency_ms"] == 0.0 and lat > 0.0:
+                        metrics["prefill_latency_ms"] = lat * 1000.0
 
                 def _on_usage_turn_summary(payload: Any) -> None:
-                    if isinstance(payload, dict) and metrics["prompt_tokens"] == 0 and metrics["completion_tokens"] == 0:
-                        metrics["prompt_tokens"] += int(payload.get("prompt_tokens") or 0)
-                        metrics["completion_tokens"] += int(payload.get("completion_tokens") or 0)
+                    if metrics["prompt_tokens"] == 0 and metrics["completion_tokens"] == 0:
+                        metrics["prompt_tokens"] += _payload_int(payload, "prompt_tokens")
+                        metrics["completion_tokens"] += _payload_int(payload, "completion_tokens")
 
                 for topic, fn in (
                     ("tool.execute.start", _on_tool_start),
@@ -327,6 +347,25 @@ class ScenarioEvaluator:
                 except Exception:
                     pass
 
+            # TASK-39: In isolated temporary evaluation workdirs with no interactive
+            # TUI attached, allow sandboxed `run_tests`, `bash`, and `delegate_task`
+            # via scoped autonomous approval so the agent doesn't hang 120s waiting
+            # for a non-existent approval button. Always restore prior state.
+            _prev_autonomous: Optional[bool] = None
+            _prev_approve: Optional[set[str]] = None
+            try:
+                from src.tools import tools_config as _tc
+
+                _prev_autonomous = _tc.is_autonomous()
+                _prev_approve = set(_tc.get_autonomous_approve())
+                if not _prev_autonomous:
+                    _tc.set_autonomous(True)
+                    _tc.set_autonomous_approve(
+                        _prev_approve | {"run_tests", "bash", "delegate_task"}
+                    )
+            except Exception:
+                _prev_autonomous = None
+
             try:
                 _run_agent_for_scenario(agent, scenario, scenario_dir)
             except Exception as agent_err:
@@ -343,6 +382,29 @@ class ScenarioEvaluator:
                     error=str(agent_err),
                     **metrics,
                 )
+            finally:
+                if _prev_autonomous is not None:
+                    try:
+                        from src.tools import tools_config as _tc
+
+                        _tc.set_autonomous(_prev_autonomous)
+                        _tc.set_autonomous_approve(_prev_approve or set())
+                    except Exception:
+                        pass
+
+            # TASK-39: Fallback to agent cost_tracker totals if event-bus metrics remained 0
+            if (
+                metrics["prompt_tokens"] == 0
+                and metrics["completion_tokens"] == 0
+                and agent is not None
+            ):
+                tracker = getattr(agent, "cost_tracker", None) or getattr(agent, "_cost_tracker", None)
+                if tracker is not None:
+                    try:
+                        metrics["prompt_tokens"] = int(getattr(tracker, "total_prompt_tokens", 0) or 0)
+                        metrics["completion_tokens"] = int(getattr(tracker, "total_completion_tokens", 0) or 0)
+                    except Exception:
+                        pass
 
             # Verify
             passed, verification_output, edit_ok, verify_ran, verify_ok = (

@@ -40,7 +40,7 @@ codingagent init --dir /path/to/repository
 
 `init` creates `.codingAgent/` with agent configuration, hooks, and a project instruction file. Use `codingagent --help` for the complete command surface. Key commands include `init`, `system-prompt`, `session`, `status`, `doctor`, `context-report`, `bench-diff`, `skill`, `mcp`, and `diff`.
 
-Diagnose local model engines (Ollama, LM Studio, MLX, llama-server, vLLM, LiteLLM), inspect zero-config local runtime auto-tuning (`n_ctx`, KV quant, RAM headroom, recommended flat toolset), and validate native tool schemas:
+Diagnose local model engines (Ollama, LM Studio, MLX, llama-server, vLLM, LiteLLM), inspect zero-config local runtime auto-tuning (`n_ctx`, KV quant, RAM headroom, recommended flat toolset), and validate native tool schemas (automatically probing the live discovered local model with a cold-load-safe 30s timeout):
 
 ```bash
 codingagent doctor

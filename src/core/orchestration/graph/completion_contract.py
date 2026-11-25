@@ -114,6 +114,76 @@ def classify_task(
     return TaskType.INFORMATIONAL
 
 
+_NAMED_CREATE_PATTERNS: tuple[re.Pattern[str], ...] = (
+    # "create a file called hello.py", "create a test file test_math.py", "create main.py"
+    re.compile(
+        r"\b(?:create|write|add)\s+(?:a\s+)?(?:new\s+)?(?:test\s+|python\s+|config\s+|shared\s+)?(?:file|module)?\s*(?:called|named)?\s*`?([A-Za-z0-9_./-]+\.[A-Za-z0-9]{1,8})`?",
+        re.IGNORECASE,
+    ),
+    # "into a new file user_validator.py", "into constants.py"
+    re.compile(
+        r"\binto\s+(?:a\s+)?(?:new\s+)?(?:shared\s+)?(?:file|module)?\s*`?([A-Za-z0-9_./-]+\.[A-Za-z0-9]{1,8})`?",
+        re.IGNORECASE,
+    ),
+    # "split X into two files: math_utils.py (...) and string_utils.py (...)"
+    re.compile(
+        r"\bsplit\b[^\n]*?\binto\s+(?:two|three|multiple|\d+)\s+(?:separate\s+)?(?:files|modules)\s*[:\-]\s*(.+?)(?:\.\s+[A-Z]|\.$|\n|$)",
+        re.IGNORECASE,
+    ),
+)
+
+_FILENAME_TOKEN_RE = re.compile(r"`?([A-Za-z0-9_./-]+\.(?:py|js|ts|tsx|jsx|go|rs|java|rb|json|yaml|yml|toml|md|txt|sh))`?")
+
+
+def extract_requested_new_files(task: str) -> List[str]:
+    """Conservatively extract explicitly requested target filenames to create."""
+    cleaned = (task or "").strip()
+    if not cleaned:
+        return []
+    found: List[str] = []
+    seen: Set[str] = set()
+    for idx, pat in enumerate(_NAMED_CREATE_PATTERNS):
+        for m in pat.finditer(cleaned):
+            raw = m.group(1) or ""
+            candidates = _FILENAME_TOKEN_RE.findall(raw) if idx == 2 else [raw]
+            for cand in candidates:
+                norm = cand.strip("`\"'.,;:()[]{}").lstrip("./")
+                if not norm or "/" in norm and norm.startswith("http"):
+                    continue
+                if "." not in norm or norm.lower().endswith((".com", ".org", ".io")):
+                    continue
+                if norm not in seen:
+                    seen.add(norm)
+                    found.append(norm)
+    return found
+
+
+def _find_missing_deliverables(
+    task: str,
+    modified_files: Set[str],
+    working_dir: Optional[str],
+) -> List[str]:
+    """Return explicitly requested new filenames that are neither modified nor present on disk."""
+    requested = extract_requested_new_files(task)
+    if not requested:
+        return []
+    from pathlib import Path as _Path
+
+    mod_norm = {str(m).replace("\\", "/").lstrip("./") for m in modified_files}
+    mod_basenames = {_Path(m).name for m in mod_norm}
+    wd = _Path(working_dir) if working_dir else None
+
+    missing: List[str] = []
+    for req in requested:
+        req_norm = req.replace("\\", "/").lstrip("./")
+        if req_norm in mod_norm or _Path(req_norm).name in mod_basenames:
+            continue
+        if wd is not None and (wd / req_norm).exists():
+            continue
+        missing.append(req_norm)
+    return missing
+
+
 def evaluate_completion_contract(
     task: str,
     content_text: Optional[str] = None,
@@ -125,6 +195,7 @@ def evaluate_completion_contract(
     errors: Optional[List[str]] = None,
     last_tool_name: Optional[str] = None,
     mutating_tool_calls_count: int = 0,
+    working_dir: Optional[str] = None,
 ) -> CompletionContractVerdict:
     """Evaluate whether completion criteria are genuinely satisfied by concrete evidence."""
     cleaned_task = (task or "").strip()
@@ -207,6 +278,22 @@ def evaluate_completion_contract(
                 failure_reason="Task requested code or file modifications, but no files were modified.",
                 error_code="unverified_mutation_missing",
             )
+
+        # TASK-39: Named-deliverable check — prevent premature exit on multi-file tasks
+        # when an explicitly requested new file has not been created yet.
+        if working_dir is not None:
+            missing_files = _find_missing_deliverables(cleaned_task, mod_set, working_dir)
+            if missing_files:
+                return CompletionContractVerdict(
+                    is_complete=False,
+                    task_type=TaskType.MUTATING,
+                    failure_reason=(
+                        "Requested deliverable file(s) not created yet: "
+                        + ", ".join(missing_files)
+                    ),
+                    error_code="missing_named_deliverable",
+                    evidence={"modified_files": list(mod_set), "missing_files": missing_files},
+                )
 
         return CompletionContractVerdict(
             is_complete=True,

@@ -259,9 +259,12 @@ def _validate_candidate_syntax(orch: Any, path_arg: str, new_content: str) -> Op
         try:
             ast.parse(new_content)
         except SyntaxError as syn:
+            hint = ""
+            if "line continuation" in str(syn.msg or "").lower():
+                hint = " (Hint: pass real newline characters, not literal backslash-n '\\n' sequences.)"
             return {
                 "ok": False,
-                "error": f"Sandbox validation error: new content has a syntax error at line {syn.lineno}: {syn.msg}",
+                "error": f"Sandbox validation error: new content has a syntax error at line {syn.lineno}: {syn.msg}{hint}",
             }
         return None
 

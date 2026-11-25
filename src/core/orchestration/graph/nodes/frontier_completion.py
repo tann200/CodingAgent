@@ -270,6 +270,7 @@ def handle_no_tool_completion(
         errors=effective_errors,
         last_tool_name=last_tool_name or state.get("last_tool_name"),
         mutating_tool_calls_count=mutating_tool_calls_count,
+        working_dir=str(getattr(orchestrator, "working_dir", "") or "") or None,
     )
 
     if contract.is_complete:

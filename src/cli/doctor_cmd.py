@@ -147,7 +147,7 @@ def test_server_native_tool_acceptance(
     provider_type: str,
     model: str,
     schemas: List[Dict[str, Any]],
-    timeout: float = 8.0,
+    timeout: float = 30.0,
 ) -> Tuple[bool, Optional[str]]:
     """Send a minimal test payload with tool schemas to verify native tool compatibility."""
     clean_url = (url or "").rstrip("/")
@@ -155,12 +155,13 @@ def test_server_native_tool_acceptance(
 
     try:
         if p_type == "ollama":
-            endpoint = f"{clean_url}/api/chat"
+            endpoint = f"{clean_url}/api/chat" if not clean_url.endswith("/api") else f"{clean_url}/chat"
             payload: Dict[str, Any] = {
                 "model": model,
                 "messages": [{"role": "user", "content": "Respond with 'READY'"}],
                 "tools": schemas,
                 "stream": False,
+                "options": {"num_predict": 8},
             }
             resp = requests.post(endpoint, json=payload, timeout=timeout)
             if resp.status_code == 200:
@@ -322,7 +323,14 @@ def diagnose_ollama_provider(
     if isinstance(default_cfg_model, dict):
         default_cfg_model = default_cfg_model.get("id") or default_cfg_model.get("name")
 
-    chosen_model = target_model or default_cfg_model or (models_found[0] if models_found else "qwen3.5:9b")
+    if target_model:
+        chosen_model = target_model
+    elif default_cfg_model and (not models_found or default_cfg_model in models_found):
+        chosen_model = default_cfg_model
+    elif models_found:
+        chosen_model = models_found[0]
+    else:
+        chosen_model = "qwen3.5:9b"
     diag["target_model"] = chosen_model
 
     # Check model architecture via /api/show

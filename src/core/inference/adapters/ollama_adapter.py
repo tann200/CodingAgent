@@ -170,11 +170,19 @@ class OllamaAdapter(LLMClient):
             self.provider = None
 
         # If base_url provided by caller, prefer that and consider provider present
-        self.base_url = base_url or (
+        raw_base_url = base_url or (
             self.provider.get("base_url")  # type: ignore[union-attr]
             if self.provider
             else "http://localhost:11434/api"
         )
+        # TASK-39: Normalize bare Ollama root URLs (e.g. http://127.0.0.1:11434 -> /api)
+        if isinstance(raw_base_url, str):
+            stripped = raw_base_url.rstrip("/")
+            if stripped and not stripped.endswith("/api") and not stripped.endswith("/v1"):
+                raw_base_url = f"{stripped}/api"
+            else:
+                raw_base_url = stripped
+        self.base_url = raw_base_url
         self.api_key = api_key or (
             self.provider.get("api_key") if self.provider else None  # type: ignore[union-attr]
         )
@@ -659,6 +667,11 @@ class OllamaAdapter(LLMClient):
                 "prompt_tokens": p_tokens,
                 "completion_tokens": c_tokens,
                 "total_tokens": p_tokens + c_tokens,
+                "usage": {
+                    "prompt_tokens": p_tokens,
+                    "completion_tokens": c_tokens,
+                    "total_tokens": p_tokens + c_tokens,
+                },
                 "choices": [choice],
                 "raw": raw_response,
             }
