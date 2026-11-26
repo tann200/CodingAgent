@@ -283,3 +283,38 @@ def reset_governor_for_orchestrator(orchestrator: Optional[object]) -> None:
     gov = getattr(orchestrator, "_kv_governor", None) if orchestrator is not None else None
     if isinstance(gov, KVCacheGovernor):
         gov.reset()
+
+
+def create_governor_from_gguf(
+    gguf_path: str | object,
+    *,
+    max_vram_gb: float,
+    os_name: str = "darwin",
+    kv_quant: str = "auto",
+) -> Optional[KVCacheGovernor]:
+    """Create an exact ``KVCacheGovernor`` from a local GGUF file header (TASK-35)."""
+    from pathlib import Path
+    from src.core.inference.gguf_header import (
+        estimate_gguf_memory_fit,
+        read_gguf_header,
+    )
+
+    info = read_gguf_header(Path(str(gguf_path)))
+    fit = estimate_gguf_memory_fit(
+        info,
+        total_memory_gb=max_vram_gb,
+        os_name=os_name,
+        kv_quant=kv_quant,
+    )
+    if not fit.fits or fit.kv_mb_per_1k_tokens <= 0:
+        return None
+    # Pass raw f16 kv_per_token_mb and let KVCacheGovernor apply kv_quant scaling?
+    # Better: pass exact quantized kv_mb_per_1k_tokens directly with kv_cache_quant=False
+    # so the governor matches GgufMemoryFit to the exact byte without double-scaling.
+    return KVCacheGovernor(
+        max_vram_gb=fit.available_memory_gb,
+        model_weights_gb=fit.weight_gb,
+        kv_per_token_mb=fit.kv_mb_per_1k_tokens,
+        overhead_gb=fit.os_reserve_gb + fit.compute_buffer_gb,
+        kv_cache_quant=False,
+    )

@@ -288,6 +288,48 @@ def _parse_args(argv: list) -> argparse.Namespace:
         help="Output diff verdict as JSON.",
     )
 
+    # TASK-35: `local-launch` subcommand — bounded GGUF memory fit & llama-server script generator
+    ll_parser = subparsers.add_parser(
+        "local-launch",
+        help="Inspect a local .gguf file, compute safe n_ctx & KV quant, and generate a llama-server launch script.",
+    )
+    ll_parser.add_argument("model_path", help="Path to local .gguf model file.")
+    ll_parser.add_argument(
+        "--script",
+        action="store_true",
+        default=False,
+        help="Print a copy-pasteable POSIX bash launch script.",
+    )
+    ll_parser.add_argument(
+        "--autostart",
+        action="store_true",
+        default=False,
+        help="Start llama-server directly if the model fits available memory.",
+    )
+    ll_parser.add_argument("--host", default="127.0.0.1", help="Bind host (default: 127.0.0.1).")
+    ll_parser.add_argument("--port", type=int, default=8080, help="Bind port (default: 8080).")
+    ll_parser.add_argument(
+        "--kv-quant",
+        choices=("auto", "f16", "bf16", "q8_0", "q4_0"),
+        default="auto",
+        help="KV-cache quantization override (default: auto).",
+    )
+    ll_parser.add_argument(
+        "--ctx",
+        type=int,
+        default=None,
+        help="Optional maximum target context window (never exceeds hardware fit).",
+    )
+    ll_parser.add_argument(
+        "--memory-gb",
+        type=float,
+        default=None,
+        help="Override detected unified RAM / VRAM in GiB.",
+    )
+    ll_parser.add_argument("--cache-reuse", type=int, default=256, help="llama-server --cache-reuse value (default: 256).")
+    ll_parser.add_argument("--parallel", type=int, default=1, help="llama-server --parallel slot count (default: 1).")
+    ll_parser.add_argument("--json", action="store_true", default=False, help="Output fit report and command as JSON.")
+
     # Global (non-subcommand) flags
     parser.add_argument(
         "--output-format",
@@ -1066,6 +1108,12 @@ def main(argv: Optional[list] = None) -> int:
         from src.core.evaluation.cli import _cmd_bench_diff
 
         return _cmd_bench_diff(args)
+
+    # TASK-35: Dispatch `local-launch` subcommand
+    if getattr(args, "subcommand", None) == "local-launch":
+        from src.cli.local_launch_cmd import run_local_launch
+
+        return run_local_launch(args)
 
     # UX-2: Dispatch --validate-config flag
     if getattr(args, "validate_config", False):

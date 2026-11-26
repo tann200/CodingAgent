@@ -38,14 +38,16 @@ Start a project-local agent workspace:
 codingagent init --dir /path/to/repository
 ```
 
-`init` creates `.codingAgent/` with agent configuration, hooks, and a project instruction file. Use `codingagent --help` for the complete command surface. Key commands include `init`, `system-prompt`, `session`, `status`, `doctor`, `context-report`, `bench-diff`, `skill`, `mcp`, and `diff`.
+`init` creates `.codingAgent/` with agent configuration, hooks, and a project instruction file. Use `codingagent --help` for the complete command surface. Key commands include `init`, `system-prompt`, `session`, `status`, `doctor`, `local-launch`, `context-report`, `bench-diff`, `skill`, `mcp`, and `diff`.
 
-Diagnose local model engines (Ollama, LM Studio, MLX, llama-server, vLLM, LiteLLM), inspect zero-config local runtime auto-tuning (`n_ctx`, KV quant, RAM headroom, recommended flat toolset), and validate native tool schemas (automatically probing the live discovered local model with a cold-load-safe 30s timeout):
+Diagnose local model engines (Ollama, LM Studio, MLX, llama-server, vLLM, LiteLLM), inspect zero-config local runtime auto-tuning (`n_ctx`, KV quant, RAM headroom, recommended flat toolset), size local `.gguf` files safely (`local-launch` uses a pure-stdlib DoS-bounded GGUF v2/v3 header reader with `O_NOFOLLOW` + regular-file verification), and validate native tool schemas (automatically probing the live discovered local model with a cold-load-safe 30s timeout):
 
 ```bash
 codingagent doctor
 codingagent doctor --json
 codingagent doctor --provider ollama --validate-tools
+codingagent local-launch /path/to/model.gguf --script
+codingagent local-launch /path/to/model.gguf --json --memory-gb 16
 codingagent context-report --tier compact-flat
 codingagent bench-diff baseline.json candidate.json --threshold 0.02
 ```

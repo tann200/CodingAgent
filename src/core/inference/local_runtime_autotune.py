@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import platform
 import time
+from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
 import requests
@@ -79,6 +80,7 @@ def compute_safe_local_defaults(
     model: Optional[str] = None,
     provider: Optional[str] = None,
     live_n_ctx: Optional[int] = None,
+    gguf_path: Optional[str | Path] = None,
 ) -> Dict[str, Any]:
     """Compute hardware-safe local inference defaults (``n_ctx``, KV quant, toolset)."""
     effective_mem_gb = max(
@@ -106,6 +108,38 @@ def compute_safe_local_defaults(
         kv_cache_quant = "q4_0"
         default_tier_model = "qwen3:4b"
 
+    gguf_fit_summary: Optional[Dict[str, Any]] = None
+    if gguf_path is not None:
+        from src.core.inference.gguf_header import (
+            estimate_gguf_memory_fit,
+            read_gguf_header,
+        )
+
+        g_info = read_gguf_header(gguf_path)
+        g_fit = estimate_gguf_memory_fit(
+            g_info,
+            total_memory_gb=effective_mem_gb,
+            os_name=os_name,
+            kv_quant="auto",
+        )
+        hw_n_ctx = g_fit.recommended_n_ctx if g_fit.recommended_n_ctx > 0 else hw_n_ctx
+        kv_cache_quant = g_fit.kv_quant
+        if not model:
+            model = g_info.model_name
+        gguf_fit_summary = {
+            "fits": g_fit.fits,
+            "architecture": g_info.architecture,
+            "model_name": g_info.model_name,
+            "weight_gb": g_fit.weight_gb,
+            "kv_budget_gb": g_fit.kv_budget_gb,
+            "kv_quant": g_fit.kv_quant,
+            "kv_mb_per_1k_tokens": g_fit.kv_mb_per_1k_tokens,
+            "attention_kv_layers": g_fit.attention_kv_layers,
+            "block_count": g_fit.block_count,
+            "recommended_n_ctx": g_fit.recommended_n_ctx,
+            "reason": g_fit.reason,
+        }
+
     target_model = model or default_tier_model
     effective_n_ctx = int(live_n_ctx) if (live_n_ctx and live_n_ctx > 0) else hw_n_ctx
     policy = resolve_runtime_policy(
@@ -114,7 +148,7 @@ def compute_safe_local_defaults(
         context_window=effective_n_ctx,
     )
 
-    return {
+    result: Dict[str, Any] = {
         "ram_gb": round(float(ram_gb or 0.0), 1),
         "vram_gb": round(float(vram_gb or 0.0), 1),
         "effective_accelerator_gb": round(effective_mem_gb, 1),
@@ -128,6 +162,9 @@ def compute_safe_local_defaults(
         "verification_mode": policy.verification_mode,
         "parallel_reads": policy.max_parallel_reads,
     }
+    if gguf_fit_summary is not None:
+        result["gguf_fit"] = gguf_fit_summary
+    return result
 
 
 def detect_local_runtime_profile(
