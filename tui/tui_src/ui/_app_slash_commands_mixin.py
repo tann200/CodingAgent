@@ -33,6 +33,7 @@ Available commands:
   /status        — show agent/provider/model status & runtime policy
   /doctor        — diagnose running local models & flat tool schemas
   /skills [name] — inspect packaged skills (polyglot-verify, git-safe-review…)
+  /theme [name]  — list or switch built-in Textual TUI theme
   /fast          — switch to fastest/smallest model (NANO tier)
   /provider [n]  — list or switch provider by index/name
   /model [n]     — list or switch model for active provider
@@ -202,6 +203,9 @@ class AppSlashCommandsMixin(AgentAppProtocol):
 
         elif cmd in ("skills", "skill"):
             await self._slash_skills(args)
+
+        elif cmd == "theme":
+            await self._slash_theme(args)
 
         elif cmd == "fast":
             await self._slash_fast()
@@ -466,6 +470,44 @@ class AppSlashCommandsMixin(AgentAppProtocol):
                 lines.append(f"[dim]── Instructions ({escape(file_name)}) ──[/]\n{escape(preview)}")
 
             w = Static("\n".join(lines), classes="system_msg skill_detail", markup=True)
+            await self._mount_chat_widget(w)
+
+    async def _slash_theme(self: AgentAppProtocol, args: str) -> None:
+        """TASK-38: /theme [name] — list or switch built-in Textual themes, persisted in SettingsStore."""
+        available = sorted(getattr(self, "available_themes", {}).keys())
+        arg = (args or "").strip()
+        if not arg:
+            current = str(getattr(self, "theme", "textual-dark"))
+            listing = ", ".join(available) if available else "textual-dark, textual-light"
+            w = Static(
+                f"[bold]Active theme:[/] {escape(current)}\n"
+                f"[dim]Available ({len(available)}):[/] {escape(listing)}\n"
+                f"[dim]Usage: /theme <name> (e.g. /theme textual-light, /theme nord)[/]",
+                classes="system_msg",
+                markup=True,
+            )
+            await self._mount_chat_widget(w)
+            return
+
+        if available and arg not in available:
+            w = Static(
+                f"[red]Unknown theme:[/] {escape(arg)}\n"
+                f"[dim]Available:[/] {escape(', '.join(available))}",
+                classes="error_msg",
+                markup=True,
+            )
+            await self._mount_chat_widget(w)
+            return
+
+        try:
+            self._theme_user_selected = True  # type: ignore[attr-defined]
+            self.theme = arg  # type: ignore[misc]
+            if getattr(self, "_settings", None) is not None and hasattr(self._settings, "update"):
+                self._settings.update({"theme": arg})
+            w = Static(f"[green]✓ Theme switched to[/] [bold]{escape(arg)}[/]", classes="system_msg", markup=True)
+            await self._mount_chat_widget(w)
+        except Exception as exc:
+            w = Static(f"[red]Failed to switch theme:[/] {escape(str(exc))}", classes="error_msg", markup=True)
             await self._mount_chat_widget(w)
 
     async def _slash_reasoning(self: AgentAppProtocol, args: str) -> None:

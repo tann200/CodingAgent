@@ -53,16 +53,17 @@ async def test_stream_view_detached_on_final_response():
     assert app._current_stream is None
     assert app._active_stream_view is stream_widget
 
-    # 2. Final response arrives
+    # 2. Final response arrives -> TASK-38 finalizes active MarkdownStream in place
+    # (zero tear-down/remount flicker, zero duplicate AgentArtifact mounted)
     ev_final = AgentFinalResponse(content="Hello world!")
     await app._chat_handle_final_response(ev_final)
 
-    # Stream view should have been removed and detached
-    stream_widget.remove.assert_called_once()
-    assert getattr(stream_widget, "_detached", False) is True
     assert app._active_stream_view is None
+    assert stream_widget.finalize() == "Hello world!"
+    assert len(app.mounted) == 0
 
-    # Only the AgentArtifact is mounted
+    # 3. When no stream was active, AgentFinalResponse mounts a single AgentArtifact
+    await app._chat_handle_final_response(AgentFinalResponse(content="Direct answer"))
     assert len(app.mounted) == 1
     assert isinstance(app.mounted[0], AgentArtifact)
-    assert app.mounted[0]._content_str == "Hello world!"
+    assert app.mounted[0]._content_str == "Direct answer"

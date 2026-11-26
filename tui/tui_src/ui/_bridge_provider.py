@@ -455,3 +455,129 @@ class BridgeProviderMixin(AgentBridgeProtocol):
         except Exception:
             pass
         return {}
+
+    @staticmethod
+    def load_copilot_auth_module() -> Any:
+        """Load github_copilot_auth via AgentBridge boundary (TASK-38)."""
+        from .core_bridge import _load_copilot_auth_module
+
+        return _load_copilot_auth_module()
+
+    def is_provider_configured(self, provider_id: str) -> bool:
+        """Return True if *provider_id* already has an initialized provider adapter."""
+        try:
+            from src.core.inference.llm_manager import canonical_provider, get_provider_manager
+
+            pm = get_provider_manager()
+            return pm.get_provider(canonical_provider(provider_id)) is not None
+        except Exception:
+            return False
+
+    def activate_provider(self, provider_id: str) -> bool:
+        """Persist active provider in UserPrefs and swap live orchestrator adapter (TASK-38)."""
+        try:
+            import json as _json
+            import os as _os
+            import tempfile as _tf
+            from src.core.inference.llm_manager import (
+                _providers_json_lock,
+                canonical_provider,
+                get_provider_manager,
+                resolve_config_path,
+            )
+
+            norm_id = canonical_provider(provider_id)
+            pm = get_provider_manager()
+            cfg_path = resolve_config_path(None)
+            try:
+                from src.core.inference.provider_config import is_bundled_providers_config
+
+                is_bundled = is_bundled_providers_config(cfg_path)
+            except Exception:
+                is_bundled = False
+
+            if not is_bundled and cfg_path.exists():
+                with _providers_json_lock:
+                    raw = _json.loads(cfg_path.read_text(encoding="utf-8"))
+                    entries = raw if isinstance(raw, list) else [raw]
+                    for p in entries:
+                        if isinstance(p, dict):
+                            key = canonical_provider(p.get("type") or p.get("name") or "")
+                            p["active"] = key == norm_id
+                    new_text = _json.dumps(entries, indent=2)
+                    fd, tmp = _tf.mkstemp(dir=cfg_path.parent, suffix=".tmp")
+                    try:
+                        with _os.fdopen(fd, "w", encoding="utf-8") as f:
+                            f.write(new_text)
+                        _os.replace(tmp, cfg_path)
+                    except Exception:
+                        try:
+                            _os.unlink(tmp)
+                        except OSError:
+                            pass
+                        raise
+
+            try:
+                from src.core.user_prefs import UserPrefs
+
+                prefs = UserPrefs.load()
+                prefs.selected_model_provider = norm_id
+                prefs.save()
+            except Exception:
+                pass
+
+            adapter = pm.get_provider(norm_id)
+            orch = getattr(self, "_orchestrator", None)
+            if orch is not None:
+                orch.adapter = adapter
+            try:
+                self._publish_active_provider_status()
+            except Exception:
+                pass
+            return True
+        except Exception as exc:
+            logger.error("activate_provider(%s) failed: %s", provider_id, exc)
+            return False
+
+    def update_role_model(self, model_id: str, provider_id: str | None = None) -> None:
+        """Switch provider (if needed) and update the active adapter's model (TASK-38)."""
+        if provider_id:
+            try:
+                from src.core.inference.llm_manager import canonical_provider
+
+                norm_req = canonical_provider(provider_id)
+                orch = getattr(self, "_orchestrator", None)
+                current_adapter = getattr(orch, "_adapter", None) if orch else None
+                current_key = None
+                if current_adapter is not None:
+                    prov_dict = getattr(current_adapter, "provider", None)
+                    raw = (prov_dict.get("name") or prov_dict.get("type") or "") if isinstance(prov_dict, dict) else ""
+                    current_key = canonical_provider(raw or getattr(current_adapter, "name", "") or "")
+                if current_key != norm_req:
+                    self.activate_provider(provider_id)
+            except Exception as exc:
+                logger.debug("update_role_model provider switch: %s", exc)
+
+        try:
+            orch = getattr(self, "_orchestrator", None)
+            adapter = getattr(orch, "_adapter", None) if orch is not None else None
+            if adapter is None or not isinstance(model_id, str) or not model_id.strip() or "MagicMock" in model_id:
+                return
+            clean_id = model_id.strip()
+            for attr in ("default_model", "model", "_model"):
+                if hasattr(adapter, attr):
+                    try:
+                        setattr(adapter, attr, clean_id)
+                    except Exception:
+                        pass
+                    break
+            if hasattr(adapter, "models") and isinstance(adapter.models, list):
+                valid = [m for m in adapter.models if isinstance(m, str) and m.strip() and "MagicMock" not in m]
+                if clean_id in valid:
+                    valid.remove(clean_id)
+                valid.insert(0, clean_id)
+                adapter.models[:] = valid
+            if orch is not None and hasattr(orch, "_publish_active_config"):
+                orch._publish_active_config()
+        except Exception as exc:
+            logger.debug("update_role_model adapter update: %s", exc)

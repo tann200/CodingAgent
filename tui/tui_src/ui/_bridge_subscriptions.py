@@ -210,6 +210,7 @@ class BridgeSubscriptionsMixin(AgentBridgeProtocol):
 
     def cleanup(self) -> None:
         """Unsubscribe all handlers (§10.2 step 5) and release thread pool."""
+        setattr(self, "_closed", True)
         pool = getattr(self, "_thread_pool", None)
         if pool is not None:
             pool.shutdown(wait=False)
@@ -222,4 +223,15 @@ class BridgeSubscriptionsMixin(AgentBridgeProtocol):
                 except Exception as exc:
                     logger.warning("bridge: failed to unsubscribe %s: %s", event_cls.__name__, exc)
         self._typed_subscriptions.clear()
+        orch = getattr(self, "_orchestrator", None)
+        if orch is not None:
+            try:
+                close_fn = getattr(orch, "close", None)
+                if callable(close_fn):
+                    try:
+                        close_fn(wait=False)
+                    except TypeError:
+                        close_fn()
+            except Exception:
+                pass
         logger.info("MessageBus: all subscriptions removed")

@@ -304,6 +304,8 @@ class AgentBridge(
 
     def _schedule_callback(self, fn: Callable, *args) -> None:
         """Thread-safe bridge to Textual's event loop (§9.6)."""
+        if getattr(self, "_closed", False) or not getattr(self.app, "is_running", True):
+            return
         try:
             loop = asyncio.get_running_loop()
             app_loop = getattr(self.app, "_loop", None)

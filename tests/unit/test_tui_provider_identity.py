@@ -54,11 +54,15 @@ def test_settings_store_flat_models_include_provider_id() -> None:
     ]
 
 
-def test_palette_provider_menu_uses_normalized_provider_id() -> None:
-    from tui.tui_src.ui.features.palette.logic import get_provider_menu
+def test_palette_provider_uses_normalized_provider_id() -> None:
+    from tui.tui_src.ui.settings import SettingsStore
 
-    items = get_provider_menu(
-        [{"name": "GitHub Copilot", "type": "github_copilot", "id": "github_copilot"}]
+    store = SettingsStore.__new__(SettingsStore)
+    store._data = {}
+    store._available_providers = []
+    store.apply_system_settings(
+        settings_dict={},
+        providers=[{"name": "GitHub Copilot", "type": "github_copilot", "models": ["gpt-5"]}],
     )
-
-    assert items[0]["action"] == "setup_prov:github_copilot:GitHub Copilot"
+    flat = store.get_all_models_flat()
+    assert flat[0]["provider_id"] == "github_copilot"

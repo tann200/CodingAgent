@@ -179,6 +179,12 @@ class AppSessionMixin(AgentAppProtocol):
     @on(SessionHydratedEvent)
     async def handle_session_hydrated(self: AgentAppProtocol, event: SessionHydratedEvent) -> None:
         """Mount restored session history into the chat log when a session is resumed."""
+        if not event.messages and (
+            event.session_id in ("", "default")
+            or event.session_id == getattr(self, "_session_id", "default")
+        ):
+            self._session_id = event.session_id or getattr(self, "_session_id", "default")
+            return
         self._clear_chat_panel()
         self._session_id = event.session_id
         from tui.tui_src.ui.components.artifact import AgentArtifact

@@ -1,8 +1,6 @@
-from ..features.palette.screen import CommandPalette
-from ..features.settings.screen import ProviderConfigScreen, SettingsScreen
+"""TUI modal screens."""
 
-__all__ = [
-    "CommandPalette",
-    "ProviderConfigScreen",
-    "SettingsScreen",
-]
+from .session_screen import SessionScreen
+from .timeline import TimelineScreen
+
+__all__ = ["SessionScreen", "TimelineScreen"]

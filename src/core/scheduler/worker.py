@@ -13,6 +13,7 @@ API:
 
 from __future__ import annotations
 
+import atexit
 import json
 import logging
 import os
@@ -340,3 +341,6 @@ def stop_scheduler() -> None:
             exe.shutdown(wait=False, cancel_futures=True)
         except Exception:
             pass
+
+
+atexit.register(stop_scheduler)

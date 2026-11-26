@@ -58,10 +58,11 @@ codingagent skill export polyglot-verify --target claude
 codingagent skill export --all --target agensi
 ```
 
-In the interactive Textual TUI (`codingagent`), the prompt opens directly for input (use `Ctrl+R` or `/sessions` to browse past sessions, or set `show_sessions_on_startup: true` in TUI settings). Use slash commands in the prompt:
+In the interactive Textual TUI (`codingagent`), the prompt opens directly for input (use `Ctrl+P` / `Ctrl+O` for the native Command Palette, `Ctrl+B` to toggle the responsive sidebar — auto-hidden below 110 columns — `Shift+Tab` to toggle Plan Mode, and `Ctrl+R` or `/sessions` to browse past sessions). Use slash commands in the prompt:
 - `/status` — Inspect active provider, model, `ModelRuntimePolicy` tier, flat toolset, verification mode, parallel read limit, and character output ceiling.
 - `/doctor` — Run local model reachability, latency, context estimation, and tool schema diagnosis directly inside chat.
 - `/skills` or `/skills <name>` — List discovered workspace/user/bundled skills or inspect skill instructions; type `/<skill-name> <request>` to invoke a skill directly.
+- `/theme [name]` — List or switch between all built-in Textual dark & light themes (persisted in TUI settings).
 - `/reasoning [off|low|medium|high|unset|status]` (aliases `/effort`, `/thinking`) — Control portable reasoning effort / thinking-token budgets across local (`llama-server`, Ollama) and cloud providers (also configurable headlessly via `--reasoning`).
 - `/compact` — Trigger deterministic compaction of conversation context.
 

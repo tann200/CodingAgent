@@ -563,8 +563,27 @@ class Orchestrator:
 
         return get_provider_capabilities_impl(self)
 
-    def close(self) -> None:
-        """Release long-lived resources (executor thread pools, MCP subprocesses)."""
+    def close(self, *, wait: bool = True) -> None:
+        """Release long-lived resources (subscriptions, scheduler, executor pools, MCP)."""
+        try:
+            _eb = getattr(self, "event_bus", None)
+            _subs = getattr(self, "_event_bus_subscriptions", None)
+            if _eb is not None and isinstance(_subs, list) and _subs:
+                for _ev_name, _handler in list(_subs):
+                    try:
+                        _eb.unsubscribe(_ev_name, _handler)
+                    except Exception:
+                        pass
+                _subs.clear()
+        except Exception:
+            pass
+        try:
+            _sched = getattr(self, "_scheduler", None)
+            if _sched is not None and hasattr(_sched, "stop_scheduler"):
+                setattr(self, "_scheduler", None)
+                _sched.stop_scheduler()
+        except Exception:
+            pass
         try:
             _atexit_fn = getattr(self, "_atexit_shutdown_fn", None)
             if _atexit_fn is not None:
@@ -576,12 +595,12 @@ class Orchestrator:
             pass
         try:
             if hasattr(self, "_graph_executor"):
-                self._graph_executor.shutdown(wait=True)
+                self._graph_executor.shutdown(wait=wait)
         except Exception:
             pass
         try:
             if hasattr(self, "_tool_executor"):
-                self._tool_executor.shutdown(wait=True)
+                self._tool_executor.shutdown(wait=wait)
         except Exception:
             pass
         # SEC-VOL23-1: join the session-title background thread with a short

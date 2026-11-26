@@ -52,26 +52,19 @@ async def test_tui_headless_pilot_lifecycle():
 
 @pytest.mark.asyncio
 async def test_tui_headless_pilot_palette_and_tool_events():
+    from textual.command import CommandPalette
     from tui.tui_src.ui.bus import ToolCallStartEvent, ToolCallFinishEvent
-    from tui.tui_src.ui.features.palette.screen import CommandPalette
 
     app = AgentApp()
     async with app.run_test(size=(120, 40)) as pilot:
-        # Test opening command palette
+        # Test opening native Textual 8.1.0 command palette
         base_stack_len = len(app.screen_stack)
         app.action_open_palette()
-        await pilot.pause(0.05)
+        await pilot.pause(0.1)
         assert len(app.screen_stack) == base_stack_len + 1
         assert isinstance(app.screen, CommandPalette)
 
-        # Type in palette input to filter commands by slash
-        palette_input = app.screen.query_one("#palette_input")
-        palette_input.value = "/clear"
-        await pilot.pause(0.05)
-        footer = app.screen.query_one("#palette_footer")
-        assert "commands" in str(footer.render())
-
-        # Dismiss palette
+        # Dismiss native palette
         app.screen.dismiss()
         await pilot.pause(0.05)
         assert len(app.screen_stack) == base_stack_len

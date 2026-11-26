@@ -102,12 +102,44 @@ class ChatDisplayMixin(AgentAppProtocol):
             self.call_later(self._mount_and_scroll, self._current_stream, chat_log)
         return self._current_stream
 
+    @staticmethod
+    def _should_auto_scroll(chat_log: VerticalScroll) -> bool:
+        """Return True when the user is at (or within 2 lines of) the bottom of chat_log (TASK-38)."""
+        try:
+            if getattr(chat_log, "is_vertical_scroll_end", False):
+                return True
+            max_y = float(getattr(chat_log, "max_scroll_y", 0) or 0)
+            cur_y = float(getattr(chat_log, "scroll_y", 0) or 0)
+            return (max_y - cur_y) <= 2.0
+        except Exception:
+            return True
+
+    def _set_jump_banner_visible(self: AgentAppProtocol, visible: bool) -> None:
+        try:
+            btn = self.query_one("#jump_to_latest_btn", Button)
+            btn.set_class(visible, "visible")
+        except Exception:
+            pass
+
+    def _smart_scroll_end(self: AgentAppProtocol, chat_log: VerticalScroll) -> None:
+        """Scroll to end only if anchored near bottom; otherwise show Jump-to-latest banner."""
+        if self._should_auto_scroll(chat_log):
+            chat_log.scroll_end(animate=False)
+            self._set_jump_banner_visible(False)
+        else:
+            self._set_jump_banner_visible(True)
+
     async def _mount_and_scroll(self: AgentAppProtocol, widget, container) -> None:
-        """Async-mount *widget* into *container* then scroll to the end."""
+        """Async-mount *widget* into *container* then smart-scroll to the end."""
         if getattr(widget, "_detached", False):
             return
+        should_scroll = self._should_auto_scroll(container)
         await container.mount(widget)
-        container.scroll_end(animate=False)
+        if should_scroll:
+            container.scroll_end(animate=False)
+            self._set_jump_banner_visible(False)
+        else:
+            self._set_jump_banner_visible(True)
 
     def _finalize_stream(self: AgentAppProtocol, *, detach: bool = False) -> None:
         """Tear down the current stream widget and update the status bar."""
@@ -143,10 +175,15 @@ class ChatDisplayMixin(AgentAppProtocol):
             pass
 
     async def _mount_chat_widget(self: AgentAppProtocol, widget) -> None:
-        """Async-mount *widget* into the chat log and scroll to the bottom."""
+        """Async-mount *widget* into the chat log and smart-scroll to the bottom."""
         chat_log = self.query_one("#chat_log", VerticalScroll)
+        should_scroll = self._should_auto_scroll(chat_log)
         await chat_log.mount(widget)
-        chat_log.scroll_end(animate=False)
+        if should_scroll:
+            chat_log.scroll_end(animate=False)
+            self._set_jump_banner_visible(False)
+        else:
+            self._set_jump_banner_visible(True)
         self._prune_chat_log()
 
     def _sched_chat_widget(self: AgentAppProtocol, widget) -> None:
@@ -364,7 +401,7 @@ class ChatDisplayMixin(AgentAppProtocol):
         if not event.is_partial:
             self._finalize_stream()
         try:
-            self.query_one("#chat_log", VerticalScroll).scroll_end(animate=False)
+            self._smart_scroll_end(self.query_one("#chat_log", VerticalScroll))
         except Exception:
             pass
 
@@ -384,15 +421,24 @@ class ChatDisplayMixin(AgentAppProtocol):
     async def _chat_handle_final_response(self: AgentAppProtocol, event) -> None:
         from tui.tui_src.ui.components.artifact import AgentArtifact  # type: ignore[import]
 
-        # SPEC-P3.1: Detach any active stream view before mounting artifact to eliminate double-response rendering
-        if getattr(self, "_active_stream_view", None) is not None:
-            stream_view = self._active_stream_view
-            stream_view._detached = True
+        # TASK-38: Finalize active MarkdownStream in place (zero tear-down flicker,
+        # zero duplicate response widgets) when a StreamView is already mounted.
+        stream_view = getattr(self, "_active_stream_view", None)
+        if stream_view is not None and not getattr(stream_view, "_detached", False):
+            self._active_stream_view = None
+            self._current_stream = None
+            self.is_streaming = False
+            self._update_status_bar()
+            if hasattr(stream_view, "stop_stream"):
+                await stream_view.stop_stream(final_content=event.content)
+            else:
+                stream_view.finalize()
             try:
-                stream_view.remove()
+                self._smart_scroll_end(self.query_one("#chat_log", VerticalScroll))
             except Exception:
                 pass
-            self._active_stream_view = None
+            logger.info("Agent final response finalized in-place via MarkdownStream")
+            return
 
         self._finalize_stream()
         logger.info("Agent final response received")

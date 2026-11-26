@@ -8,6 +8,16 @@ from src.core.logger import logger as guilogger
 from src.core.orchestration.approval_gate import resolve_bash_gate, resolve_tool_gate
 
 
+def _subscribe_tracked(orch: Any, event_name: str, handler: Any) -> None:
+    """Subscribe on orch.event_bus and record the pair for clean teardown in Orchestrator.close()."""
+    subs = getattr(orch, "_event_bus_subscriptions", None)
+    if not isinstance(subs, list):
+        subs = []
+        setattr(orch, "_event_bus_subscriptions", subs)
+    orch.event_bus.subscribe(event_name, handler)
+    subs.append((event_name, handler))
+
+
 def _register_provider_event_subscriptions(orch: Any) -> None:
     """Register provider-related event subscriptions."""
 
@@ -53,9 +63,9 @@ def _register_provider_event_subscriptions(orch: Any) -> None:
             pass
 
     try:
-        orch.event_bus.subscribe("provider.config.missing", _on_provider_config_missing)
-        orch.event_bus.subscribe("provider.status.changed", _on_provider_status_changed)
-        orch.event_bus.subscribe("provider.model.missing", _on_provider_model_missing)
+        _subscribe_tracked(orch, "provider.config.missing", _on_provider_config_missing)
+        _subscribe_tracked(orch, "provider.status.changed", _on_provider_status_changed)
+        _subscribe_tracked(orch, "provider.model.missing", _on_provider_model_missing)
     except Exception:
         pass
 
@@ -81,14 +91,14 @@ def _register_provider_event_subscriptions(orch: Any) -> None:
             pass
 
     try:
-        orch.event_bus.subscribe(
-            "provider.models.probing_started", _on_models_probing_started
+        _subscribe_tracked(
+            orch, "provider.models.probing_started", _on_models_probing_started
         )
-        orch.event_bus.subscribe(
-            "provider.models.probing_completed", _on_models_probing_completed
+        _subscribe_tracked(
+            orch, "provider.models.probing_completed", _on_models_probing_completed
         )
-        orch.event_bus.subscribe(
-            "provider.models.probing_failed", _on_models_probing_failed
+        _subscribe_tracked(
+            orch, "provider.models.probing_failed", _on_models_probing_failed
         )
     except Exception:
         pass
@@ -119,7 +129,7 @@ def _register_session_hydration_subscription(orch: Any) -> None:
             pass
 
     try:
-        orch.event_bus.subscribe("session.request_state", _on_session_request_state)
+        _subscribe_tracked(orch, "session.request_state", _on_session_request_state)
     except Exception:
         pass
 
@@ -265,7 +275,7 @@ def _register_scheduler_distill_subscription(orch: Any) -> None:
                 pass
 
     try:
-        orch.event_bus.subscribe("scheduler.distill_request", _on_scheduler_distill_request)
+        _subscribe_tracked(orch, "scheduler.distill_request", _on_scheduler_distill_request)
     except Exception:
         pass
 
@@ -325,9 +335,9 @@ def _register_permission_gate_subscriptions(orch: Any) -> None:
                 guilogger.warning(f"denial_feedback: failed to add to context: {e}")
 
     try:
-        orch.event_bus.subscribe("tool.permission_granted", _on_tool_permission_granted)
-        orch.event_bus.subscribe("tool.permission_denied", _on_tool_permission_denied)
-        orch.event_bus.subscribe("tool.denial_feedback", _on_denial_feedback)
+        _subscribe_tracked(orch, "tool.permission_granted", _on_tool_permission_granted)
+        _subscribe_tracked(orch, "tool.permission_denied", _on_tool_permission_denied)
+        _subscribe_tracked(orch, "tool.denial_feedback", _on_denial_feedback)
     except Exception:
         pass
 
@@ -342,8 +352,8 @@ def _register_bash_approval_subscriptions(orch: Any) -> None:
         resolve_bash_gate(str(payload.get("tool_id", "")), approved=False)
 
     try:
-        orch.event_bus.subscribe("bash.approval_granted", _on_bash_approval_granted)
-        orch.event_bus.subscribe("bash.approval_denied", _on_bash_approval_denied)
+        _subscribe_tracked(orch, "bash.approval_granted", _on_bash_approval_granted)
+        _subscribe_tracked(orch, "bash.approval_denied", _on_bash_approval_denied)
     except Exception:
         pass
 

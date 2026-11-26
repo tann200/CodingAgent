@@ -5,7 +5,6 @@ Wires exclusively through AgentBridge → EventBus; never imports src.core direc
 
 from __future__ import annotations
 
-import sys as _sys
 import threading
 from pathlib import Path
 from typing import Optional, TYPE_CHECKING
@@ -47,61 +46,14 @@ from .events import (
     UpdateSettings,
 )
 from .logging import get_logger
+from .palette_provider import CodingAgentCommands
 from .settings import SettingsStore
 
 logger = get_logger("app")
 
 ROLE_LABELS = _SB_ROLE_LABELS
 ROLE_COLORS = _SB_ROLE_COLORS
-
-
-def _load_llm_manager_module():
-    """Return the real src.core.inference.llm_manager module, cached in sys.modules."""
-    import importlib.util
-
-    _MOD_NAME = "_llm_manager_real"
-    if _MOD_NAME in _sys.modules:
-        return _sys.modules[_MOD_NAME]
-    _path = Path(__file__).parents[3] / "src" / "core" / "inference" / "llm_manager.py"
-    spec = importlib.util.spec_from_file_location(_MOD_NAME, str(_path))
-    if spec is None or spec.loader is None:
-        raise ImportError(f"Cannot load llm_manager from {_path}")
-    mod = importlib.util.module_from_spec(spec)
-    _sys.modules[_MOD_NAME] = mod
-    try:
-        spec.loader.exec_module(mod)
-    except Exception:
-        _sys.modules.pop(_MOD_NAME, None)
-        raise
-    return mod
-
-
-def _load_copilot_auth_module():
-    """Return the real src.core.inference.adapters.github_copilot_auth module, cached."""
-    import importlib.util
-
-    _MOD_NAME = "_copilot_auth_real"
-    if _MOD_NAME in _sys.modules:
-        return _sys.modules[_MOD_NAME]
-    _path = (
-        Path(__file__).parents[3]
-        / "src"
-        / "core"
-        / "inference"
-        / "adapters"
-        / "github_copilot_auth.py"
-    )
-    spec = importlib.util.spec_from_file_location(_MOD_NAME, str(_path))
-    if spec is None or spec.loader is None:
-        raise ImportError(f"Cannot load github_copilot_auth from {_path}")
-    mod = importlib.util.module_from_spec(spec)
-    _sys.modules[_MOD_NAME] = mod
-    try:
-        spec.loader.exec_module(mod)
-    except Exception:
-        _sys.modules.pop(_MOD_NAME, None)
-        raise
-    return mod
+_SIDEBAR_MIN_COLS = 110
 
 
 class AgentApp(
@@ -114,9 +66,11 @@ class AgentApp(
     AppSlashCommandsMixin,
     AppStatusHandlersMixin,
 ):
-    ENABLE_COMMAND_PALETTE = False
+    ENABLE_COMMAND_PALETTE = True
+    COMMANDS = App.COMMANDS | {CodingAgentCommands}
     BINDINGS = [
-        ("tab", "toggle_mode", "agents"),
+        ("shift+tab", "toggle_plan_mode", "plan"),
+        ("ctrl+b", "toggle_sidebar", "sidebar"),
         ("ctrl+l", "toggle_console", "console"),
         ("ctrl+o", "show_commands", "commands"),
         ("ctrl+s", "open_settings", "settings"),
@@ -202,6 +156,7 @@ class AgentApp(
             yield ConsolePanel(id="console_panel")
             with Vertical(id="left_column"):
                 yield VerticalScroll(id="chat_log")
+                yield Button("↓ Jump to latest", id="jump_to_latest_btn", variant="primary")
                 yield FilePickerOverlay(id="file_picker")
                 yield ChatTextArea(
                     id="user_input",
@@ -243,8 +198,8 @@ class AgentApp(
         with Horizontal(id="coding_footer"):
             yield Static(id="status_left", markup=True)
             yield Static(
-                "tab [b]agents[/b]  ctrl+l [b]console[/b]  "
-                "ctrl+o [b]commands[/b]  ctrl+s [b]settings[/b]  "
+                "shift+tab [b]plan[/b]  ctrl+b [b]sidebar[/b]  "
+                "ctrl+p [b]palette[/b]  ctrl+s [b]settings[/b]  "
                 "esc×2 [b]stop[/b]  ctrl+q [b]quit[/b]",
                 id="status_right",
                 markup=True,
@@ -292,7 +247,36 @@ class AgentApp(
         except Exception:
             pass
 
+        # TASK-38: Responsive initial sidebar check for narrow terminals (< 110 cols)
+        try:
+            self._apply_responsive_sidebar(self.size.width)
+        except Exception:
+            pass
+
         logger.info("TUI mounted and ready")
+
+    def _apply_responsive_sidebar(self, width: int) -> None:
+        if getattr(self, "_sidebar_user_override", None) is not None:
+            return
+        try:
+            sidebar = self.query_one("#right_sidebar", VerticalScroll)
+            sidebar.set_class(width < _SIDEBAR_MIN_COLS, "hidden")
+        except Exception:
+            pass
+
+    def on_resize(self, event) -> None:
+        try:
+            self._apply_responsive_sidebar(int(event.size.width))
+        except Exception:
+            pass
+
+    @on(Button.Pressed, "#jump_to_latest_btn")
+    def _on_jump_to_latest(self) -> None:
+        try:
+            self.query_one("#chat_log", VerticalScroll).scroll_end(animate=False)
+            self._set_jump_banner_visible(False)
+        except Exception:
+            pass
 
     def on_unmount(self) -> None:
         if getattr(self, "_shutdown_done", False):
@@ -304,6 +288,11 @@ class AgentApp(
             self._queued_messages.clear()
             logger.info("Discarded %d queued message(s) on shutdown", dropped)
         self._save_session_snapshot()
+        try:
+            if hasattr(self, "_bridge") and self._bridge is not None and hasattr(self._bridge, "cleanup"):
+                self._bridge.cleanup()
+        except Exception:
+            pass
         if hasattr(self, "_worktree_mgr") and self._worktree_mgr is not None:
             try:
                 import subprocess
@@ -325,6 +314,11 @@ class AgentApp(
 
     def action_quit_app(self) -> None:
         self._save_session_snapshot()
+        try:
+            if hasattr(self, "_bridge") and self._bridge is not None and hasattr(self._bridge, "cleanup"):
+                self._bridge.cleanup()
+        except Exception:
+            pass
         self.exit()
 
     # ── Internal helpers ──────────────────────────────────────────────────
@@ -353,11 +347,12 @@ class AgentApp(
             self.context_window = int(ctx)
         except (ValueError, TypeError):
             pass
-        saved_theme = event.settings.get("theme", "textual-dark")
-        try:
-            self.theme = saved_theme
-        except Exception:
-            pass
+        saved_theme = self._settings.get("theme") or event.settings.get("theme", "textual-dark")
+        if not getattr(self, "_theme_user_selected", False):
+            try:
+                self.theme = saved_theme
+            except Exception:
+                pass
         self._update_status_bar()
 
     @on(OrchestratorReadyEvent)
@@ -403,96 +398,7 @@ class AgentApp(
             logger.debug(f"Unhandled palette command: {cmd}")
 
     def _activate_provider(self, provider_id: str) -> bool:
-        try:
-            _lm = _load_llm_manager_module()
-            get_provider_manager = _lm.get_provider_manager
-            canonical_provider = _lm.canonical_provider
-            resolve_config_path = _lm.resolve_config_path
-            _providers_json_lock = _lm._providers_json_lock
-
-            norm_id = canonical_provider(provider_id)
-            pm = get_provider_manager()
-
-            import json as _json
-            import os as _os
-            import tempfile as _tf
-
-            cfg_path = resolve_config_path(None)
-            try:
-                from src.core.inference.provider_config import is_bundled_providers_config
-
-                _is_bundled = is_bundled_providers_config(cfg_path)
-            except Exception:
-                _is_bundled = False
-
-            matched = False
-            if _is_bundled:
-                # TASK-21: Keep bundled src/config/providers.json read-only;
-                # active provider is persisted in UserPrefs below.
-                try:
-                    with _providers_json_lock:
-                        raw = _json.loads(cfg_path.read_text(encoding="utf-8"))
-                        entries = raw if isinstance(raw, list) else [raw]
-                        matched = any(
-                            canonical_provider(p.get("type") or p.get("name") or "") == norm_id
-                            for p in entries
-                            if isinstance(p, dict)
-                        )
-                except Exception:
-                    pass
-                logger.info(f"_activate_provider: persisting active={norm_id} to UserPrefs (bundled providers.json read-only)")
-            else:
-                with _providers_json_lock:
-                    raw = _json.loads(cfg_path.read_text(encoding="utf-8"))
-                    entries = raw if isinstance(raw, list) else [raw]
-                    for p in entries:
-                        key = canonical_provider(p.get("type") or p.get("name") or "")
-                        p["active"] = key == norm_id
-                        if key == norm_id:
-                            matched = True
-                    new_text = _json.dumps(entries, indent=2)
-                    fd, tmp = _tf.mkstemp(dir=cfg_path.parent, suffix=".tmp")
-                    try:
-                        with _os.fdopen(fd, "w", encoding="utf-8") as f:
-                            f.write(new_text)
-                        _os.replace(tmp, cfg_path)
-                    except Exception:
-                        try:
-                            _os.unlink(tmp)
-                        except OSError:
-                            pass
-                        raise
-                logger.info(f"_activate_provider: persisted active={norm_id} to providers.json")
-
-            if not matched:
-                logger.warning(f"_activate_provider: no providers.json entry matched '{norm_id}'")
-
-            try:
-                from src.core.user_prefs import UserPrefs
-
-                prefs = UserPrefs.load()
-                prefs.selected_model_provider = norm_id
-                prefs.save()
-            except Exception:
-                pass
-
-            adapter = pm.get_provider(norm_id)
-            orch = getattr(self._bridge, "_orchestrator", None)
-            if orch is not None:
-                orch.adapter = adapter
-                logger.info(f"_activate_provider: swapped orchestrator adapter to {norm_id} ({adapter})")
-            else:
-                logger.warning("_activate_provider: no orchestrator found on bridge")
-
-            try:
-                self._bridge._publish_active_provider_status()
-            except Exception as _pub_exc:
-                logger.debug(f"_activate_provider re-publish: {_pub_exc}")
-
-            return True
-        except Exception as exc:
-            logger.error(f"_activate_provider({provider_id}): {exc}")
-            return False
+        return bool(self._bridge.activate_provider(provider_id))
 
     @on(ConnectProvider)
     def handle_connect_provider(self, event: ConnectProvider) -> None:
@@ -503,23 +409,13 @@ class AgentApp(
             self.push_screen(DeploymentSelectScreen())
             return
 
-        try:
-            _lm = _load_llm_manager_module()
-            get_provider_manager = _lm.get_provider_manager
-            canonical_provider = _lm.canonical_provider
-
-            pm = get_provider_manager()
-            adapter = pm.get_provider(canonical_provider(event.provider_id))
-            if adapter is not None:
-                logger.info(f"handle_connect_provider: activating already-configured provider {event.provider_id}")
-                self._activate_provider(event.provider_id)
-                self.notify(
-                    f"Switched to {event.provider_id.replace('_', ' ').title()}",
-                    severity="information",
-                )
-                return
-        except Exception as _chk_exc:
-            logger.debug(f"handle_connect_provider provider check: {_chk_exc}")
+        if self._bridge.is_provider_configured(event.provider_id):
+            self._activate_provider(event.provider_id)
+            self.notify(
+                f"Switched to {event.provider_id.replace('_', ' ').title()}",
+                severity="information",
+            )
+            return
 
         from .features.settings.screen import ProviderConfigScreen
 
@@ -552,90 +448,7 @@ class AgentApp(
     @on(UpdateRoleModel)
     def handle_update_role_model(self, event: UpdateRoleModel) -> None:
         logger.info(f"Role model update: {event.role} → {event.model_id} (provider={event.provider_id})")
-
-        if event.provider_id:
-            try:
-                _lm = _load_llm_manager_module()
-                canonical_provider = _lm.canonical_provider
-
-                norm_req = canonical_provider(event.provider_id)
-                orch = getattr(self._bridge, "_orchestrator", None)
-                current_adapter = getattr(orch, "_adapter", None) if orch else None
-
-                current_provider_key = None
-                if current_adapter is not None:
-                    prov_dict = getattr(current_adapter, "provider", None)
-                    if isinstance(prov_dict, dict):
-                        raw = prov_dict.get("name") or prov_dict.get("type") or ""
-                        current_provider_key = canonical_provider(raw)
-                    if not current_provider_key:
-                        current_provider_key = canonical_provider(
-                            getattr(current_adapter, "name", "") or ""
-                        )
-
-                if current_provider_key != norm_req:
-                    logger.info(
-                        f"handle_update_role_model: provider mismatch "
-                        f"({current_provider_key} → {norm_req}), switching provider"
-                    )
-                    self._activate_provider(event.provider_id)
-                    orch = getattr(self._bridge, "_orchestrator", None)
-                    current_adapter = getattr(orch, "_adapter", None) if orch else None
-            except Exception as _exc:
-                logger.debug(f"handle_update_role_model provider switch: {_exc}")
-
-        try:
-            orch = getattr(self._bridge, "_orchestrator", None)
-            if orch is not None:
-                adapter = getattr(orch, "_adapter", None)
-                if adapter is not None:
-                    def _valid_str(x: object) -> bool:
-                        return (
-                            isinstance(x, str)
-                            and bool(x.strip())
-                            and ("MagicMock" not in x)
-                        )
-
-                    model_id = None
-                    try:
-                        if isinstance(event.model_id, str) and _valid_str(event.model_id):
-                            model_id = event.model_id.strip()
-                    except Exception:
-                        model_id = None
-
-                    if not model_id:
-                        logger.debug(f"handle_update_role_model: ignoring invalid model id: {event.model_id}")
-                    else:
-                        for _attr in ("default_model", "model", "_model"):
-                            if hasattr(adapter, _attr):
-                                try:
-                                    setattr(adapter, _attr, model_id)
-                                    logger.info(f"handle_update_role_model: set adapter.{_attr} = {model_id}")
-                                except Exception:
-                                    logger.debug(f"handle_update_role_model: failed to set adapter.{_attr}")
-                                break
-
-                        if hasattr(adapter, "models") and isinstance(adapter.models, list):
-                            try:
-                                valid_models = [m for m in adapter.models if _valid_str(m)]
-                                adapter.models[:] = valid_models
-                                if model_id in adapter.models:
-                                    adapter.models.remove(model_id)
-                                adapter.models.insert(0, model_id)
-                            except Exception:
-                                try:
-                                    if model_id not in adapter.models:
-                                        adapter.models.insert(0, model_id)
-                                except Exception as _model_ins_err:
-                                    logger.debug("model insert best-effort failed: %s", _model_ins_err)
-
-                        if hasattr(orch, "_publish_active_config"):
-                            try:
-                                orch._publish_active_config()
-                            except Exception as _pub_err:
-                                logger.debug("publish active config failed: %s", _pub_err)
-        except Exception as _exc:
-            logger.debug(f"handle_update_role_model adapter update: {_exc}")
+        self._bridge.update_role_model(event.model_id, provider_id=event.provider_id)
 
     @on(UpdateSettings)
     def handle_update_settings(self, event: UpdateSettings) -> None:
@@ -657,7 +470,7 @@ class AgentApp(
     @on(StartGithubDeviceFlow)
     async def handle_start_github_device_flow(self, event: StartGithubDeviceFlow) -> None:
         try:
-            _auth = _load_copilot_auth_module()
+            _auth = self._bridge.load_copilot_auth_module()
             start_device_flow = _auth.start_device_flow
             poll_for_token = _auth.poll_for_token
             save_token = _auth.save_token
@@ -829,27 +642,32 @@ class AgentApp(
         except Exception as e:
             logger.error(f"Error toggling console: {e}")
 
+    def action_toggle_plan_mode(self) -> None:
+        """Toggle planning vs execution mode via Shift+Tab (TASK-38 — frees Tab for completion/focus)."""
+        cur = getattr(self, "_plan_mode_active", False)
+        self._plan_mode_active = not cur
+        mode_name = "planning" if self._plan_mode_active else "execution"
+        self.active_role = "strategic" if self._plan_mode_active else "operational"
+        self._update_role_display(self.active_role)
+        self._update_status_bar()
+        self.notify(f"Mode: {mode_name}")
+
     def action_toggle_sidebar(self) -> None:
         try:
             sidebar = self.query_one("#right_sidebar", VerticalScroll)
-            if "hidden" in sidebar.classes:
-                sidebar.remove_class("hidden")
-            else:
-                sidebar.add_class("hidden")
+            now_hidden = "hidden" not in sidebar.classes
+            sidebar.set_class(now_hidden, "hidden")
+            self._sidebar_user_override = not now_hidden
         except Exception as e:
             logger.error(f"Error toggling sidebar: {e}")
 
     def action_show_commands(self) -> None:
-        from .features.palette.screen import CommandPalette
-
-        self.push_screen(CommandPalette(self._settings))
+        self.action_command_palette()
 
     action_open_palette = action_show_commands
 
     def action_open_model_picker(self) -> None:
-        from .features.palette.screen import CommandPalette
-
-        self.push_screen(CommandPalette(self._settings, initial_action="menu_switch_model"))
+        self.post_message(SlashCommand("model", ""))
 
     def action_open_settings(self) -> None:
         try:

@@ -1,99 +1,74 @@
-"""bash_block.py — TASK-TUI-3
-
-Collapsible bash-output block widget.
-
-Each bash tool call gets its own ``BashBlock``. The header shows the description
-and command. Output beyond ``MAX_VISIBLE_LINES`` is hidden with an expand hint;
-clicking the header toggles the collapsed state.
-
-Usage::
-
-    block = BashBlock(description="Run tests", command="pytest -q")
-    block.append_output("test_foo.py ... PASSED")
-    block.append_output("1 passed in 0.04s")
-"""
+"""bash_block.py — Native Textual 8.1.0 Collapsible bash-output block widget (TASK-38)."""
 
 from __future__ import annotations
 
-from textual.app import ComposeResult
-from textual.reactive import reactive
-from textual.widget import Widget
-from textual.widgets import Label, Static
+from typing import Any
+
 from rich.text import Text
+from textual import on
+from textual.app import ComposeResult
+from textual.containers import Vertical
+from textual.reactive import reactive
+from textual.widgets import Collapsible, Label, Static
 
 from ..terminal_sanitize import strip_terminal_controls
 
 MAX_VISIBLE_LINES = 40
-_EXPAND_HINT = "[dim](... click to expand)[/]"
-_COLLAPSE_HINT = "[dim](click to collapse)[/]"
 
 
-class BashBlock(Widget):
-    """Collapsible widget for a single bash tool-call result.
-
-    Attributes
-    ----------
-    collapsed:
-        When True, output beyond ``MAX_VISIBLE_LINES`` is hidden.
-    """
+class BashBlock(Vertical):
+    """Theme-aware collapsible widget for a single bash tool-call result."""
 
     DEFAULT_CSS = """
     BashBlock {
         layout: vertical;
         height: auto;
-        border: round #3f3f46;
+        border: round $panel;
+        background: $surface;
         padding: 0 1;
         margin-bottom: 1;
     }
-    BashBlock > .bash-header {
-        color: #a1a1aa;
+    BashBlock Collapsible {
+        background: transparent;
+        border: none;
+        padding: 0;
+    }
+    BashBlock .bash-cmd {
+        color: $warning;
         text-style: bold;
     }
-    BashBlock > .bash-header:hover {
-        color: #e4e4e7;
-        text-style: bold underline;
+    BashBlock .bash-output {
+        color: $text;
     }
-    BashBlock > .bash-cmd {
-        color: #fbbf24;
-    }
-    BashBlock > .bash-output {
-        color: #d4d4d8;
-    }
-    BashBlock > .bash-truncated {
-        color: #71717a;
+    BashBlock .bash-truncated {
+        color: $text-muted;
     }
     """
 
     collapsed: reactive[bool] = reactive(True)
 
-    def __init__(
-        self,
-        description: str = "",
-        command: str = "",
-        **kwargs,
-    ) -> None:
+    def __init__(self, description: str = "", command: str = "", **kwargs: Any) -> None:
         super().__init__(**kwargs)
-        self._description = description
-        self._command = command
+        self._description = strip_terminal_controls(description)
+        self._command = strip_terminal_controls(command)
         self._output_lines: list[str] = []
 
-    # ------------------------------------------------------------------
-    # Composition
-    # ------------------------------------------------------------------
+    def _title_text(self) -> str:
+        desc = self._description or "bash"
+        if self._command:
+            short_cmd = self._command if len(self._command) <= 64 else self._command[:61] + "..."
+            return f"{desc} — $ {short_cmd}"
+        return desc
 
     def compose(self) -> ComposeResult:
-        desc = self._description or "bash"
-        yield Label(f"# {desc}", classes="bash-header", markup=False)
+        children: list[Any] = []
         if self._command:
-            yield Label(f"$ {self._command}", classes="bash-cmd", markup=False)
-        yield Static("", classes="bash-output", markup=False)
+            children.append(Label(f"$ {self._command}", classes="bash-cmd", markup=False))
+        children.append(Static("", classes="bash-output", markup=False))
+        yield Collapsible(*children, title=self._title_text(), collapsed=False, classes="bash-collapsible")
 
     def on_mount(self) -> None:
         self._refresh_output()
-
-    # ------------------------------------------------------------------
-    # Output streaming
-    # ------------------------------------------------------------------
 
     def append_output(self, line: str) -> None:
         """Append a single output line and refresh the visible area."""
@@ -107,24 +82,25 @@ class BashBlock(Widget):
         if self.is_mounted:
             self._refresh_output()
 
-    # ------------------------------------------------------------------
-    # Reactive / click
-    # ------------------------------------------------------------------
+    @on(Collapsible.Toggled)
+    def _on_collapsible_toggled(self, event: Collapsible.Toggled) -> None:
+        # Expanding/collapsing updates truncation state cleanly
+        if not event.collapsible.collapsed and self.collapsed and len(self._output_lines) > MAX_VISIBLE_LINES:
+            self.collapsed = False
 
     def on_click(self) -> None:
-        self.collapsed = not self.collapsed
+        if len(self._output_lines) > MAX_VISIBLE_LINES:
+            self.collapsed = not self.collapsed
 
     def watch_collapsed(self, value: bool) -> None:  # noqa: FBT001
         if self.is_mounted:
             self._refresh_output()
 
-    # ------------------------------------------------------------------
-    # Internal helpers
-    # ------------------------------------------------------------------
-
     def _refresh_output(self) -> None:
-        """Update the single output Static with rendered text."""
-        output_widget = self.query_one(".bash-output", Static)
+        try:
+            output_widget = self.query_one(".bash-output", Static)
+        except Exception:
+            return
         lines = self._output_lines
         if not lines:
             output_widget.update("")
@@ -135,16 +111,12 @@ class BashBlock(Widget):
             visible = lines[:MAX_VISIBLE_LINES]
             hidden = len(lines) - MAX_VISIBLE_LINES
             t.append("\n".join(visible))
-            t.append(f"\n... {hidden} more line(s) — click header to expand", style="dim")
+            t.append(f"\n... {hidden} more line(s) — click to expand", style="dim")
         else:
             t.append("\n".join(lines))
             if len(lines) > MAX_VISIBLE_LINES:
                 t.append("\n(click to collapse)", style="dim")
         output_widget.update(t)
-
-    # ------------------------------------------------------------------
-    # Read-only accessors (used in tests)
-    # ------------------------------------------------------------------
 
     @property
     def output_lines(self) -> list[str]:
