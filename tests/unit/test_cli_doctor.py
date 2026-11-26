@@ -199,7 +199,7 @@ class TestProviderDiagnosis:
             assert diag["target_model"] == "qwen3.5:9b"
             assert diag["policy"]["tier"] == "compact"
             assert diag["policy"]["toolset"] == "compact-flat"
-            assert diag["policy"]["tool_limit"] == 13
+            assert diag["policy"]["tool_limit"] == 14
             assert diag["tool_validation"]["schemas_valid"] is True
 
     def test_lm_studio_online_diagnosis(self):
@@ -220,7 +220,7 @@ class TestProviderDiagnosis:
             assert diag["target_model"] == "qwen/qwen3.5-9b"
             assert diag["policy"]["tier"] == "compact"
             assert diag["policy"]["toolset"] == "compact-flat"
-            assert diag["policy"]["tool_limit"] == 13
+            assert diag["policy"]["tool_limit"] == 14
 
 
 # --------------------------------------------------------------------------

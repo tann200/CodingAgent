@@ -248,8 +248,54 @@ class AppSlashCommandsMixin(AgentAppProtocol):
             self.action_quit_app()
 
         else:
-            # Unrecognised: pass as plain text to agent
-            if not self.agent_running:
+            # TASK-32: Check if /<cmd> matches a discovered skill before plain-text fallback
+            _skill_meta = None
+            try:
+                from src.core.context.agent_brain_loading import (
+                    discover_skills,
+                    find_skill_meta,
+                    read_skill_content,
+                )
+
+                _wd = getattr(self._bridge, "working_dir", None)
+                _skill_meta = find_skill_meta(cmd, discover_skills(_wd))
+            except Exception:
+                _skill_meta = None
+
+            if _skill_meta is not None:
+                if self.agent_running:
+                    self.notify(
+                        f"Cannot invoke skill /{_skill_meta.name} while agent is running",
+                        severity="warning",
+                    )
+                else:
+                    try:
+                        skill_body = read_skill_content(_skill_meta)
+                    except Exception as exc:
+                        self.notify(f"Failed to load skill '{_skill_meta.name}': {exc}", severity="error")
+                        return
+                    notice = Static(
+                        f"[bold cyan]Skill loaded:[/] {escape(_skill_meta.name)} "
+                        f"[dim]({escape(_skill_meta.source_scope)})[/]",
+                        classes="system_msg",
+                        markup=True,
+                    )
+                    await self._mount_chat_widget(notice)
+                    if args:
+                        user_w = Label(
+                            f"[bold #3b82f6]You:[/] /{escape(_skill_meta.name)} {escape(args)}",
+                            classes="user_msg",
+                            markup=True,
+                        )
+                        await self._mount_chat_widget(user_w)
+                        prompt_text = (
+                            f"Apply the `{_skill_meta.name}` skill below to this request:\n\n"
+                            f"{skill_body}\n\nUser request:\n{args}"
+                        )
+                        self._bridge.send_prompt(prompt_text)
+                    else:
+                        await self._slash_skills(_skill_meta.name)
+            elif not self.agent_running:
                 val = (
                     event.command if not event.args else f"{event.command} {event.args}"
                 )
@@ -354,33 +400,33 @@ class AppSlashCommandsMixin(AgentAppProtocol):
             await self._mount_chat_widget(err_w)
 
     async def _slash_skills(self: AgentAppProtocol, args: str) -> None:
-        """Inspect and display packaged skills in the chat panel."""
+        """Inspect and display discovered skills (workspace, user, bundled) in the chat panel."""
         from rich.markup import escape
         from src.cli.skill_cmd import get_skill_metadata, list_all_skills
 
+        wdir = getattr(self._bridge, "working_dir", None)
         skill_arg = args.strip()
         if not skill_arg:
-            skills = list_all_skills()
+            skills = list_all_skills(workdir=wdir)
             lines = [
-                f"[bold cyan]Packaged Agent Skills[/] ({len(skills)} available)",
-                "[dim]Optimized for compact 9–14B models & frontier reasoning engines[/]",
+                f"[bold cyan]Available Agent Skills[/] ({len(skills)} discovered)",
+                "[dim]Scopes: .codingagent > .agents > .claude > ~/.codingagent > bundled[/]",
                 "",
             ]
             for s in skills:
                 name = escape(str(s.get("name", "unknown")))
                 desc_raw = str(s.get("description", "")).split("\n")[0]
                 desc = escape(desc_raw)
-                tier = escape(str(s.get("tier_recommendation", "compact")))
-                ver = escape(str(s.get("version", "1.0.0")))
-                lines.append(f"  • [bold]{name}[/] [dim]({ver}, {tier})[/]")
+                scope = escape(str(s.get("source_scope", "bundled")))
+                lines.append(f"  • [bold]{name}[/] [dim]({scope})[/]")
                 if desc:
                     lines.append(f"    {desc}")
             lines.append("")
-            lines.append("[dim]Use '/skills <name>' to view skill instructions, or 'codingagent skill export <name>' to export.[/]")
+            lines.append("[dim]Use '/skills <name>' to inspect, or '/<skill-name> <request>' to invoke directly.[/]")
             w = Static("\n".join(lines), classes="system_msg skills_list", markup=True)
             await self._mount_chat_widget(w)
         else:
-            meta = get_skill_metadata(skill_arg)
+            meta = get_skill_metadata(skill_arg, workdir=wdir)
             if not meta:
                 self.notify(f"Skill '{skill_arg}' not found", severity="warning")
                 w = Static(

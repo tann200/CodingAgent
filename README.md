@@ -50,7 +50,7 @@ codingagent context-report --tier compact-flat
 codingagent bench-diff baseline.json candidate.json --threshold 0.02
 ```
 
-List, inspect, and export packaged agent skills for Agensi, Claude Code, and Cursor:
+List, inspect, and export progressive-disclosure `SKILL.md` skills (discovered in precedence order `.codingagent/skills/` > `.agents/skills/` > `.claude/skills/` > `~/.codingagent/skills/` > bundled) for Agensi, Claude Code, and Cursor:
 
 ```bash
 codingagent skill list
@@ -61,9 +61,11 @@ codingagent skill export --all --target agensi
 In the interactive Textual TUI (`codingagent`), the prompt opens directly for input (use `Ctrl+R` or `/sessions` to browse past sessions, or set `show_sessions_on_startup: true` in TUI settings). Use slash commands in the prompt:
 - `/status` — Inspect active provider, model, `ModelRuntimePolicy` tier, flat toolset, verification mode, parallel read limit, and character output ceiling.
 - `/doctor` — Run local model reachability, latency, context estimation, and tool schema diagnosis directly inside chat.
-- `/skills` or `/skills <name>` — List packaged skills or inspect skill instructions without leaving the TUI.
+- `/skills` or `/skills <name>` — List discovered workspace/user/bundled skills or inspect skill instructions; type `/<skill-name> <request>` to invoke a skill directly.
 - `/reasoning [off|low|medium|high|unset|status]` (aliases `/effort`, `/thinking`) — Control portable reasoning effort / thinking-token budgets across local (`llama-server`, Ollama) and cloud providers (also configurable headlessly via `--reasoning`).
 - `/compact` — Trigger deterministic compaction of conversation context.
+
+Project instructions are loaded from ancestor `AGENTS.md` / `CLAUDE.md` files plus root `ARCHITECTURE.md` (capped at 3,000 chars), and nested subtree `AGENTS.md` / `CLAUDE.md` files are loaded lazily (deduplicated by SHA-256 and wrapped in nonce-fenced `<project_instructions>` envelopes) when reading or editing files beneath the workspace root.
 
 ## Safety Model
 

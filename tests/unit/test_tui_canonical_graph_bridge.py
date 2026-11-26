@@ -112,7 +112,7 @@ class TestTuiCanonicalGraphBridge:
         assert st["model"] == "qwen2.5-coder:14b"
         assert st["policy"]["policy_tier"] == "compact"
         assert st["policy"]["toolset_name"] == "compact-flat"
-        assert st["policy"]["tool_limit"] == 13
+        assert st["policy"]["tool_limit"] == 14
         assert st["policy"]["tool_output_max_chars"] == 12_000
 
     @pytest.mark.asyncio
@@ -225,6 +225,7 @@ class TestTuiCanonicalGraphBridge:
         class DummyApp(AppSlashCommandsMixin):
             def __init__(self):
                 self._bridge = MagicMock()
+                self._bridge.working_dir = None
                 self.notifications = []
 
             async def _mount_chat_widget(self, widget):
@@ -239,7 +240,7 @@ class TestTuiCanonicalGraphBridge:
 
         assert len(mounted_widgets) == 1
         widget_text = str(mounted_widgets[0].content)
-        assert "Packaged Agent Skills" in widget_text
+        assert "Available Agent Skills" in widget_text
         assert "polyglot-verify" in widget_text
         assert "atomic-edit-rollback" in widget_text
         assert "git-safe-review" in widget_text

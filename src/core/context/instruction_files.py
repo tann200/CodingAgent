@@ -35,6 +35,7 @@ logger = logging.getLogger(__name__)
 
 # Character budgets — match claw-code's constants
 MAX_INSTRUCTION_FILE_CHARS: int = 4_000
+MAX_ARCHITECTURE_FILE_CHARS: int = 3_000
 MAX_TOTAL_INSTRUCTION_CHARS: int = 12_000
 
 # File names to probe in each ancestor directory (in order, within each dir).
@@ -61,6 +62,19 @@ _CANDIDATE_NAMES: tuple[tuple[str, ...], ...] = (
     (".claw", "instructions.md"),
 )
 
+# Root-only architecture doc discovered in workspace root (capped at 3,000 chars)
+_ROOT_ONLY_CANDIDATES: tuple[tuple[tuple[str, ...], int], ...] = (
+    (("ARCHITECTURE.md",), MAX_ARCHITECTURE_FILE_CHARS),
+)
+
+# Subtree instruction files discovered lazily when touching files beneath workdir
+_NESTED_CANDIDATE_NAMES: tuple[tuple[str, ...], ...] = (
+    ("AGENTS.md",),
+    ("AGENTS.local.md",),
+    ("CLAUDE.md",),
+    ("CLAUDE.local.md",),
+)
+
 
 # ---------------------------------------------------------------------------
 # Data type
@@ -73,6 +87,7 @@ class InstructionFile:
 
     path: Path
     content: str
+    max_chars: Optional[int] = None
 
 
 # ---------------------------------------------------------------------------
@@ -99,12 +114,16 @@ def _stable_content_hash(content: str) -> str:
     return hashlib.sha256(content.encode()).hexdigest()
 
 
-def _truncate_content(content: str, remaining_chars: int) -> str:
+def _truncate_content(
+    content: str,
+    remaining_chars: int,
+    max_file_chars: int = MAX_INSTRUCTION_FILE_CHARS,
+) -> str:
     """Truncate *content* to the lesser of per-file and *remaining_chars* limits.
 
     Mirrors ``truncate_instruction_content`` in prompt.rs.
     """
-    hard_limit = min(MAX_INSTRUCTION_FILE_CHARS, remaining_chars)
+    hard_limit = min(max_file_chars, remaining_chars)
     trimmed = content.strip()
     if len(trimmed) <= hard_limit:
         return trimmed
@@ -180,7 +199,126 @@ def discover_instruction_files(
                     "discover_instruction_files: could not read %s: %s", candidate, exc
                 )
 
+    # TASK-32: Root-only ARCHITECTURE.md discovery (capped at 3,000 chars)
+    for parts, cap in _ROOT_ONLY_CANDIDATES:
+        candidate = cwd.joinpath(*parts)
+        try:
+            content = candidate.read_text(encoding="utf-8")
+            if content.strip():
+                try:
+                    from src.core.security.redaction import redact_secrets
+                    content = redact_secrets(content)
+                except Exception:
+                    pass
+                files.append(
+                    InstructionFile(path=candidate, content=content, max_chars=cap)
+                )
+        except FileNotFoundError:
+            pass
+        except Exception as exc:
+            logger.debug(
+                "discover_instruction_files: could not read %s: %s", candidate, exc
+            )
+
     return _dedupe(files)
+
+
+def discover_nested_instruction_files(
+    touched_path: str | Path,
+    workdir: str | Path,
+    seen_signatures: Optional[set[str]] = None,
+) -> tuple[list[InstructionFile], str]:
+    """Lazily discover nested ``AGENTS.md`` / ``CLAUDE.md`` files beneath *workdir*.
+
+    Walks intermediate directories strictly between *workdir* and the directory
+    containing *touched_path* (shallowest first). Each candidate file is hashed
+    with SHA-256 (``"<resolved_path>:<sha256>"``) so already-seen files are
+    skipped unless modified on disk.
+
+    Returns ``(new_files, rendered_envelope)`` where *rendered_envelope* is
+    wrapped in a nonce-fenced ``<project_instructions>`` envelope (or ``""``).
+    """
+    try:
+        wd = Path(workdir).resolve()
+        tp = Path(touched_path).resolve()
+    except OSError:
+        return [], ""
+
+    if not tp.is_relative_to(wd):
+        return [], ""
+
+    target_dir = tp if tp.is_dir() else tp.parent
+    if target_dir == wd:
+        return [], ""
+
+    rel_parts = target_dir.relative_to(wd).parts
+    intermediate_dirs: list[Path] = []
+    cur = wd
+    for part in rel_parts:
+        cur = cur / part
+        intermediate_dirs.append(cur)
+
+    collected: list[InstructionFile] = []
+    for directory in intermediate_dirs:
+        for parts in _NESTED_CANDIDATE_NAMES:
+            candidate = directory.joinpath(*parts)
+            try:
+                if not candidate.is_file():
+                    continue
+                resolved_cand = candidate.resolve()
+                if not resolved_cand.is_relative_to(wd):
+                    continue
+                content = resolved_cand.read_text(encoding="utf-8")
+                if not content.strip():
+                    continue
+                try:
+                    from src.core.security.redaction import redact_secrets
+
+                    content = redact_secrets(content)
+                except Exception:
+                    pass
+                sig = f"{resolved_cand}:{_stable_content_hash(_normalize_content(content))}"
+                if seen_signatures is not None:
+                    if sig in seen_signatures:
+                        continue
+                    seen_signatures.add(sig)
+                collected.append(InstructionFile(path=resolved_cand, content=content))
+            except FileNotFoundError:
+                pass
+            except Exception as exc:
+                logger.debug(
+                    "discover_nested_instruction_files: could not read %s: %s",
+                    candidate,
+                    exc,
+                )
+
+    deduped = _dedupe(collected)
+    if not deduped:
+        return [], ""
+    return deduped, render_instruction_files(deduped)
+
+
+def maybe_collect_nested_instructions(
+    touched_path: str | Path,
+    workdir: str | Path,
+) -> str:
+    """Collect unseen nested subtree instructions for the active orchestrator session."""
+    try:
+        from src.tools.subagent_tools import _PARENT_ORCHESTRATOR_VAR
+
+        orch = _PARENT_ORCHESTRATOR_VAR.get(None)
+    except Exception:
+        orch = None
+    if orch is None:
+        return ""
+    seen = getattr(orch, "_seen_nested_instruction_sigs", None)
+    if not isinstance(seen, set):
+        seen = set()
+        setattr(orch, "_seen_nested_instruction_sigs", seen)
+    _, rendered = discover_nested_instruction_files(
+        touched_path, workdir, seen_signatures=seen
+    )
+    return rendered
 
 
 def _dedupe(files: list[InstructionFile]) -> list[InstructionFile]:
@@ -223,7 +361,11 @@ def render_instruction_files(files: list[InstructionFile]) -> str:
                 "_Additional instruction content omitted after reaching the prompt budget._"
             )
             break
-        raw = _truncate_content(f.content, remaining)
+        raw = _truncate_content(
+            f.content,
+            remaining,
+            max_file_chars=f.max_chars or MAX_INSTRUCTION_FILE_CHARS,
+        )
         consumed = min(len(raw), remaining)
         remaining -= consumed
 

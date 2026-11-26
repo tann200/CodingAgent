@@ -61,20 +61,26 @@ def extract_skill_metadata(content: str, default_name: str) -> Tuple[str, str, s
     return name, description, body.strip()
 
 
-def get_skill_info(name: str) -> Optional[Dict[str, Any]]:
-    """Get metadata for a single named skill."""
-    path = _find_skill_file(name)
+def get_skill_info(name: str, workdir: Optional[str | Path] = None) -> Optional[Dict[str, Any]]:
+    """Get metadata for a single named skill across unified discovery scopes."""
+    from src.core.context.agent_brain_loading import discover_skills, find_skill_meta
+
+    catalog = discover_skills(workdir)
+    meta = find_skill_meta(name, catalog)
+    path = meta.path if meta is not None else _find_skill_file(name, Path(workdir) if workdir else None)
     if not path or not path.exists():
         return None
 
     try:
         content = path.read_text(encoding="utf-8")
-        meta_name, desc, body = extract_skill_metadata(content, name)
+        meta_name, desc, _body = extract_skill_metadata(content, meta.name if meta else name)
         is_bundle = path.name in ("SKILL.md", "skill.md")
         return {
-            "name": name,
+            "name": meta.name if meta else name,
             "title": meta_name,
-            "description": desc,
+            "description": meta.description if meta else desc,
+            "provenance": meta.provenance if meta else "bundled",
+            "source_scope": meta.source_scope if meta else "bundled",
             "path": str(path),
             "is_bundle": is_bundle,
             "size_bytes": path.stat().st_size,
@@ -87,12 +93,14 @@ def get_skill_info(name: str) -> Optional[Dict[str, Any]]:
 get_skill_metadata = get_skill_info
 
 
-def list_all_skills() -> List[Dict[str, Any]]:
-    """List metadata for all available skills."""
-    names = _list_skill_names()
+def list_all_skills(workdir: Optional[str | Path] = None) -> List[Dict[str, Any]]:
+    """List metadata for all available skills across workspace, user, and bundled scopes."""
+    from src.core.context.agent_brain_loading import discover_skills
+
+    catalog = discover_skills(workdir)
     results: List[Dict[str, Any]] = []
-    for n in names:
-        info = get_skill_info(n)
+    for n in sorted(catalog.keys(), key=str.lower):
+        info = get_skill_info(n, workdir=workdir)
         if info:
             results.append(info)
     return results

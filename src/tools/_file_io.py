@@ -438,6 +438,14 @@ def write_file(
             f"write_file wrote {lines_added} lines in a single call. "
             "Split into multiple targeted function/section writes."
         )
+    try:
+        from src.core.context.instruction_files import maybe_collect_nested_instructions
+
+        nested = maybe_collect_nested_instructions(p, workdir)
+        if nested:
+            result["nested_instructions"] = nested
+    except Exception:
+        pass
     return result
 
 
@@ -579,7 +587,7 @@ def read_file(
             _mark_file_read(str(p.resolve()))
         except Exception:
             pass
-        return {
+        res_slice: Dict[str, Any] = {
             "path": str(p),
             "status": "ok",
             "content": sliced,
@@ -587,6 +595,15 @@ def read_file(
             "end_line": min(e, total_lines),
             "total_lines": total_lines,
         }
+        try:
+            from src.core.context.instruction_files import maybe_collect_nested_instructions
+
+            nested = maybe_collect_nested_instructions(p, workdir)
+            if nested:
+                res_slice["nested_instructions"] = nested
+        except Exception:
+            pass
+        return res_slice
 
     # TASK-30: Context-Aware Read Guard (triggered only when no line range requested)
     if not summarize:
@@ -658,6 +675,14 @@ def read_file(
     result: Dict[str, Any] = {"path": str(p), "status": "ok", "content": content}
     if truncated:
         result["truncated"] = True
+    try:
+        from src.core.context.instruction_files import maybe_collect_nested_instructions
+
+        nested = maybe_collect_nested_instructions(p, workdir)
+        if nested:
+            result["nested_instructions"] = nested
+    except Exception:
+        pass
     return result
 
 

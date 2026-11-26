@@ -196,6 +196,8 @@ def build_instruction_files_block(
         if instruction_files:
             instruction_block = render_instruction_files(instruction_files)
             if instruction_block:
+                if instruction_block.lstrip().startswith("<project_instructions"):
+                    return instruction_block
                 return f"<project_instructions>\n{instruction_block}\n</project_instructions>"
     except Exception as exc:
         logger.debug("static_prompt_parts: instruction files block failed: %s", exc)
@@ -330,6 +332,7 @@ def build_static_system_parts(
     is_reasoning_model_fn: Optional[Callable[[str], bool]],
     build_thinking_mode_block_fn: Callable[[str, bool], str],
     build_output_format_block_fn: Callable[[bool, bool, str], str],
+    skill_catalog_text: str = "",
 ) -> str:
     parts: List[str] = []
     tier_str = (model_tier or "").lower()
@@ -348,6 +351,9 @@ def build_static_system_parts(
     project_instructions_block = build_project_instructions_block_fn()
     if project_instructions_block:
         parts.append(project_instructions_block)
+
+    if skill_catalog_text:
+        parts.append(f"<available_skills>\n{skill_catalog_text}\n</available_skills>")
 
     if active_skills:
         skill_contents = [

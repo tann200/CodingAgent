@@ -1,5 +1,5 @@
 name: standard-flat
-description: Flat single-purpose toolset for 15-70B dense and 20-35B MoE workhorse models (19 tools)
+description: Flat single-purpose toolset for 15-70B dense and 20-35B MoE workhorse models (20 tools)
 tools:
   - read_file
   - read_tool_output
@@ -14,6 +14,7 @@ tools:
   - git_diff
   - manage_todo
   - ask_user
+  - load_skill
   - multiedit
   - apply_patch
   - find_symbol

@@ -66,11 +66,14 @@ def build_context_report(
     skills_map: Dict[str, str] = dict(getattr(builder, "skills", None) or {})
     skills_full_chars = sum(len(v or "") for v in skills_map.values())
     skills_full_tokens = estimate_tokens("".join(skills_map.values()))
-    catalog_lines = [
-        f"- {name}: {(body.strip().splitlines()[0] if body and body.strip() else name)[:100]}"
-        for name, body in sorted(skills_map.items())
-    ]
-    skills_catalog_text = "\n".join(catalog_lines)
+    skills_catalog_text = (
+        builder.get_skill_catalog_text()
+        if hasattr(builder, "get_skill_catalog_text")
+        else "\n".join(
+            f"- {name}: {(body.strip().splitlines()[0] if body and body.strip() else name)[:100]}"
+            for name, body in sorted(skills_map.items())
+        )
+    )
     skills_catalog_tokens = estimate_tokens(skills_catalog_text)
 
     # 4. Tool JSON schemas for selected flat tier

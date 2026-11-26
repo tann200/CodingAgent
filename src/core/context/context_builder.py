@@ -37,8 +37,13 @@ from src.core.context.sanitization import sanitize_prompt_text
 from src.core.security.redaction import redact_data, redact_secrets
 from src.core.context.tool_output_pruning import prune_stale_tool_outputs
 from src.core.context.agent_brain_loading import (
+    SkillMeta,
+    discover_skills,
+    find_skill_meta,
     load_prompt_directory,
     merge_workspace_skill_overrides,
+    read_skill_content,
+    render_skill_catalog,
 )
 from src.core.context.static_prompt_parts import (
     MODEL_ID_PARTIAL_MAP,
@@ -306,31 +311,40 @@ class ContextBuilder:
         roles_dir = config_root / "roles"
         self.roles = load_prompt_directory(roles_dir, self._read_text_cached)
 
-        # Load all skills by name — built-in first, then workspace overrides.
-        skills_dir = config_root / "skills"
-        self.skills = load_prompt_directory(skills_dir, self._read_text_cached)
+        # TASK-32: Unified progressive-disclosure skill discovery across
+        # workspace (.codingagent, .agents, .claude), user (~/.codingagent),
+        # and bundled skill directories.
+        workdir_root = self._agent_context_dir.parent
+        self.skill_catalog: Dict[str, SkillMeta] = discover_skills(workdir_root)
+        self.skills: Dict[str, str] = {}
+        for s_name, s_meta in self.skill_catalog.items():
+            cached = self._read_text_cached(s_meta.path)
+            if cached is not None:
+                self.skills[s_name] = cached
 
-        # GAP-NEW-2: workspace skill discovery.
-        # Load user-supplied skills from the working directory so users can add
-        # custom skills without modifying the repo.  Workspace skills override
-        # built-in skills of the same name, enabling per-project customisation.
-        # Respect configured context-dir name when looking for workspace skills,
-        # but fall back to legacy names for compatibility.
+        # Keep legacy workspace override hook compatible when custom ctx_name
+        # differs from standard .codingagent/.codingAgent.
         ctx_name = _get_ctx_name()
-
-        _workspace_skill_dirs = [
-            self._agent_context_dir.parent / ctx_name / "skills",
-            self._agent_context_dir.parent / ".claude" / "skills",
-        ]
-        self.skills = merge_workspace_skill_overrides(
-            self.skills,
-            _workspace_skill_dirs,
-            self._read_text_cached,
-        )
+        if ctx_name.lower() != ".codingagent":
+            self.skills = merge_workspace_skill_overrides(
+                self.skills,
+                [workdir_root / ctx_name / "skills"],
+                self._read_text_cached,
+            )
 
     def get_skill(self, skill_name: str) -> str:
-        """Get skill content by name."""
+        """Get skill content by name (wrapping project-scoped skills in untrusted envelope)."""
+        meta = find_skill_meta(skill_name, getattr(self, "skill_catalog", {}))
+        if meta is not None:
+            try:
+                return read_skill_content(meta)
+            except OSError:
+                pass
         return self.skills.get(skill_name, "")
+
+    def get_skill_catalog_text(self) -> str:
+        """Return compact static progressive-disclosure skill catalog."""
+        return render_skill_catalog(getattr(self, "skill_catalog", {}))
 
     @staticmethod
     def _get_provider_variant(model_name: str) -> Optional[str]:
@@ -769,7 +783,15 @@ class ContextBuilder:
         )
 
     def _build_project_instructions_block(self) -> str:
-        """Return <project_config_instructions> block from config.json, or ''."""
+        """Return <project_config_instructions> block, skipping duplicate AGENTS.md loading.
+
+        ``_build_instruction_files_block`` is the canonical, nonce-fenced loader for
+        ``AGENTS.md`` / ``CLAUDE.md`` / ``ARCHITECTURE.md``. Only fall back to
+        ``instruction_loader.load_project_instructions`` when ``instruction_files``
+        discovery is unavailable so ``AGENTS.md`` is never injected twice.
+        """
+        if _discover_instruction_files is not None and _render_instruction_files is not None:
+            return ""
         return _build_project_instructions_block_helper(
             workdir=self._agent_context_dir.parent,
             load_project_instructions=_load_project_instructions,
@@ -889,6 +911,7 @@ class ContextBuilder:
             build_output_format_block_fn=lambda unt, ism, tier: self._build_output_format_block(
                 unt, ism, tier
             ),
+            skill_catalog_text=self.get_skill_catalog_text(),
         )
         with _CACHE_LOCK:
             store_static_prompt_cache_entry(

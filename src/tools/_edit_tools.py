@@ -481,6 +481,14 @@ def edit_by_line_range(
         "lines_added": lines_added,
         "lines_removed": lines_removed,
     }
+    try:
+        from src.core.context.instruction_files import maybe_collect_nested_instructions
+
+        nested = maybe_collect_nested_instructions(p, Path(workdir))
+        if nested:
+            result["nested_instructions"] = nested
+    except Exception:
+        pass
 
     return result
 
@@ -659,6 +667,14 @@ def edit_file_atomic(
         "lines_added": lines_added,
         "lines_removed": lines_removed,
     }
+    try:
+        from src.core.context.instruction_files import maybe_collect_nested_instructions
+
+        nested = maybe_collect_nested_instructions(p, Path(workdir))
+        if nested:
+            result["nested_instructions"] = nested
+    except Exception:
+        pass
 
     return result
 
