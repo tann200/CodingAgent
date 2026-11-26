@@ -72,6 +72,10 @@ jobs:
         run: |
           python -m mypy src tui/tui_src \
             --ignore-missing-imports --follow-imports=silent --disable-error-code=import-untyped --no-error-summary
+      - name: Check module size ceilings & context-report CLI
+        run: |
+          python -m pytest tests/unit/test_module_sizes.py -q -p no:logging
+          python -m src.main context-report --tier compact-flat --json > /dev/null
 
   unit-tests:
     runs-on: ubuntu-latest
@@ -87,28 +91,18 @@ jobs:
           pip install -e .[dev,server]
       - name: Run unit tests with coverage
         run: |
-          python -m pytest tests/unit -q -p no:logging --cov=src --cov-report=term-missing --cov-report=xml
+          set -o pipefail
+          # NB: pytest.ini already sets addopts=-q; avoid a second -q so the final
+          # summary line ("N xfailed"/"N xpassed") stays visible for the xfail gate.
+          python -m pytest tests/unit --no-header -p no:logging --cov=src --cov-report=term-missing --cov-report=xml | tee unit_pytest_output.txt
       - name: Check xfail count (IMPL-Q2)
         # Fail the build if the number of xfail/xpass results exceeds the
         # allowed threshold.  This prevents xfail from becoming a permanent
         # workaround that masks real failures.  Current threshold: 10.
         run: |
           python - <<'PY'
-          import subprocess, sys, re
-          # NB: no explicit -q here. pytest.ini already sets addopts=-q, and a
-          # second -q (-qq) suppresses the final summary line that this step's
-          # regex parses ("N xfailed"/"N xpassed") — the gate would silently
-          # read 0 forever and could never fire.
-          result = subprocess.run(
-              [sys.executable, "-m", "pytest", "tests/unit", "--no-header", "-p", "no:logging"],
-              capture_output=True, text=True
-          )
-          output = result.stdout + result.stderr
-          if result.returncode not in (0, 1, 5):
-              print(f"pytest subprocess exited with code {result.returncode}")
-              print("stdout:", result.stdout[:2000])
-              print("stderr:", result.stderr[:2000])
-              sys.exit(1)
+          import pathlib, re, sys
+          output = pathlib.Path("unit_pytest_output.txt").read_text(encoding="utf-8", errors="replace")
           # Match e.g. "3 xfailed" or "2 xpassed"
           xfail_match = re.search(r"(\d+) xfailed", output)
           xpass_match = re.search(r"(\d+) xpassed", output)
@@ -148,7 +142,20 @@ jobs:
           pip install -e .[dev,server]
       - name: Run platform-sensitive unit smoke tests
         run: |
-          python -m pytest tests/unit/test_sandbox.py tests/unit/test_sandbox_bwrap.py tests/unit/test_tools_sandbox.py tests/unit/test_task_lifecycle.py tests/unit/test_cli_doctor.py -q -p no:logging
+          python -m pytest \
+            tests/unit/test_sandbox.py \
+            tests/unit/test_sandbox_bwrap.py \
+            tests/unit/test_tools_sandbox.py \
+            tests/unit/test_task_lifecycle.py \
+            tests/unit/test_cli_doctor.py \
+            tests/unit/test_task28_bench_diff_and_context_report.py \
+            tests/unit/test_task31_defense_in_depth.py \
+            tests/unit/test_task34_validation_authority_and_loop_guards.py \
+            tests/unit/test_task35_gguf_header.py \
+            tests/unit/test_task36_ergonomics_and_headless.py \
+            tests/unit/test_task37_tui_critical_fixes.py \
+            tests/unit/test_task38_tui_modernization.py \
+            -q -p no:logging
 
   integration-mock:
     runs-on: ubuntu-latest

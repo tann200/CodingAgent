@@ -112,7 +112,7 @@ class TestTokenEfficiencyAndParallelWavesBenchmark:
     """Benchmark token footprint reduction and parallel wave dispatch speed."""
 
     def test_compact_vs_frontier_toolset_token_efficiency(self):
-        """compact-flat (12 tools) must reduce tool schema size by >= 40% vs frontier-flat (25 tools)."""
+        """compact-flat (14 tools) must reduce tool schema size by >= 40% vs frontier-flat (26 tools)."""
         workdir = _make_workdir()
         orch = _make_orchestrator(workdir)
 
@@ -125,7 +125,9 @@ class TestTokenEfficiencyAndParallelWavesBenchmark:
         compact_schemas = resolve_effective_tool_schemas(orch, COMPACT_RUNTIME_POLICY)
         frontier_schemas = resolve_effective_tool_schemas(orch, FRONTIER_RUNTIME_POLICY)
 
-        assert len(compact_schemas) <= 12, f"Expected <= 12 tools for compact-flat, got {len(compact_schemas)}"
+        assert len(compact_schemas) <= COMPACT_RUNTIME_POLICY.tool_limit, (
+            f"Expected <= {COMPACT_RUNTIME_POLICY.tool_limit} tools for compact-flat, got {len(compact_schemas)}"
+        )
         assert len(frontier_schemas) >= 20, f"Expected >= 20 tools for frontier-flat, got {len(frontier_schemas)}"
 
         compact_bytes = len(json.dumps(compact_schemas))
