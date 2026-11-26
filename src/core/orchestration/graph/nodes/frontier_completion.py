@@ -259,6 +259,15 @@ def handle_no_tool_completion(
     effective_last_result = last_result if last_result is not None else state.get("last_result")
     effective_errors = errors if errors is not None else state.get("errors")
 
+    unpaid_debt: List[str] = []
+    if orchestrator is not None:
+        try:
+            from src.core.orchestration.graph.validation_authority import get_or_create_debt_tracker
+
+            unpaid_debt = get_or_create_debt_tracker(orchestrator).unpaid_debt()
+        except Exception:
+            unpaid_debt = []
+
     contract = evaluate_completion_contract(
         task=task,
         content_text=content_text,
@@ -271,6 +280,7 @@ def handle_no_tool_completion(
         last_tool_name=last_tool_name or state.get("last_tool_name"),
         mutating_tool_calls_count=mutating_tool_calls_count,
         working_dir=str(getattr(orchestrator, "working_dir", "") or "") or None,
+        unpaid_validation_debt=unpaid_debt or None,
     )
 
     if contract.is_complete:

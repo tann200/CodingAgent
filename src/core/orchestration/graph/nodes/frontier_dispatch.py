@@ -305,22 +305,54 @@ async def execute_raw_tool(
     run_async: bool,
     log: Any = None,
 ) -> Any:
-    """Execute one tool action through ``orchestrator.execute_tool``."""
+    """Execute one tool action through ``orchestrator.execute_tool`` with TASK-34 guards."""
     import asyncio
+    from src.core.orchestration.graph.validation_authority import get_or_create_debt_tracker
+    from src.core.orchestration.loop_guards import get_or_create_read_dedup_cache
 
     if not orchestrator:
         return {"ok": False, "error": "orchestrator unavailable"}
+    t_name = str(action.get("name") or "")
+    raw_args = action.get("arguments")
+    t_args: Dict[str, Any] = raw_args if isinstance(raw_args, dict) else {}
+    dedup = get_or_create_read_dedup_cache(orchestrator)
+    debt = get_or_create_debt_tracker(orchestrator)
+
+    if not dedup.is_invalidating(t_name):
+        cached = dedup.get(t_name, t_args)
+        if cached is not None:
+            cached["dedup_cache_hit"] = True
+            return cached
+
     try:
         if run_async or model_tier in ("large", "frontier", "medium"):
             from src.core.orchestration.event_bus import run_with_correlation
 
             loop = asyncio.get_running_loop()
-            return await run_with_correlation(loop, None, orchestrator.execute_tool, action)
-        return orchestrator.execute_tool(action)
+            res = await run_with_correlation(loop, None, orchestrator.execute_tool, action)
+        else:
+            res = orchestrator.execute_tool(action)
     except Exception as exc:
         if log is not None:
             log.warning("frontier_loop_node: tool '%s' raised: %s", action.get("name"), exc)
         return {"ok": False, "error": str(exc)}
+
+    if dedup.is_invalidating(t_name):
+        dedup.invalidate()
+        if t_name in _MODIFYING_TOOL_NAMES and t_name not in ("bash", "run_bash", "execute_bash", "run_command", "execute_command"):
+            debt.record_mutation()
+    elif isinstance(res, dict):
+        dedup.put(t_name, t_args, res)
+
+    if t_name in ("bash", "run_tests", "run_linter") and isinstance(res, dict):
+        raw_inner = res.get("result")
+        inner: Dict[str, Any] = raw_inner if isinstance(raw_inner, dict) else res
+        cmd_str = str(t_args.get("command") or inner.get("command") or ("pytest" if t_name == "run_tests" else ""))
+        if cmd_str:
+            rc = inner.get("returncode")
+            passed = bool(rc == 0) if rc is not None else bool(res.get("ok") is True or inner.get("status") == "ok")
+            debt.record_command(cmd_str, passed=passed)
+    return res
 
 
 def record_bash_mutations(orchestrator: Any, workdir: str, before: Dict[str, Tuple[int, int]]) -> None:
@@ -330,6 +362,9 @@ def record_bash_mutations(orchestrator: Any, workdir: str, before: Dict[str, Tup
     changed_paths = detect_workspace_mutations(workdir, before)
     if not changed_paths:
         return
+    from src.core.orchestration.graph.validation_authority import get_or_create_debt_tracker
+
+    get_or_create_debt_tracker(orchestrator).record_mutation()
     lock = getattr(orchestrator, "_state_lock", None)
     if lock is not None and hasattr(lock, "__enter__"):
         with lock:

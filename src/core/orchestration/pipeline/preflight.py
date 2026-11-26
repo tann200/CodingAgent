@@ -11,6 +11,7 @@ import tempfile
 from pathlib import Path
 from typing import Any, Collection, Dict, Optional
 
+from src.core.orchestration.loop_guards import format_unknown_tool_error
 from src.core.orchestration.pipeline.permissions import (
     _ACTIVE_AGENT_CTX,
     _check_agent_permission_override,
@@ -151,7 +152,7 @@ def _run_preflight_and_lookup(
         if preflight.get("error") == "tool_not_found":
             return {
                 "ok": False,
-                "error": f"Tool '{name}' not found.",
+                "error": format_unknown_tool_error(name, orch),
                 "details": preflight.get("message"),
                 "suggestions": preflight.get("suggestions", []),
             }, None
@@ -174,7 +175,7 @@ def _run_preflight_and_lookup(
 
     tool = orch.tool_registry.get(name)
     if not tool:
-        return {"ok": False, "error": f"Tool '{name}' not found."}, None
+        return {"ok": False, "error": format_unknown_tool_error(name, orch)}, None
 
     active_agent = None
     try:

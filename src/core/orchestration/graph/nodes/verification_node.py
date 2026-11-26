@@ -424,6 +424,22 @@ async def _verification_node_impl(state: StateLike, config: RunnerConfig) -> Dic
                     ),
                 }
 
+    if orch is not None:
+        try:
+            from src.core.orchestration.graph.validation_authority import get_or_create_debt_tracker
+
+            _debt = get_or_create_debt_tracker(orch)
+            if verification_passed and isinstance(results.get("tests"), Mapping) and results["tests"].get("status") == "ok":
+                _debt.mark_debt_paid_by_verifier()
+            elif verification_passed and _debt.unpaid_debt():
+                verification_passed = False
+                results["red_green_debt"] = {
+                    "status": "fail",
+                    "error": "Unpaid red->green validation debt: " + ", ".join(_debt.unpaid_debt()),
+                }
+        except Exception:
+            pass
+
     run_state = dict(state.get("run") or {})
     prev_recoveries = int(run_state.get("recoveries") or 0)
     raw_limit = rt_policy.get("recovery_limit") if isinstance(rt_policy, Mapping) else None

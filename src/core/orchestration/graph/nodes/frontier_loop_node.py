@@ -231,7 +231,10 @@ async def _call_llm_for_turn(
         _call_kwargs["policy_tier"] = str(_pol_tier)
     _ver_retries = int(getattr(orchestrator, "_last_verification_retries", 0) or 0)
     if _ver_retries > 0:
+        from src.core.orchestration.loop_guards import compute_retry_temperature
+
         _call_kwargs["verification_retries"] = _ver_retries
+        _call_kwargs["temperature"] = compute_retry_temperature(0.2, _ver_retries)
     response = await asyncio.wait_for(call_model(**_call_kwargs), timeout=_llm_timeout)
 
     content_text = _extract_content_text(response)
@@ -661,6 +664,9 @@ async def frontier_loop_node(
                         orchestrator=orchestrator, task=task, history=history,
                         model_tier=model_tier, turns_taken=turns_taken,
                     )
+            from src.core.orchestration.loop_guards import augment_turn_messages
+
+            messages = augment_turn_messages(messages, state, turns_taken)
 
             try:
                 try:

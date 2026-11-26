@@ -811,7 +811,14 @@ def bash(
             if seg_err is not None:
                 return seg_err
 
-        cmd_parts = segments[0] if not operators else ["/bin/sh", "-c", command]
+        if not operators:
+            cmd_parts = segments[0]
+        elif Path("/bin/bash").is_file():
+            from src.core.orchestration.graph.validation_authority import wrap_with_pipefail
+
+            cmd_parts = ["/bin/bash", "-c", wrap_with_pipefail(command, "bash")]
+        else:
+            cmd_parts = ["/bin/sh", "-c", command]
     else:
         try:
             cmd_parts = shlex.split(command)
@@ -917,6 +924,16 @@ def bash(
             out["stdout_truncated"] = True
         if _err_cut:
             out["stderr_truncated"] = True
+        try:
+            from src.core.orchestration.graph.validation_authority import (
+                classify_shell_validation,
+                is_validation_command,
+            )
+
+            if is_validation_command(command):
+                out["validation_authority"] = classify_shell_validation(command)["authority"]
+        except Exception:
+            pass
         return out
     except subprocess.TimeoutExpired as _te:
         _raw_stdout = _te.stdout or ""
@@ -1105,6 +1122,16 @@ def bash_readonly(
             out["stdout_truncated"] = True
         if _err_cut:
             out["stderr_truncated"] = True
+        try:
+            from src.core.orchestration.graph.validation_authority import (
+                classify_shell_validation,
+                is_validation_command,
+            )
+
+            if is_validation_command(command):
+                out["validation_authority"] = classify_shell_validation(command)["authority"]
+        except Exception:
+            pass
         return out
     except subprocess.TimeoutExpired as _te:
         _raw_stdout = _te.stdout or ""

@@ -196,6 +196,7 @@ def evaluate_completion_contract(
     last_tool_name: Optional[str] = None,
     mutating_tool_calls_count: int = 0,
     working_dir: Optional[str] = None,
+    unpaid_validation_debt: Optional[List[str]] = None,
 ) -> CompletionContractVerdict:
     """Evaluate whether completion criteria are genuinely satisfied by concrete evidence."""
     cleaned_task = (task or "").strip()
@@ -294,6 +295,18 @@ def evaluate_completion_contract(
                     error_code="missing_named_deliverable",
                     evidence={"modified_files": list(mod_set), "missing_files": missing_files},
                 )
+
+        if unpaid_validation_debt:
+            return CompletionContractVerdict(
+                is_complete=False,
+                task_type=TaskType.MUTATING,
+                failure_reason=(
+                    "Opportunistic red->green validation debt unpaid — re-run failing validation "
+                    "command(s) after your edits: " + ", ".join(unpaid_validation_debt)
+                ),
+                error_code="unpaid_red_green_validation_debt",
+                evidence={"modified_files": list(mod_set), "unpaid_validation_debt": list(unpaid_validation_debt)},
+            )
 
         return CompletionContractVerdict(
             is_complete=True,
