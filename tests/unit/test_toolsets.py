@@ -20,30 +20,29 @@ def write_yaml(path: Path, data: dict):
 
 def test_list_available_toolsets():
     toolsets = list_available_toolsets()
-    assert "coding" in toolsets
-    assert "debug" in toolsets
-    assert "review" in toolsets
-    assert "planning" in toolsets
+    assert toolsets == ["compact-flat", "frontier-flat", "standard-flat"]
 
 
 def test_get_tools_for_toolset():
-    coding_tools = get_tools_for_toolset("coding")
-    assert "read_file" in coding_tools
-    assert "write_file" in coding_tools
-    assert "edit_file" in coding_tools
+    standard_tools = get_tools_for_toolset("standard-flat")
+    assert "read_file" in standard_tools
+    assert "write_file" in standard_tools
+    assert "edit_file_atomic" in standard_tools
+    assert "load_skill" in standard_tools
 
 
 def test_get_toolset_for_role():
-    assert get_toolset_for_role("coder") == "coding"
-    assert get_toolset_for_role("planner") == "planning"
-    assert get_toolset_for_role("reviewer") == "review"
-    assert get_toolset_for_role("debugger") == "debug"
+    assert get_toolset_for_role("coder") == "standard-flat"
+    assert get_toolset_for_role("planner") == "compact-flat"
+    assert get_toolset_for_role("reviewer") == "compact-flat"
+    assert get_toolset_for_role("debugger") == "standard-flat"
+    assert get_toolset_for_role("frontier") == "frontier-flat"
 
 
 def test_load_toolset():
-    toolset = load_toolset("coding")
+    toolset = load_toolset("standard-flat")
     assert toolset is not None
-    assert toolset["name"] == "coding"
+    assert toolset["name"] == "standard-flat"
     assert "tools" in toolset
 
 
@@ -89,9 +88,9 @@ def test_list_available_toolsets_lists_dir(tmp_path, monkeypatch):
 
 
 def test_resolve_toolset_success():
-    coding_tools = loader.get_tools_for_toolset("coding")
-    resolved = loader.resolve_toolset("coding", coding_tools, fail_closed=True)
-    assert resolved == coding_tools
+    standard_tools = loader.get_tools_for_toolset("standard-flat")
+    resolved = loader.resolve_toolset("standard-flat", standard_tools, fail_closed=True)
+    assert resolved == standard_tools
 
 
 def test_resolve_toolset_fail_closed_when_missing():
@@ -99,11 +98,11 @@ def test_resolve_toolset_fail_closed_when_missing():
 
     # If any configured tool in the toolset is missing, it must fail closed
     with pytest.raises(KeyError, match="absent from registry"):
-        loader.resolve_toolset("coding", ["read_file", "write_file"], fail_closed=True)
+        loader.resolve_toolset("standard-flat", ["read_file", "write_file"], fail_closed=True)
 
 
 def test_resolve_toolset_non_fail_closed_returns_subset():
-    resolved = loader.resolve_toolset("coding", ["read_file", "write_file"], fail_closed=False)
+    resolved = loader.resolve_toolset("standard-flat", ["read_file", "write_file"], fail_closed=False)
     assert resolved == ["read_file", "write_file"]
 
 

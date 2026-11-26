@@ -146,60 +146,43 @@ def validate_all_toolsets(
 
 
 def get_toolset_for_role(role: str) -> str:
-    """Map an input role name to a toolset name.
+    """Map an input role or tier name to one of the 3 canonical flat toolsets.
 
-    Canonical role names:
-      - analyst
-      - strategic
-      - operational
-      - reviewer
-      - debugger
-
-    This function accepts common synonyms and maps them to a canonical role,
-    then returns the toolset name associated with that canonical role.
+    Canonical flat toolsets (TASK-33):
+      - ``compact-flat``  — read-only / scouting / compact 9–14B models (14 tools, no delegation)
+      - ``standard-flat`` — standard implementation / debugging (20 tools)
+      - ``frontier-flat`` — full frontier capability including opt-in delegation (26 tools)
     """
     role_in = (role or "").strip().lower()
+    if role_in in ("compact-flat", "standard-flat", "frontier-flat"):
+        return role_in
+    if role_in in ("frontier", "large"):
+        return "frontier-flat"
 
-    # map input synonyms -> canonical role name
-    synonym_to_canonical = {
-        # operational (execution / coder)
-        "operational": "operational",
-        "coder": "operational",
-        "developer": "operational",
-        "coding": "operational",
-        # strategic / planner
-        "strategic": "strategic",
-        "planner": "strategic",
-        "planning": "strategic",
-        "plan": "strategic",
-        # reviewer
-        "review": "reviewer",
-        "reviewer": "reviewer",
-        "audit": "reviewer",
-        # debugger
-        "debug": "debugger",
-        "debugger": "debugger",
-        # analyst / read-only exploration (fail-closed default)
-        "analysis": "analyst",
-        "analyst": "analyst",
-        "scout": "analyst",
-        "explore": "analyst",
-        "researcher": "analyst",
-        "research": "analyst",
+    synonym_to_flat = {
+        "operational": "standard-flat",
+        "coder": "standard-flat",
+        "developer": "standard-flat",
+        "coding": "standard-flat",
+        "debug": "standard-flat",
+        "debugger": "standard-flat",
+        "tester": "standard-flat",
+        "general": "standard-flat",
+        "strategic": "compact-flat",
+        "planner": "compact-flat",
+        "planning": "compact-flat",
+        "plan": "compact-flat",
+        "review": "compact-flat",
+        "reviewer": "compact-flat",
+        "audit": "compact-flat",
+        "analysis": "compact-flat",
+        "analyst": "compact-flat",
+        "scout": "compact-flat",
+        "explore": "compact-flat",
+        "researcher": "compact-flat",
+        "research": "compact-flat",
     }
-
-    canonical = synonym_to_canonical.get(role_in, "analyst")
-
-    # map canonical role -> toolset name
-    canonical_to_toolset = {
-        "operational": "coding",
-        "strategic": "planning",
-        "reviewer": "review",
-        "debugger": "debug",
-        "analyst": "analysis",
-    }
-
-    return canonical_to_toolset.get(canonical, "analysis")
+    return synonym_to_flat.get(role_in, "compact-flat")
 
 
 def get_tools_for_role(role: str) -> List[str]:

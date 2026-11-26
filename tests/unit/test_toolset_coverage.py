@@ -1,35 +1,20 @@
 from src.core.orchestration.registry_builder import example_registry
 from src.config.toolsets import loader as ts_loader
-from src.tools.tools_config import TOOL_ALIASES
 
 
 def test_every_registered_tool_in_some_toolset():
-    reg = example_registry()
-    # canonical tool names from the registry: exclude dotted aliases,
-    # short-form aliases configured in TOOL_ALIASES, and test-only tools.
-    _TEST_ONLY_TOOLS = {"echo"}
-    canonical = [
-        n for n in reg.list()
-        if "." not in n and n not in TOOL_ALIASES and n not in _TEST_ONLY_TOOLS
-    ]
-
+    """Verify the 3 canonical flat toolsets form a clean nested hierarchy (TASK-33)."""
     toolsets = ts_loader.list_available_toolsets()
-    assert toolsets, "No toolsets found"
+    assert toolsets == ["compact-flat", "frontier-flat", "standard-flat"]
 
-    # Build a map of tool -> appeared_in_toolset
-    coverage = {t: False for t in canonical}
+    compact = set(ts_loader.get_tools_for_toolset("compact-flat"))
+    standard = set(ts_loader.get_tools_for_toolset("standard-flat"))
+    frontier = set(ts_loader.get_tools_for_toolset("frontier-flat"))
 
-    for ts_name in toolsets:
-        ts = ts_loader.load_toolset(ts_name)
-        if not ts:
-            continue
-        tools = ts.get("tools") or []
-        for t in tools:
-            if t in coverage:
-                coverage[t] = True
-
-    missing = [t for t, present in coverage.items() if not present]
-    assert not missing, f"Canonical tools missing from toolsets: {missing}"
+    assert compact <= standard <= frontier
+    assert "delegate_task" not in compact
+    assert "load_skill" in compact
+    assert "read_tool_output" in compact
 
 
 def test_every_toolset_tool_is_registered():

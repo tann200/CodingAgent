@@ -1,5 +1,6 @@
 ---
 name: debug_checklist
+description: Root-cause debugging workflow: reproduce first, isolate failure, minimal fix, verify.
 triggers: [bug, crash, error, exception, traceback, unexpected, broken, failing]
 roles: [debugger, operational]
 ---

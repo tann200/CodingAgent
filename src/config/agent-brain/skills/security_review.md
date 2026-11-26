@@ -1,5 +1,6 @@
 ---
 name: security_review
+description: Security audit checklist for auth, injection, path traversal, SSRF, and secrets.
 triggers: [security, vulnerability, injection, XSS, CSRF, auth, credentials, secrets, CVE]
 roles: [reviewer, analyst]
 ---

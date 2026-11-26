@@ -302,17 +302,17 @@ def test_role_name_loads_correct_role():
         or "Operational Role" in messages_op[0]["content"]
     )
 
-    # Test strategic role
-    messages_strat = builder.build_prompt(
-        role_name="strategic",
+    # Test scout role (read-only delegation role retained after TASK-33)
+    messages_scout = builder.build_prompt(
+        role_name="scout",
         active_skills=[],
         task_description="task",
         tools=[],
         conversation=[],
     )
     assert (
-        "decompose complex tasks" in messages_strat[0]["content"]
-        or "Strategic Role" in messages_strat[0]["content"]
+        "Scout" in messages_scout[0]["content"]
+        or "read-only" in messages_scout[0]["content"].lower()
     )
 
 

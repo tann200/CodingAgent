@@ -1,5 +1,6 @@
 ---
 name: refactor
+description: Behavior-preserving refactoring with green baseline tests and incremental edits.
 triggers: [refactor, clean up, extract, restructure, technical debt]
 roles: [operational, strategic, analyst]
 ---

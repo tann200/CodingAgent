@@ -116,7 +116,7 @@ class TestBuiltinAgents:
     def test_build_agent_basics(self):
         assert BUILD_AGENT.id == "build"
         assert BUILD_AGENT.mode == "primary"
-        assert BUILD_AGENT.toolset == "coding"
+        assert BUILD_AGENT.toolset == "standard-flat"
         assert BUILD_AGENT.hidden is False
 
     def test_explore_agent_is_readonly(self):

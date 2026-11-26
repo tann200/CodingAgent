@@ -73,12 +73,14 @@ class TestResearcherIsAlias:
     def test_researcher_canonicalizes_to_analyst(self):
         assert normalize_role("researcher") == "analyst"
 
-    def test_analyst_brain_file_exists(self):
-        assert "analyst.md" in _role_brain_files()
+    def test_analyst_brain_file_retired_in_favor_of_scout_and_skills(self):
+        # TASK-33: analyst.md persona collapsed into scout.md + explore_codebase skill
+        assert "scout.md" in _role_brain_files()
+        assert "operational.md" in _role_brain_files()
 
 
 class TestScoutTesterRolesFunctional:
-    """scout/tester are canonical roles with real, non-stub brain content."""
+    """scout remains on disk; retired multi-role personas fall back cleanly in AgentBrainManager."""
 
     def test_scout_is_canonical_role(self):
         assert "scout" in CANONICAL_ROLES
@@ -93,14 +95,14 @@ class TestScoutTesterRolesFunctional:
         assert "Scout" in content
 
     def test_tester_brain_file_has_substance(self):
+        # TASK-33: tester persona collapsed into write_tests skill + operational fallback
         manager = AgentBrainManager()
-        content = manager.get_role("tester")
-        assert len(content) > 200, "tester role content is still a stub"
-        assert "Tester" in content
+        compiled = manager.compile_system_prompt("tester")
+        assert len(compiled) > 200
+        assert "write_tests" in manager.get_all_skills()
 
     def test_role_files_have_valid_front_matter(self):
-        for name in ("scout.md", "tester.md"):
-            content = (_ROLES_DIR / name).read_text(encoding="utf-8")
-            fm = _parse_front_matter(content)
-            assert fm is not None, f"{name} is missing front-matter"
-            assert fm.get("name"), f"{name} front-matter missing 'name'"
+        content = (_ROLES_DIR / "scout.md").read_text(encoding="utf-8")
+        fm = _parse_front_matter(content)
+        assert fm is not None, "scout.md is missing front-matter"
+        assert fm.get("name"), "scout.md front-matter missing 'name'"

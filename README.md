@@ -50,7 +50,7 @@ codingagent context-report --tier compact-flat
 codingagent bench-diff baseline.json candidate.json --threshold 0.02
 ```
 
-List, inspect, and export progressive-disclosure `SKILL.md` skills (discovered in precedence order `.codingagent/skills/` > `.agents/skills/` > `.claude/skills/` > `~/.codingagent/skills/` > bundled) for Agensi, Claude Code, and Cursor:
+List, inspect, and export progressive-disclosure `SKILL.md` skills (discovered in precedence order `.codingagent/skills/` > `.agents/skills/` > `.claude/skills/` > `~/.codingagent/skills/` > bundled; single-agent playbooks loaded on demand via `load_skill` over the 3 canonical flat toolsets `compact-flat` / `standard-flat` / `frontier-flat`, with opt-in `delegate_task(mode="scout"|"worktree")` excluded from `compact-flat`) for Agensi, Claude Code, and Cursor:
 
 ```bash
 codingagent skill list

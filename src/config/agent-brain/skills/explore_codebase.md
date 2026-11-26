@@ -1,5 +1,6 @@
 ---
 name: explore_codebase
+description: Read-only reconnaissance playbook for mapping entrypoints, symbols, and call chains.
 triggers: [explore, unfamiliar code, new project, onboarding, understand codebase]
 roles: [scout, analyst, planning, coding]
 ---

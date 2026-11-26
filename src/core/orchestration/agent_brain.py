@@ -226,7 +226,9 @@ class AgentBrainManager:
         """Compile a full system prompt with role, SOUL, LAWS, and available skills."""
         role_content = self.get_role(role_name)
         if not role_content:
-            role_content = "You are a helpful coding assistant."
+            _ro = {"analyst", "scout", "explore", "researcher", "reviewer", "strategic", "planner"}
+            fallback_role = "scout" if (role_name or "").strip().lower() in _ro else "operational"
+            role_content = self.get_role(fallback_role) or "You are a helpful coding assistant."
 
         parts = []
 

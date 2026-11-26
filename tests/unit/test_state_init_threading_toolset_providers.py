@@ -136,9 +136,9 @@ class TestToolsetLoaderAbsolutePathResolution:
         original_cwd = os.getcwd()
         try:
             os.chdir(tmp_path)
-            result = loader_mod.load_toolset("coding")
+            result = loader_mod.load_toolset("standard-flat")
             assert result is not None, (
-                "VOL7-5: load_toolset('coding') returned None when CWD != repo root. "
+                "VOL7-5: load_toolset('standard-flat') returned None when CWD != repo root. "
                 "_DIR must use Path(__file__).parent not a relative path."
             )
         finally:
@@ -302,60 +302,44 @@ class TestOrchestratorRoleFilteredToolSelection:
         return orc
 
     def test_debugger_role_gets_debug_tools(self):
-        """Debugger role must receive tools from the debug toolset."""
+        """Debugger role maps to standard-flat toolset (read, grep, run_tests, edit_file_atomic)."""
         all_tools = [
             "read_file",
             "list_files",
             "grep",
-            "search_code",
             "find_symbol",
-            "find_references",
             "run_tests",
             "run_linter",
-            "syntax_check",
-            "bash_readonly",
-            "get_git_diff",
-            "memory_search",
-            "batched_file_read",
-            "multi_file_summary",
             "write_file",
-            "edit_file",
+            "edit_file_atomic",
         ]
         orc = self._make_orchestrator_with_tools(all_tools)
         tools = orc.get_tools_for_role("debugger")
         names = {t["name"] for t in tools}
-        # Debug toolset must include bash_readonly and read_file
-        assert "bash_readonly" in names, "debugger role must have bash_readonly tool"
+        assert "run_tests" in names, "debugger role must have run_tests tool"
         assert "read_file" in names, "debugger role must have read_file tool"
+        assert "edit_file_atomic" in names, "debugger role must have edit_file_atomic tool"
 
     def test_operational_role_gets_coding_tools(self):
-        """Operational role must receive tools from the coding toolset."""
+        """Operational role maps to standard-flat toolset."""
         all_tools = [
             "read_file",
             "write_file",
-            "edit_file",
-            "edit_by_line_range",
-            "delete_file",
+            "edit_file_atomic",
             "list_files",
             "glob",
-            "search_code",
             "find_symbol",
-            "find_references",
             "grep",
             "run_tests",
             "run_linter",
-            "syntax_check",
             "apply_patch",
-            "generate_patch",
-            "get_git_diff",
-            "read_file_chunk",
-            "batched_file_read",
         ]
         orc = self._make_orchestrator_with_tools(all_tools)
         tools = orc.get_tools_for_role("operational")
         names = {t["name"] for t in tools}
         assert "write_file" in names
-        assert "edit_file" in names
+        assert "edit_file_atomic" in names
+        assert "apply_patch" in names
 
     def test_unknown_role_falls_back_to_full_registry(self):
         """Unknown role must fall back to full registry (graceful degradation)."""

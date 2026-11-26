@@ -207,7 +207,7 @@ BUILD_AGENT = AgentDefinition(
         "commands, and delegates to subagents. Default for all coding tasks."
     ),
     mode="primary",
-    toolset="coding",
+    toolset="standard-flat",
     denied_tools=set(),
     max_rounds=30,
 )
@@ -223,7 +223,7 @@ GENERAL_AGENT = AgentDefinition(
         "execution tasks where read-only analysis is insufficient."
     ),
     mode="subagent",
-    toolset="coding",
+    toolset="standard-flat",
     allowed_tools=None,
     denied_tools=set(),
     max_rounds=15,
@@ -241,7 +241,7 @@ ANALYST_AGENT = AgentDefinition(
         "Searches, reads, and analyses code. Cannot write or delegate."
     ),
     mode="subagent",
-    toolset="analysis",
+    toolset="compact-flat",
     denied_tools={
         "write_file",
         "edit_file",
@@ -284,7 +284,7 @@ STRATEGIC_AGENT = AgentDefinition(
         "structured execution plans. Cannot write files or execute shell commands."
     ),
     mode="subagent",
-    toolset="planning",
+    toolset="compact-flat",
     denied_tools={
         "write_file",
         "edit_file",
@@ -312,7 +312,7 @@ OPERATIONAL_AGENT = AgentDefinition(
         "and executes shell commands. Full access for feature implementation."
     ),
     mode="subagent",
-    toolset="coding",
+    toolset="standard-flat",
     allowed_tools=None,
     denied_tools=set(),
     max_rounds=15,
@@ -328,7 +328,7 @@ REVIEWER_AGENT = AgentDefinition(
         "linters, returns a structured quality report. Cannot modify files."
     ),
     mode="subagent",
-    toolset="review",
+    toolset="compact-flat",
     denied_tools={
         "write_file",
         "edit_file",
@@ -362,7 +362,7 @@ DEBUGGER_AGENT = AgentDefinition(
         "Cannot delete files or delegate to other agents."
     ),
     mode="subagent",
-    toolset="debug",
+    toolset="standard-flat",
     denied_tools={
         "delete_file",
         "delegate_task",
@@ -383,7 +383,7 @@ SCOUT_AGENT = AgentDefinition(
         "Cannot write, edit, or delegate."
     ),
     mode="subagent",
-    toolset="analysis",
+    toolset="compact-flat",
     denied_tools={
         "write_file",
         "edit_file",
@@ -430,7 +430,7 @@ TESTER_AGENT = AgentDefinition(
         "test files."
     ),
     mode="subagent",
-    toolset="coding",
+    toolset="standard-flat",
     denied_tools={
         "delete_file",
         "apply_patch",
@@ -462,7 +462,7 @@ EXPLORE_AGENT = AgentDefinition(
         "Cannot write, edit, delete files, run tests, or spawn further agents."
     ),
     mode="subagent",
-    toolset="analysis",
+    toolset="compact-flat",
     # Explicit allowlist — nothing outside this set is reachable at all.
     allowed_tools={
         "read_file",
@@ -530,7 +530,7 @@ PLAN_AGENT = AgentDefinition(
         "transitions to the build agent."
     ),
     mode="primary",
-    toolset="planning",
+    toolset="compact-flat",
     allowed_tools=None,  # start from full toolset, deny writes below
     denied_tools={
         "write_file",
@@ -560,7 +560,7 @@ VERIFICATION_AGENT = AgentDefinition(
         "and returns a structured quality report. Cannot modify files."
     ),
     mode="subagent",
-    toolset="review",
+    toolset="compact-flat",
     allowed_tools={
         "read_file",
         "list_files",

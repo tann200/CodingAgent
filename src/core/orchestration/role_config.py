@@ -1,453 +1,213 @@
-from typing import Dict, Any, List, Optional
+"""Role capability configuration and legacy-role normalization (TASK-33).
+
+CodingAgent runs a single-agent + progressive-disclosure skills architecture
+with opt-in read-only ``scout`` and isolated ``worktree`` delegation. Legacy
+role names (planner, coder, reviewer, researcher, debugger, tester, general)
+remain supported as normalized permission presets.
+"""
+
+from __future__ import annotations
+
+from typing import Any, Dict, List, Optional
+
+_READ_CORE: tuple[str, ...] = (
+    "read_file", "read_tool_output", "list_files", "glob", "grep",
+    "search_code", "find_symbol", "find_references", "memory_search",
+)
+_READ_EXTENDED: tuple[str, ...] = (
+    *_READ_CORE, "bash_readonly", "git_log", "git_diff", "git_status",
+    "analyze_repository", "initialize_repo_intelligence",
+    "multi_file_summary", "batched_file_read", "load_skill",
+)
+_WRITE_DENIED: tuple[str, ...] = (
+    "write_file", "edit_file", "edit_file_atomic", "edit_by_line_range",
+    "multiedit", "delete_file", "apply_patch", "generate_patch",
+    "bash", "run_tests", "run_js_tests", "run_linter", "run_ts_check",
+    "delegate_task", "git_commit",
+)
+_IMPL_CORE: tuple[str, ...] = (
+    *_READ_CORE, "write_file", "edit_file", "edit_file_atomic",
+    "edit_by_line_range", "multiedit", "apply_patch", "delete_file",
+    "bash", "check_background_task", "run_tests", "run_js_tests",
+    "run_linter", "run_ts_check", "syntax_check",
+    "git_status", "git_diff", "git_log", "manage_todo", "ask_user",
+    "delegate_task", "lsp_diagnostics", "lsp_references", "lsp_definition",
+    "web_search", "read_web_page", "load_skill", "list_skills",
+)
+
 
 ROLE_CONFIGS: Dict[str, Dict[str, Any]] = {
     "planner": {
         "description": "Breaks down complex tasks into structured plans with actionable steps.",
         "system_prompt_suffix": "Focus on decomposition and planning. Output structured plans.",
-        "allowed_tools": [
-            "search_code",
-            "find_symbol",
-            "find_references",
-            "list_files",
-            "read_file",
-            "memory_search",
-        ],
-        "denied_tools": [
-            "write_file",
-            "edit_file",
-            "delete_file",
-            "run_tests",
-            "apply_patch",
-        ],
+        "allowed_tools": list(_READ_CORE),
+        "denied_tools": ["write_file", "edit_file", "delete_file", "run_tests", "apply_patch"],
         "max_rounds": 20,
     },
     "coder": {
         "description": "Implements code changes based on plans from the planner.",
         "system_prompt_suffix": "Focus on code implementation. Use tools to read and modify files.",
-        "allowed_tools": [
-            "list_files",
-            "read_file",
-            "glob",
-            "grep",
-            "write_file",
-            "edit_file",
-            "edit_file_atomic",
-            "multiedit",
-            "apply_patch",
-            "delete_file",
-            "bash",
-            "check_background_task",
-            "search_code",
-            "find_symbol",
-            "run_tests",
-            "run_linter",
-            "syntax_check",
-            "git_status",
-            "git_diff",
-            "git_log",
-            "manage_todo",
-            "ask_user",
-            "delegate_task",
-            "lsp_diagnostics",
-            "lsp_references",
-            "lsp_definition",
-            "web_search",
-            "read_web_page",
-            "load_skill",
-        ],
+        "allowed_tools": list(_IMPL_CORE),
         "denied_tools": [],
         "max_rounds": 15,
     },
     "reviewer": {
         "description": "Validates code changes, runs tests, and ensures quality standards.",
         "system_prompt_suffix": "Focus on validation and quality. Check code correctness.",
-        "allowed_tools": [
-            "read_file",
-            "list_files",
-            "run_tests",
-            "run_linter",
-            "syntax_check",
-            "search_code",
-        ],
+        "allowed_tools": ["read_file", "read_tool_output", "list_files", "run_tests", "run_linter", "syntax_check", "search_code", "load_skill"],
         "denied_tools": ["write_file", "edit_file", "delete_file", "apply_patch"],
         "max_rounds": 10,
     },
     "researcher": {
         "description": "Explores codebase, finds relevant code, and gathers context.",
         "system_prompt_suffix": "Focus on exploration and discovery. Find relevant code and patterns.",
-        "allowed_tools": [
-            "search_code",
-            "find_symbol",
-            "find_references",
-            "list_files",
-            "read_file",
-            "memory_search",
-            "analyze_repository",
-            "initialize_repo_intelligence",
-        ],
-        "denied_tools": [
-            "write_file",
-            "edit_file",
-            "delete_file",
-            "apply_patch",
-            "run_tests",
-        ],
+        "allowed_tools": list(_READ_EXTENDED),
+        "denied_tools": list(_WRITE_DENIED),
         "max_rounds": 12,
     },
-    # Analyst role: read-only exploration (mirrors opencode's 'explore' agent).
-    # No file writes, no test execution, no task delegation — pure reconnaissance.
     "analyst_role": {
         "description": "Read-only codebase exploration for pre-planning intelligence gathering.",
         "system_prompt_suffix": "You may only read files and search. Never write, edit, delete, or run tests.",
-        "allowed_tools": [
-            "read_file",
-            "list_files",
-            "glob",
-            "grep",
-            "search_code",
-            "find_symbol",
-            "find_references",
-            "bash",
-            "git_log",
-            "git_diff",
-            "git_status",
-            "memory_search",
-            "analyze_repository",
-            "initialize_repo_intelligence",
-            "multi_file_summary",
-            "batched_file_read",
-        ],
-        "denied_tools": [
-            "write_file",
-            "edit_file",
-            "edit_file_atomic",
-            "edit_by_line_range",
-            "delete_file",
-            "apply_patch",
-            "run_tests",
-            "run_js_tests",
-            "run_linter",
-            "run_ts_check",
-            "delegate_task",
-        ],
+        "allowed_tools": list(_READ_EXTENDED),
+        "denied_tools": list(_WRITE_DENIED),
         "max_rounds": 15,
     },
-    # Debugger role: full access — reads, edits, tests, but no delegation.
     "debugger_role": {
         "description": "Diagnoses failures and applies minimal targeted fixes.",
         "system_prompt_suffix": "Fix only what is broken. Read before editing. Verify with tests.",
-        "allowed_tools": [
-            "read_file",
-            "list_files",
-            "glob",
-            "grep",
-            "search_code",
-            "find_symbol",
-            "find_references",
-            "bash",
-            "edit_file",
-            "edit_file_atomic",
-            "edit_by_line_range",
-            "write_file",
-            "run_tests",
-            "run_js_tests",
-            "run_linter",
-            "run_ts_check",
-            "git_log",
-            "git_diff",
-        ],
-        "denied_tools": [
-            "delete_file",
-            "delegate_task",
-        ],
+        "allowed_tools": [t for t in _IMPL_CORE if t not in ("delete_file", "delegate_task")],
+        "denied_tools": ["delete_file", "delegate_task"],
         "max_rounds": 12,
     },
-    # Scout role: read-only rapid codebase exploration.
-    # Matches the scout brain file and PRSW READ_ONLY_ROLES classification.
     "scout": {
-        "description": "Rapid codebase exploration — finds files, patterns, and dependencies.",
+        "description": "Rapid read-only codebase exploration — finds files, patterns, and dependencies.",
         "system_prompt_suffix": "Explore the codebase quickly. Read files, search patterns, report findings. Never write or modify.",
-        "allowed_tools": [
-            "read_file",
-            "list_files",
-            "glob",
-            "grep",
-            "search_code",
-            "find_symbol",
-            "find_references",
-            "bash_readonly",
-            "memory_search",
-            "analyze_repository",
-            "initialize_repo_intelligence",
-            "multi_file_summary",
-            "batched_file_read",
-        ],
-        "denied_tools": [
-            "write_file",
-            "edit_file",
-            "edit_file_atomic",
-            "edit_by_line_range",
-            "multiedit",
-            "delete_file",
-            "apply_patch",
-            "generate_patch",
-            "bash",
-            "run_tests",
-            "run_js_tests",
-            "run_linter",
-            "run_ts_check",
-            "delegate_task",
-            "ask_user",
-            "submit_plan_for_review",
-            "git_commit",
-            "manage_todo",
-        ],
+        "allowed_tools": list(_READ_EXTENDED),
+        "denied_tools": [*_WRITE_DENIED, "ask_user", "submit_plan_for_review", "manage_todo"],
         "max_rounds": 12,
     },
-    # Tester role: test creation and execution.
-    # Matches the tester brain file and PRSW WRITE_ROLES classification.
     "tester": {
         "description": "Test creation and execution — writes tests, runs suites, reports coverage.",
-        "system_prompt_suffix": "Write and run tests. Read implementation code first, then write comprehensive tests. Execute and report results.",
-        "allowed_tools": [
-            "read_file",
-            "list_files",
-            "glob",
-            "grep",
-            "search_code",
-            "find_symbol",
-            "find_references",
-            "bash",
-            "write_file",
-            "edit_file",
-            "run_tests",
-            "run_js_tests",
-            "run_linter",
-            "run_ts_check",
-            "syntax_check",
-            "git_log",
-            "git_diff",
-            "git_status",
-            "batched_file_read",
-            "multi_file_summary",
-        ],
-        "denied_tools": [
-            "delete_file",
-            "apply_patch",
-            "generate_patch",
-            "delegate_task",
-            "ask_user",
-            "submit_plan_for_review",
-            "git_commit",
-            "manage_todo",
-        ],
+        "system_prompt_suffix": "Write and run tests. Read implementation code first, then write comprehensive tests.",
+        "allowed_tools": [t for t in _IMPL_CORE if t not in ("delete_file", "apply_patch", "delegate_task")],
+        "denied_tools": ["delete_file", "apply_patch", "generate_patch", "delegate_task", "ask_user", "submit_plan_for_review", "git_commit", "manage_todo"],
         "max_rounds": 15,
     },
-    # General role: full-access workhorse for parallel research+execution.
-    # Mirrors opencode's 'general' subagent type (agent.ts:146-159).
     "general_role": {
         "description": "Full-access workhorse for parallel research and execution tasks.",
         "system_prompt_suffix": "You have full tool access. Read, write, search, and execute as needed.",
-        "allowed_tools": [
-            "read_file",
-            "list_files",
-            "glob",
-            "grep",
-            "search_code",
-            "find_symbol",
-            "find_references",
-            "batched_file_read",
-            "multi_file_summary",
-            "bash",
-            "write_file",
-            "edit_file",
-            "edit_file_atomic",
-            "edit_by_line_range",
-            "delete_file",
-            "apply_patch",
-            "run_tests",
-            "run_linter",
-            "run_ts_check",
-            "git_log",
-            "git_diff",
-            "git_status",
-            "web_search",
-            "read_web_page",
-            "memory_search",
-            "analyze_repository",
-            "initialize_repo_intelligence",
-            "load_skill",
-            "list_skills",
-        ],
+        "allowed_tools": list(_IMPL_CORE),
         "denied_tools": [],
         "max_rounds": 15,
     },
 }
 
-
-# Canonical roles defined in docs/gap-analysis.md
-CANONICAL_ROLES = [
+CANONICAL_ROLES: List[str] = [
     "analyst", "strategic", "operational", "reviewer", "debugger", "general",
     "scout", "tester", "explore", "verification",
 ]
 
-# Map legacy/alternate role names to canonical roles
-ROLE_ALIASES = {
-    "planner": "strategic",
-    "plan": "strategic",
-    "planning": "strategic",
-    "coder": "operational",
-    "developer": "operational",
-    "coding": "operational",
-    "researcher": "analyst",
-    "analysis": "analyst",
-    "review": "reviewer",
-    "audit": "reviewer",
+ROLE_ALIASES: Dict[str, str] = {
+    "planner": "strategic", "plan": "strategic", "planning": "strategic",
+    "coder": "operational", "developer": "operational", "coding": "operational",
+    "researcher": "analyst", "analysis": "analyst",
+    "review": "reviewer", "audit": "reviewer",
     "debug": "debugger",
-    "generalist": "general",
-    "general_purpose": "general",
-    # explore / verification aliases
-    "explorer": "explore",
-    "verify": "verification",
-    "verifier": "verification",
+    "generalist": "general", "general_purpose": "general",
+    "explorer": "explore", "verify": "verification", "verifier": "verification",
 }
 
-# Build canonical role configs by mapping existing ROLE_CONFIGS entries
 CANONICAL_ROLE_CONFIGS: Dict[str, Dict[str, Any]] = {
-    "strategic": ROLE_CONFIGS.get("planner", {}),
-    "operational": ROLE_CONFIGS.get("coder", {}),
-    "reviewer": ROLE_CONFIGS.get("reviewer", {}),
-    # analyst: read-only explore mode (mirrors opencode's 'explore' agent)
-    "analyst": ROLE_CONFIGS.get("analyst_role", ROLE_CONFIGS.get("researcher", {})),
-    # debugger: full edit+test access, no deletion/delegation
-    "debugger": ROLE_CONFIGS.get("debugger_role", ROLE_CONFIGS.get("researcher", {})),
-    # scout: read-only codebase exploration
-    "scout": ROLE_CONFIGS.get("scout", {}),
-    # tester: test creation and execution
-    "tester": ROLE_CONFIGS.get("tester", {}),
-    # general: full-access workhorse for parallel research+execution
-    "general": ROLE_CONFIGS.get("general_role", ROLE_CONFIGS.get("coder", {})),
+    "strategic": ROLE_CONFIGS["planner"],
+    "operational": ROLE_CONFIGS["coder"],
+    "reviewer": ROLE_CONFIGS["reviewer"],
+    "analyst": ROLE_CONFIGS["analyst_role"],
+    "debugger": ROLE_CONFIGS["debugger_role"],
+    "scout": ROLE_CONFIGS["scout"],
+    "tester": ROLE_CONFIGS["tester"],
+    "general": ROLE_CONFIGS["general_role"],
 }
-
-
-def _build_canonical_role_config_from_agent(agent_id: str) -> Optional[Dict[str, Any]]:
-    """Build a ROLE_CONFIGS-compatible dict from an AgentDefinition.
-
-    Used for roles (`explore`, `verification`) that exist in agent_types.py but
-    have no hand-written ROLE_CONFIGS entry.  Returns None if agent_id is unknown.
-    """
-    try:
-        from src.core.orchestration.agent_types import get_agent as _get_agent
-        agent_def = _get_agent(agent_id)
-        if agent_def is None:
-            return None
-        return {
-            "description": agent_def.description,
-            "system_prompt_suffix": "",
-            "allowed_tools": sorted(agent_def.allowed_tools) if agent_def.allowed_tools is not None else [],
-            "denied_tools": sorted(agent_def.denied_tools),
-            "max_rounds": agent_def.max_rounds,
-        }
-    except Exception:
-        return None
 
 
 def _populate_agent_type_roles() -> None:
-    """Lazily populate CANONICAL_ROLE_CONFIGS for roles defined only in agent_types.py."""
-    for _role_id in ("explore", "verification"):
-        if _role_id not in CANONICAL_ROLE_CONFIGS:
-            _cfg = _build_canonical_role_config_from_agent(_role_id)
-            if _cfg is not None:
-                CANONICAL_ROLE_CONFIGS[_role_id] = _cfg
+    try:
+        from src.core.orchestration.agent_types import get_agent as _get_agent
+
+        for role_id in ("explore", "verification"):
+            if role_id in CANONICAL_ROLE_CONFIGS:
+                continue
+            agent_def = _get_agent(role_id)
+            if agent_def is not None:
+                CANONICAL_ROLE_CONFIGS[role_id] = {
+                    "description": agent_def.description,
+                    "system_prompt_suffix": "",
+                    "allowed_tools": sorted(agent_def.allowed_tools) if agent_def.allowed_tools is not None else [],
+                    "denied_tools": sorted(agent_def.denied_tools),
+                    "max_rounds": agent_def.max_rounds,
+                }
+    except Exception:
+        pass
 
 
-# Populate immediately at module import time (agent_types is always available).
 _populate_agent_type_roles()
 
 
 def normalize_role(role: str) -> str:
-    """Normalize input role name to canonical role name.
-
-    If the provided role is already canonical, return it. Otherwise map via
-    ROLE_ALIASES. Default fallback is 'operational'.
-    """
+    """Normalize input role name to canonical role name (default: 'operational')."""
     if not role:
         return "operational"
     r = role.strip().lower()
-    if r in CANONICAL_ROLES:
-        return r
-    return ROLE_ALIASES.get(r, "operational")
+    return r if r in CANONICAL_ROLES else ROLE_ALIASES.get(r, "operational")
 
 
 def get_role_config(role: str) -> Optional[Dict[str, Any]]:
-    # normalize to canonical and return canonical config if available
     canonical = normalize_role(role)
-    cfg = CANONICAL_ROLE_CONFIGS.get(canonical)
-    if cfg:
-        return cfg
-    # fallback to legacy ROLE_CONFIGS if direct key was provided
-    return ROLE_CONFIGS.get(role)
+    return CANONICAL_ROLE_CONFIGS.get(canonical) or ROLE_CONFIGS.get(role)
 
 
 def get_role_system_prompt_suffix(role: str) -> str:
-    config = get_role_config(role)
-    if config:
-        return config.get("system_prompt_suffix", "")
-    return ""
+    cfg = get_role_config(role)
+    return str(cfg.get("system_prompt_suffix", "")) if cfg else ""
 
 
 def get_allowed_tools(role: str) -> List[str]:
-    config = get_role_config(role)
-    if config:
-        return config.get("allowed_tools", [])
-    return []
+    cfg = get_role_config(role)
+    return list(cfg.get("allowed_tools", [])) if cfg else []
 
 
 def get_denied_tools(role: str) -> List[str]:
-    config = get_role_config(role)
-    if config:
-        return config.get("denied_tools", [])
-    return []
+    cfg = get_role_config(role)
+    return list(cfg.get("denied_tools", [])) if cfg else []
 
 
 def is_tool_allowed_for_role(tool_name: str, role: str) -> bool:
-    denied = get_denied_tools(role)
-    if tool_name in denied:
+    if tool_name in get_denied_tools(role):
         return False
     allowed = get_allowed_tools(role)
-    if allowed and tool_name not in allowed:
-        return False
-    return True
+    return not allowed or tool_name in allowed
 
 
 def list_roles() -> List[str]:
-    """Return canonical roles to avoid overlaps in role naming."""
     return list(CANONICAL_ROLES)
 
 
 def map_role_strict(role: str) -> Optional[str]:
-    """Map role to canonical if it is known or an alias; return None if unknown."""
     if not role:
         return None
     r = role.strip().lower()
     if r in CANONICAL_ROLES:
         return r
-    if r in ROLE_ALIASES:
-        return ROLE_ALIASES[r]
-    return None
+    return ROLE_ALIASES.get(r)
 
 
 class RoleManager:
-    def __init__(self):
+    def __init__(self) -> None:
         self._current_role: Optional[str] = None
         self._role_history: List[Dict[str, Any]] = []
 
     def set_role(self, role: str) -> bool:
-        # use strict mapping here: unknown role strings should fail
         canonical = map_role_strict(role)
-        if canonical is None:
-            return False
-        if canonical not in CANONICAL_ROLES:
+        if canonical is None or canonical not in CANONICAL_ROLES:
             return False
         self._current_role = canonical
         self._role_history.append({"role": canonical})
@@ -457,65 +217,27 @@ class RoleManager:
         return self._current_role
 
     def get_role_config(self) -> Optional[Dict[str, Any]]:
-        if self._current_role:
-            return CANONICAL_ROLE_CONFIGS.get(self._current_role)
-        return None
+        return CANONICAL_ROLE_CONFIGS.get(self._current_role) if self._current_role else None
 
     def get_allowed_tools(self) -> List[str]:
-        if self._current_role:
-            return get_allowed_tools(self._current_role)
-        return []
+        return get_allowed_tools(self._current_role) if self._current_role else []
 
     def get_denied_tools(self) -> List[str]:
-        if self._current_role:
-            return get_denied_tools(self._current_role)
-        return []
+        return get_denied_tools(self._current_role) if self._current_role else []
 
     def is_tool_allowed(self, tool_name: str) -> bool:
-        if not self._current_role:
-            return True
-        return is_tool_allowed_for_role(tool_name, self._current_role)
+        return True if not self._current_role else is_tool_allowed_for_role(tool_name, self._current_role)
 
 
-# ---------------------------------------------------------------------------
-# SM-1: Role-to-model default binding
-# ---------------------------------------------------------------------------
-# Read-heavy roles (analyst, reviewer, strategic) default to the configured
-# small_model so they don't consume frontier-model tokens for lightweight tasks.
-# None means "use the active provider's default model" (no override injected).
-#
-# Users / callers can always override this by passing model= to delegate_task.
 _ROLE_PREFERS_SMALL_MODEL: Dict[str, bool] = {
-    "analyst": True,  # read-only exploration — small model sufficient
-    "strategic": True,  # planning / decomposition — reasoning, not code gen
-    "reviewer": True,  # code review — read-heavy, no complex generation
-    "operational": False,  # code implementation — needs full model capability
-    "debugger": False,  # root-cause + editing — needs full model capability
-    "scout": True,  # read-only exploration — small model sufficient
-    "tester": False,  # test writing + execution — needs full model capability
-    "general": False,  # full-access workhorse — needs full model capability
+    "analyst": True, "strategic": True, "reviewer": True, "scout": True,
+    "operational": False, "debugger": False, "tester": False, "general": False,
 }
 
 
 def get_default_model_for_role(role: str) -> Optional[str]:
-    """SM-1: Return the default model name for *role*.
-
-    Returns the configured ``small_model`` for read-heavy roles and ``None``
-    (use the active provider's default) for implementation/debug roles.
-
-    Parameters
-    ----------
-    role:
-        Canonical or legacy role name.
-
-    Returns
-    -------
-    str or None
-        Model name string, or ``None`` to use the provider default.
-    """
-    canonical = normalize_role(role)
-    prefers_small = _ROLE_PREFERS_SMALL_MODEL.get(canonical, False)
-    if not prefers_small:
+    """Return configured ``small_model`` for read-heavy roles, else ``None``."""
+    if not _ROLE_PREFERS_SMALL_MODEL.get(normalize_role(role), False):
         return None
     try:
         from src.core.config_loader import get_small_model as _gsm

@@ -72,17 +72,19 @@ def test_prompt_templates_and_brain_have_no_stale_tool_refs_or_yaml_mandates():
 
 
 def test_role_toolsets_fail_closed_and_all_toolsets_registered():
-    assert get_toolset_for_role("scout") == "analysis"
-    assert get_toolset_for_role("explore") == "analysis"
-    assert get_toolset_for_role("researcher") == "analysis"
-    assert get_toolset_for_role("unknown_role_xyz") == "analysis"
-    assert get_toolset_for_role("") == "analysis"
+    # TASK-33: exploratory & unknown roles fail closed to compact-flat (no delegation)
+    assert get_toolset_for_role("scout") == "compact-flat"
+    assert get_toolset_for_role("explore") == "compact-flat"
+    assert get_toolset_for_role("researcher") == "compact-flat"
+    assert get_toolset_for_role("unknown_role_xyz") == "compact-flat"
+    assert get_toolset_for_role("") == "compact-flat"
 
-    assert get_toolset_for_role("coder") == "coding"
-    assert get_toolset_for_role("operational") == "coding"
-    assert get_toolset_for_role("planner") == "planning"
-    assert get_toolset_for_role("reviewer") == "review"
-    assert get_toolset_for_role("debugger") == "debug"
+    assert get_toolset_for_role("coder") == "standard-flat"
+    assert get_toolset_for_role("operational") == "standard-flat"
+    assert get_toolset_for_role("planner") == "compact-flat"
+    assert get_toolset_for_role("reviewer") == "compact-flat"
+    assert get_toolset_for_role("debugger") == "standard-flat"
+    assert get_toolset_for_role("frontier") == "frontier-flat"
 
     # All configured YAML/JSON toolsets must validate against live example_registry()
     errors = validate_all_toolsets(example_registry(), fail_closed=False)

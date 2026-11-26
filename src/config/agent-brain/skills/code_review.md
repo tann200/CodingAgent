@@ -1,5 +1,6 @@
 ---
 name: code_review
+description: Structured diff review for correctness, edge cases, style, and test coverage.
 triggers: [review, pr, pull request, code quality, LGTM]
 roles: [reviewer, analyst]
 ---

@@ -1,5 +1,6 @@
 ---
 name: write_tests
+description: Test-driven fix and unit-test playbook: red failing test first, then green fix.
 triggers: [test, unit test, pytest, coverage, TDD]
 roles: [reviewer, operational, debugger]
 ---
