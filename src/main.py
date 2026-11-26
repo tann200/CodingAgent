@@ -80,6 +80,7 @@ def _parse_args(argv: list) -> argparse.Namespace:
         prog="codingagent",
         description="CodingAgent — AI coding assistant",
         add_help=True,
+        allow_abbrev=False,
     )
 
     subparsers = parser.add_subparsers(dest="subcommand")
@@ -953,13 +954,15 @@ def _run_headless(
             exit_code_for_status,
         )
 
-        orch = Orchestrator(
-            working_dir=workdir,
-            dry_run=dry_run,
-            trusted=trusted,
-            plugin_dir=plugin_dir,
-            private=private,
-        )
+        _orch_kwargs: dict[str, Any] = {
+            "working_dir": workdir,
+            "dry_run": dry_run,
+            "trusted": trusted,
+            "plugin_dir": plugin_dir,
+        }
+        if private:
+            _orch_kwargs["private"] = True
+        orch = Orchestrator(**_orch_kwargs)
 
         # CP-3.4: give this invocation a stable checkpoint thread id.  Resume
         # paths reuse the *original* session id so crash-recovery resumes the

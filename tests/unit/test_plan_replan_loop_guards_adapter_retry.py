@@ -101,14 +101,19 @@ class TestSettingsPanelAtomicProvidersJsonWrite:
         ``cfg_path.write_text`` (a crash mid-write would corrupt the user's
         provider config).
         """
-        src_path = Path(__file__).parent.parent.parent / "tui/tui_src/ui/app.py"
+        # TASK-38 moved active-provider persistence out of app.py into AgentBridge
+        # (_bridge_provider_actions.py) so app.py has zero src.core imports.
+        src_path = (
+            Path(__file__).parent.parent.parent
+            / "tui/tui_src/ui/_bridge_provider_actions.py"
+        )
         source = src_path.read_text()
         assert (
             "_os.replace" in source
-        ), "Atomic write via os.replace not found in tui/tui_src/ui/app.py"
+        ), "Atomic write via os.replace not found in tui/tui_src/ui/_bridge_provider_actions.py"
         assert (
             "mkstemp" in source
-        ), "tempfile.mkstemp not found in tui/tui_src/ui/app.py"
+        ), "tempfile.mkstemp not found in tui/tui_src/ui/_bridge_provider_actions.py"
 
     def test_llm_manager_persist_writes_atomically(self):
         """The second live writer must also be atomic.

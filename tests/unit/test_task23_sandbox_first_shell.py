@@ -81,11 +81,11 @@ class TestSandboxedBashExecution:
 
             r2 = bash("git status && pytest -q", workdir=tmp_path)
             assert r2["status"] == "ok", r2
-            assert mock_run.call_args_list[1].args[0] == [
-                "/bin/sh",
-                "-c",
-                "git status && pytest -q",
-            ]
+            argv2 = mock_run.call_args_list[1].args[0]
+            # TASK-34 uses /bin/bash (with set -o pipefail when piped) when available, else /bin/sh
+            assert argv2[0] in ("/bin/bash", "/bin/sh")
+            assert argv2[1] == "-c"
+            assert "git status && pytest -q" in argv2[2]
 
             r3 = bash("pytest -q | head -n 40", workdir=tmp_path)
             assert r3["status"] == "ok", r3

@@ -236,7 +236,7 @@ def test_private_mode_creates_zero_disk_session_memory_or_trace_artifacts(tmp_pa
         # Zero .codingAgent/ directory, SQLite DB, trace, or timings artifacts on disk
         assert not (ws / ".codingAgent").exists()
     finally:
-        orch.close(wait=False)
+        orch.close()
 
 
 def _init_git_repo(repo: Path) -> None:

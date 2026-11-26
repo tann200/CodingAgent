@@ -570,7 +570,7 @@ class Orchestrator:
 
         return get_provider_capabilities_impl(self)
 
-    def close(self, *, wait: bool = True) -> None:
+    def close(self) -> None:
         """Release long-lived resources (subscriptions, scheduler, executor pools, MCP)."""
         try:
             _eb = getattr(self, "event_bus", None)
@@ -602,12 +602,12 @@ class Orchestrator:
             pass
         try:
             if hasattr(self, "_graph_executor"):
-                self._graph_executor.shutdown(wait=wait)
+                self._graph_executor.shutdown(wait=True)
         except Exception:
             pass
         try:
             if hasattr(self, "_tool_executor"):
-                self._tool_executor.shutdown(wait=wait)
+                self._tool_executor.shutdown(wait=True)
         except Exception:
             pass
         # SEC-VOL23-1: join the session-title background thread with a short
