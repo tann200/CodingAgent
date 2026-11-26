@@ -65,8 +65,22 @@ In the interactive Textual TUI (`codingagent`), the prompt opens directly for in
 - `/doctor` — Run local model reachability, latency, context estimation, and tool schema diagnosis directly inside chat.
 - `/skills` or `/skills <name>` — List discovered workspace/user/bundled skills or inspect skill instructions; type `/<skill-name> <request>` to invoke a skill directly.
 - `/theme [name]` — List or switch between all built-in Textual dark & light themes (persisted in TUI settings).
+- `/advisor [status|model <name|off>|handoff on|off|reset]` — Configure the opt-in budgeted strategic advisor (`ask_advisor`, dormant by default, hard-capped at `max_uses=3` per session, with optional human handoff).
+- `/btw <question>` — Run a parallel read-only side question (`read_file`, `grep`, `list_files`, `find_files`) over a frozen context snapshot without mutating main conversation history.
+- `/queue [ls|pop|clear|<prompt>]` — Inspect, edit, or enqueue plain-text follow-up prompts replayed sequentially once idle.
 - `/reasoning [off|low|medium|high|unset|status]` (aliases `/effort`, `/thinking`) — Control portable reasoning effort / thinking-token budgets across local (`llama-server`, Ollama) and cloud providers (also configurable headlessly via `--reasoning`).
 - `/compact` — Trigger deterministic compaction of conversation context.
+
+Headless and CI automation flags include:
+
+```bash
+# Live sanitized NDJSON lifecycle stream terminated by authoritative {type:"result", status, result, usage} (exit 0 only on complete)
+codingagent --task "Run tests and fix failures" --output stream-json
+# Ephemeral private session: zero SQLite, memory, or trace writes to .codingAgent/ while allowing workspace edits
+codingagent --task "Refactor parser" --private
+# Isolated timestamped git worktree with local squash-merge on exit (never auto-pushes; interactive conflict prompt)
+codingagent --task "Add feature" --parallel
+```
 
 Project instructions are loaded from ancestor `AGENTS.md` / `CLAUDE.md` files plus root `ARCHITECTURE.md` (capped at 3,000 chars), and nested subtree `AGENTS.md` / `CLAUDE.md` files are loaded lazily (deduplicated by SHA-256 and wrapped in nonce-fenced `<project_instructions>` envelopes) when reading or editing files beneath the workspace root.
 

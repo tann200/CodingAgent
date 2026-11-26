@@ -96,6 +96,8 @@ def _append_execution_trace_impl(orch: Any, entry: dict) -> None:
 
 def flush_execution_trace_impl(orch: Any) -> None:
     """Flush buffered trace entries to disk once per task (called by run_agent_once)."""
+    if getattr(orch, "private", False):
+        return
     if not hasattr(orch, "_execution_trace_buffer") or not orch._execution_trace_buffer:
         return
     # BUG-FIX #6: guard against None working_dir
@@ -185,6 +187,8 @@ def _clear_execution_trace_impl(orch: Any) -> None:
     # Also clear the in-memory buffer so buffered entries don't reappear after clear
     if hasattr(orch, "_execution_trace_buffer"):
         orch._execution_trace_buffer = []
+    if getattr(orch, "private", False):
+        return
     try:
         trace_path = _resolve_agent_context_dir(orch) / "execution_trace.json"
         trace_path.parent.mkdir(parents=True, exist_ok=True)

@@ -34,6 +34,9 @@ Available commands:
   /doctor        — diagnose running local models & flat tool schemas
   /skills [name] — inspect packaged skills (polyglot-verify, git-safe-review…)
   /theme [name]  — list or switch built-in Textual TUI theme
+  /advisor [model <m>|handoff on|off|status|reset] — configure opt-in advisor (max 3/session)
+  /btw <question> — parallel read-only side question (never mutates main history)
+  /queue [ls|pop|clear|<prompt>] — manage queued follow-up prompts
   /fast          — switch to fastest/smallest model (NANO tier)
   /provider [n]  — list or switch provider by index/name
   /model [n]     — list or switch model for active provider
@@ -206,6 +209,15 @@ class AppSlashCommandsMixin(AgentAppProtocol):
 
         elif cmd == "theme":
             await self._slash_theme(args)
+
+        elif cmd == "advisor":
+            await self._slash_advisor(args)
+
+        elif cmd == "btw":
+            await self._slash_btw(args)
+
+        elif cmd == "queue":
+            await self._slash_queue(args)
 
         elif cmd == "fast":
             await self._slash_fast()
@@ -1260,3 +1272,123 @@ class AppSlashCommandsMixin(AgentAppProtocol):
                 markup=True,
             )
             await self._mount_chat_widget(w)
+
+    def _get_advisor_state(self: AgentAppProtocol):
+        """Return or lazily initialize the session AdvisorSessionState (TASK-36)."""
+        state = getattr(self, "_advisor_state", None)
+        if state is None:
+            from src.tools.advisor_tool import AdvisorSessionState
+
+            state = AdvisorSessionState()
+            setattr(self, "_advisor_state", state)
+            orch = getattr(getattr(self, "_bridge", None), "_orchestrator", None)
+            if orch is not None:
+                try:
+                    setattr(orch, "_advisor_state", state)
+                except Exception:
+                    pass
+        return state
+
+    async def _slash_advisor(self: AgentAppProtocol, args: str) -> None:
+        """Inspect or configure the opt-in budgeted advisor tool (/advisor)."""
+        state = self._get_advisor_state()
+        tokens = args.strip().split()
+        sub = tokens[0].lower() if tokens else "status"
+
+        if sub == "model":
+            model_name = " ".join(tokens[1:]).strip()
+            if not model_name:
+                await self._mount_chat_widget(
+                    Static("Usage: /advisor model <model_name> | /advisor model off", classes="system_msg", markup=False)
+                )
+                return
+            state.config.advisor_model = None if model_name.lower() in ("off", "none", "clear") else model_name
+        elif sub == "handoff":
+            flag = tokens[1].lower() if len(tokens) > 1 else "on"
+            state.config.handoff_enabled = flag in ("on", "true", "1", "yes")
+        elif sub == "reset":
+            state.reset_budget()
+        elif sub != "status":
+            await self._mount_chat_widget(
+                Static(
+                    "Usage: /advisor [status | model <name|off> | handoff on|off | reset]",
+                    classes="system_msg",
+                    markup=False,
+                )
+            )
+            return
+
+        st = state.status_summary()
+        summary = (
+            f"Advisor: {'ENABLED' if st['enabled'] else 'DISABLED (opt-in)'}\n"
+            f"  Model:    {st['advisor_model'] or '—'}\n"
+            f"  Handoff:  {'on' if st['handoff_enabled'] else 'off'}\n"
+            f"  Budget:   {st['uses']} / {st['max_uses']} used ({st['remaining']} remaining)"
+        )
+        await self._mount_chat_widget(Static(summary, classes="system_msg", markup=False))
+
+    async def _slash_btw(self: AgentAppProtocol, args: str) -> None:
+        """Run a parallel read-only side question without mutating main conversation history (/btw)."""
+        import asyncio as _asyncio
+
+        question = args.strip()
+        if not question:
+            await self._mount_chat_widget(
+                Static("Usage: /btw <question>  (read-only side query; does not mutate history)", classes="system_msg", markup=False)
+            )
+            return
+
+        from src.core.orchestration.btw_query import run_btw_query
+
+        bridge = getattr(self, "_bridge", None)
+        orch = getattr(bridge, "_orchestrator", None) if bridge is not None else None
+        msg_mgr = getattr(orch, "msg_mgr", None) if orch is not None else None
+        history_snap = list(getattr(msg_mgr, "messages", None) or getattr(bridge, "history", []) or [])
+        call_fn = getattr(self, "_btw_call_fn", None)
+
+        result = await _asyncio.to_thread(
+            run_btw_query,
+            question,
+            history_snapshot=history_snap,
+            call_fn=call_fn,
+        )
+        if result.get("status") == "ok":
+            text = f"[BTW — read-only, not added to history]\nQ: {question}\n{result.get('answer', '')}"
+        else:
+            text = f"[BTW error] {result.get('error', 'unknown error')}"
+        await self._mount_chat_widget(Static(text, classes="system_msg btw_msg", markup=False))
+
+    async def _slash_queue(self: AgentAppProtocol, args: str) -> None:
+        """Inspect, pop, clear, or enqueue follow-up prompts (/queue [ls|pop|clear|<prompt>])."""
+        q = getattr(self, "_queued_messages", None)
+        if not isinstance(q, list):
+            q = []
+            setattr(self, "_queued_messages", q)
+
+        raw = args.strip()
+        lower = raw.lower()
+        if not raw or lower in ("ls", "list"):
+            if not q:
+                msg = "Prompt queue is empty."
+            else:
+                lines = [f"Queued prompts ({len(q)}):"] + [f"  {i + 1}. {item}" for i, item in enumerate(q)]
+                msg = "\n".join(lines)
+        elif lower == "pop":
+            if q:
+                removed = q.pop()
+                msg = f"Popped queued prompt: {removed}"
+            else:
+                msg = "Prompt queue is already empty."
+        elif lower == "clear":
+            count = len(q)
+            q.clear()
+            msg = f"Cleared {count} queued prompt(s)."
+        else:
+            q.append(raw)
+            msg = f"Queued prompt #{len(q)}: {raw}"
+
+        try:
+            self.queue_size = len(q)  # type: ignore[attr-defined]
+        except Exception:
+            pass
+        await self._mount_chat_widget(Static(msg, classes="system_msg queue_msg", markup=False))

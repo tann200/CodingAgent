@@ -333,11 +333,39 @@ def _parse_args(argv: list) -> argparse.Namespace:
     # Global (non-subcommand) flags
     parser.add_argument(
         "--output-format",
-        choices=["pretty", "json", "raw", "stream"],
+        choices=["pretty", "json", "raw", "stream", "stream-json"],
         default="pretty",
         help=(
             "Output format: pretty (default TUI), json (structured JSON per turn), "
-            "raw (plain assistant text only), stream (incremental token streaming to stdout)."
+            "raw (plain assistant text only), stream (incremental token streaming to stdout), "
+            "stream-json (live NDJSON lifecycle events terminated by authoritative result envelope)."
+        ),
+    )
+    parser.add_argument(
+        "--output",
+        choices=["text", "json", "stream-json"],
+        default=None,
+        help=(
+            "Headless output mode (TASK-36): text (plain assistant text), "
+            "json (authoritative result JSON), or stream-json (live NDJSON lifecycle stream)."
+        ),
+    )
+    parser.add_argument(
+        "--private",
+        action="store_true",
+        default=False,
+        help=(
+            "Ephemeral private session (TASK-36): disables SQLite session, memory, and trace "
+            "disk writes while allowing normal workspace edits."
+        ),
+    )
+    parser.add_argument(
+        "--parallel",
+        action="store_true",
+        default=False,
+        help=(
+            "Run inside a timestamped temporary git worktree (TASK-36) and locally squash-merge "
+            "changes on exit (never auto-pushes; prompts [a]bort/[l]eave/[h]elp on conflict)."
         ),
     )
     parser.add_argument(
@@ -844,6 +872,7 @@ def _run_headless(
     model: Optional[str] = None,
     trusted: Optional[bool] = None,
     plugin_dir: Optional[str] = None,
+    private: bool = False,
 ) -> int:
     """Run a single task without the TUI and print the result.
 
@@ -918,12 +947,18 @@ def _run_headless(
 
     try:
         from src.core.orchestration.orchestrator import Orchestrator
+        from src.cli.headless_stream import (
+            StreamJsonEmitter,
+            classify_headless_status,
+            exit_code_for_status,
+        )
 
         orch = Orchestrator(
             working_dir=workdir,
             dry_run=dry_run,
             trusted=trusted,
             plugin_dir=plugin_dir,
+            private=private,
         )
 
         # CP-3.4: give this invocation a stable checkpoint thread id.  Resume
@@ -964,10 +999,27 @@ def _run_headless(
             except Exception as _mr_err:
                 _dbg(f"[src.main] model.routing apply failed: {_mr_err}")
 
+        # TASK-36: Normalize resumed conversation history when switching provider/model
+        if _messages and (provider or model):
+            try:
+                from src.core.inference.history_normalizer import (
+                    normalize_history_for_model_switch,
+                )
+
+                _messages = normalize_history_for_model_switch(_messages)
+            except Exception as _hn_err:
+                _dbg(f"[src.main] history normalization failed: {_hn_err}")
+
         # P3-1: Headless streaming — subscribe to response.stream_chunk events
         # before run_agent_once() so tokens are printed incrementally.
         _streaming_active = output_format == "stream"
+        _stream_json_active = output_format == "stream-json"
         _stream_had_output = False
+        _ndjson_emitter: Optional[StreamJsonEmitter] = None
+
+        if _stream_json_active:
+            _ndjson_emitter = StreamJsonEmitter(sys.stdout)
+            _ndjson_emitter.attach(orch.event_bus)
 
         if _streaming_active:
             def _on_stream_chunk(payload: dict) -> None:
@@ -981,13 +1033,23 @@ def _run_headless(
 
             orch.event_bus.subscribe("response.stream_chunk", _on_stream_chunk)
 
-        result = orch.run_agent_once(
-            system_prompt_name="operational",
-            messages=_messages if _messages else [{"role": "user", "content": task}],
-            tools={},
-        )
+        try:
+            result = orch.run_agent_once(
+                system_prompt_name="operational",
+                messages=_messages if _messages else [{"role": "user", "content": task}],
+                tools={},
+            )
+        finally:
+            if _ndjson_emitter is not None:
+                _ndjson_emitter.detach()
 
-        if dry_run and output_format not in ("json",):
+        _headless_status = classify_headless_status(result)
+        _usage_summary = {
+            "input_tokens": int((result.get("usage") or {}).get("input_tokens", 0) if isinstance(result.get("usage"), dict) else (getattr(orch, "_usage_buffer", {}) or {}).get("input_tokens", 0)),
+            "output_tokens": int((result.get("usage") or {}).get("output_tokens", 0) if isinstance(result.get("usage"), dict) else (getattr(orch, "_usage_buffer", {}) or {}).get("output_tokens", 0)),
+        }
+
+        if dry_run and output_format not in ("json", "stream-json"):
             dry_calls = result.get("dry_run_intercepted", [])
             if dry_calls:
                 print("[DRY RUN] The following write/destructive tool calls were")
@@ -999,8 +1061,22 @@ def _run_headless(
                     )
                 print()
 
+        if _stream_json_active and _ndjson_emitter is not None:
+            _ndjson_emitter.emit_final_result(
+                status=_headless_status,
+                result_text=str(result.get("assistant_message", "") or ""),
+                usage=_usage_summary,
+                error=str(result.get("error") or "") or None,
+            )
+            return exit_code_for_status(_headless_status)
         if output_format == "json":
-            print(_json.dumps(result, ensure_ascii=False, default=str))
+            out_payload = dict(result)
+            out_payload.setdefault("type", "result")
+            out_payload.setdefault("status", _headless_status)
+            out_payload.setdefault("result", result.get("assistant_message", ""))
+            out_payload.setdefault("usage", _usage_summary)
+            print(_json.dumps(out_payload, ensure_ascii=False, default=str))
+            return exit_code_for_status(_headless_status)
         elif output_format == "raw":
             print(result.get("assistant_message", ""))
         elif output_format == "stream":
@@ -1013,20 +1089,29 @@ def _run_headless(
                 # Fallback: no chunks arrived (non-streaming provider), print full message
                 print(result.get("assistant_message", ""))
         else:
-            # pretty
+            # pretty / text
             msg = result.get("assistant_message", "")
             summary = result.get("work_summary", "")
             print(msg)
             if summary:
                 print("\n---")
                 print(summary)
-        return 0
+        return exit_code_for_status(_headless_status)
     except Exception as exc:
         _dbg(f"[src.main] headless run failed: {exc}")
-        if output_format == "json":
+        if output_format == "stream-json":
+            from src.cli.headless_stream import StreamJsonEmitter
+
+            StreamJsonEmitter(sys.stdout).emit_final_result(
+                status="failed",
+                result_text="",
+                usage={},
+                error=str(exc),
+            )
+        elif output_format == "json":
             import json as _json
 
-            print(_json.dumps({"error": str(exc)}))
+            print(_json.dumps({"type": "result", "status": "failed", "result": "", "usage": {}, "error": str(exc)}))
         else:
             print(f"Error: {exc}", file=sys.stderr)
         return 1
@@ -1251,54 +1336,92 @@ def main(argv: Optional[list] = None) -> int:
     except Exception as _pctx_err:
         _dbg(f"[src.main] Could not apply permission context: {_pctx_err}")
 
-    # Non-interactive (headless) mode when --task is supplied, --continue
-    # requests a re-run of the last task, or output format is not pretty
-    if args.task or getattr(args, "continue_task", False) or args.output_format in ("json", "raw", "stream"):
-        task = ""
-        if getattr(args, "continue_task", False):
-            task = _load_last_user_task(getattr(args, "workdir", None))
-            if not task:
-                _err("--continue: no saved session found to re-run (run a --task first).")
-                return 1
-        elif args.task:
-            task = args.task
-        if not task:
-            task = sys.stdin.read().strip()
-        return _run_headless(
-            task,
-            args.output_format,
-            args.workdir,
-            dry_run=getattr(args, "dry_run", False),
-            resume_session=getattr(args, "resume_session", None),
-            provider=getattr(args, "provider", None),
-            model=getattr(args, "model", None),
-            trusted=getattr(args, "trusted", None),
-            plugin_dir=getattr(args, "plugin_dir", None),
-        )
+    # TASK-36: Apply --private ephemeral mode and --output mapping
+    _is_private = bool(getattr(args, "private", False))
+    if _is_private:
+        os.environ["CODINGAGENT_PRIVATE"] = "1"
+
+    _output_override = getattr(args, "output", None)
+    _effective_output_format = args.output_format
+    if _output_override == "text":
+        _effective_output_format = "raw"
+    elif _output_override in ("json", "stream-json"):
+        _effective_output_format = _output_override
+
+    # TASK-36: Optional --parallel timestamped git worktree isolation
+    _parallel_session = None
+    _effective_workdir = args.workdir
+    if getattr(args, "parallel", False):
+        from src.cli.headless_stream import ParallelWorktreeSession
+
+        try:
+            _parallel_session = ParallelWorktreeSession(_effective_workdir or os.getcwd())
+            _effective_workdir = str(_parallel_session.create())
+            _dbg(f"[src.main] --parallel worktree created at {_effective_workdir}")
+        except Exception as _par_err:
+            _err(f"--parallel failed: {_par_err}")
+            return 1
 
     try:
-        from pathlib import Path as _Path
+        # Non-interactive (headless) mode when --task is supplied, --continue
+        # requests a re-run of the last task, or output format is not pretty
+        if (
+            args.task
+            or getattr(args, "continue_task", False)
+            or _effective_output_format in ("json", "raw", "stream", "stream-json")
+        ):
+            task = ""
+            if getattr(args, "continue_task", False):
+                task = _load_last_user_task(_effective_workdir)
+                if not task:
+                    _err("--continue: no saved session found to re-run (run a --task first).")
+                    return 1
+            elif args.task:
+                task = args.task
+            if not task:
+                task = sys.stdin.read().strip()
+            return _run_headless(
+                task,
+                _effective_output_format,
+                _effective_workdir,
+                dry_run=getattr(args, "dry_run", False),
+                resume_session=getattr(args, "resume_session", None),
+                provider=getattr(args, "provider", None),
+                model=getattr(args, "model", None),
+                trusted=getattr(args, "trusted", None),
+                plugin_dir=getattr(args, "plugin_dir", None),
+                private=_is_private,
+            )
 
-        _working_dir = _Path(args.workdir) if args.workdir else None
+        try:
+            from pathlib import Path as _Path
 
-        # TUI-01: Launch the Textual TUI (tui/tui_src/ui/app.py::AgentApp).
-        # P1-3: tui/src/ was renamed to tui/tui_src/ so it has a unique package
-        # name `tui_src` — no sys.path shadowing required.
-        from tui.tui_src.ui.app import AgentApp  # type: ignore[import]
+            _working_dir = _Path(_effective_workdir) if _effective_workdir else None
 
-        app = AgentApp(
-            working_dir=_working_dir,
-            trusted=getattr(args, "trusted", None),
-            plugin_dir=getattr(args, "plugin_dir", None),
-        )
-        _dbg("[src.main] Delegating startup to AgentApp (new TUI)")
-        app.run()
-        _dbg("[src.main] AgentApp.run() returned")
-        return 0
-    except Exception as e:
-        _dbg(f"[src.main] Failed to start app: {e}")
-        _err(f"Failed to start TUI: {e}")
-        return 2
+            # TUI-01: Launch the Textual TUI (tui/tui_src/ui/app.py::AgentApp).
+            # P1-3: tui/src/ was renamed to tui/tui_src/ so it has a unique package
+            # name `tui_src` — no sys.path shadowing required.
+            from tui.tui_src.ui.app import AgentApp  # type: ignore[import]
+
+            app = AgentApp(
+                working_dir=_working_dir,
+                trusted=getattr(args, "trusted", None),
+                plugin_dir=getattr(args, "plugin_dir", None),
+            )
+            _dbg("[src.main] Delegating startup to AgentApp (new TUI)")
+            app.run()
+            _dbg("[src.main] AgentApp.run() returned")
+            return 0
+        except Exception as e:
+            _dbg(f"[src.main] Failed to start app: {e}")
+            _err(f"Failed to start TUI: {e}")
+            return 2
+    finally:
+        if _parallel_session is not None:
+            try:
+                _parallel_session.finalize()
+            except Exception as _fin_err:
+                _err(f"--parallel finalize error: {_fin_err}")
 
 
 if __name__ == "__main__":

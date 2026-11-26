@@ -93,15 +93,19 @@ class SessionLifecycleManager:
         state = lifecycle.restore_snapshot(snapshot)
     """
 
-    def __init__(self, workdir: str):
+    def __init__(self, workdir: str, *, private: bool = False):
         self.workdir = Path(workdir)
-        try:
-            from src.tools.tools_config import agent_context_path
-
-            self.snapshot_dir = agent_context_path(self.workdir) / "snapshots"
-        except Exception:
+        self.private = bool(private)
+        if self.private:
             self.snapshot_dir = self.workdir / ".codingAgent" / "snapshots"
-        self.snapshot_dir.mkdir(parents=True, exist_ok=True)
+        else:
+            try:
+                from src.tools.tools_config import agent_context_path
+
+                self.snapshot_dir = agent_context_path(self.workdir) / "snapshots"
+            except Exception:
+                self.snapshot_dir = self.workdir / ".codingAgent" / "snapshots"
+            self.snapshot_dir.mkdir(parents=True, exist_ok=True)
 
         self._shutdown_hooks: Dict[str, Callable[[str], None]] = {}
         self._lock = threading.Lock()
@@ -257,6 +261,8 @@ class SessionLifecycleManager:
             Path to saved snapshot file
         """
         snapshot_file = self.snapshot_dir / f"snapshot_{snapshot.session_id}.json"
+        if getattr(self, "private", False):
+            return snapshot_file
 
         snapshot_data = {
             "session_id": snapshot.session_id,
@@ -449,6 +455,8 @@ class SessionLifecycleManager:
         return False
 
 
-def get_session_lifecycle_manager(workdir: str) -> SessionLifecycleManager:
+def get_session_lifecycle_manager(
+    workdir: str, *, private: bool = False
+) -> SessionLifecycleManager:
     """Get a session lifecycle manager instance."""
-    return SessionLifecycleManager(workdir=workdir)
+    return SessionLifecycleManager(workdir=workdir, private=private)

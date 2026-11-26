@@ -45,6 +45,8 @@ def _append_timing_entry(
     """
     if not working_dir:
         return
+    if os.environ.get("CODINGAGENT_PRIVATE", "").strip().lower() in ("1", "true", "yes"):
+        return
     try:
         cap = max_entries
         if cap is None:
@@ -326,15 +328,16 @@ def begin_step_transaction_impl(orch: Any) -> str:
     orch._step_snapshot_id = step_id
     guilogger.debug(f"begin_step_transaction: started {step_id}")
     # Record timing of begin_step_transaction (bounded ring buffer)
-    _append_timing_entry(
-        getattr(orch, "working_dir", None),
-        {
-            "phase": "begin_step_transaction",
-            "elapsed": 0.0,
-            "ts": int(time.time()),
-            "step_id": step_id,
-        },
-    )
+    if not getattr(orch, "private", False):
+        _append_timing_entry(
+            getattr(orch, "working_dir", None),
+            {
+                "phase": "begin_step_transaction",
+                "elapsed": 0.0,
+                "ts": int(time.time()),
+                "step_id": step_id,
+            },
+        )
     return step_id
 
 
@@ -471,6 +474,9 @@ def _ensure_working_dir_impl(orch: Any) -> None:
     start_ts = time.time()
     try:
         orch.working_dir.mkdir(parents=True, exist_ok=True)
+        # TASK-36: Ephemeral --private mode never writes .codingAgent/ session, memory, or trace artifacts.
+        if getattr(orch, "private", False):
+            return
 
         # Phase 3: Scaffold per-workspace context directory (uses tools_config)
         try:
@@ -573,15 +579,16 @@ def _ensure_working_dir_impl(orch: Any) -> None:
         except Exception:
             pass
     finally:
-        # Best-effort bounded timing record for diagnostics
-        _append_timing_entry(
-            getattr(orch, "working_dir", None),
-            {
-                "phase": "ensure_working_dir",
-                "elapsed": time.time() - start_ts,
-                "ts": int(start_ts),
-            },
-        )
+        # Best-effort bounded timing record for diagnostics (skipped in --private mode)
+        if not getattr(orch, "private", False):
+            _append_timing_entry(
+                getattr(orch, "working_dir", None),
+                {
+                    "phase": "ensure_working_dir",
+                    "elapsed": time.time() - start_ts,
+                    "ts": int(start_ts),
+                },
+            )
 
 
 # ---------------------------------------------------------------------------
@@ -638,15 +645,16 @@ def _background_model_check_impl(orch: Any) -> None:
     except Exception as _e:
         guilogger.warning(f"background_model_check failed: {_e}")
     finally:
-        # Record bounded timing for provider/model check
-        _append_timing_entry(
-            getattr(orch, "working_dir", None),
-            {
-                "phase": "background_model_check",
-                "elapsed": time.time() - start_ts,
-                "ts": int(start_ts),
-            },
-        )
+        # Record bounded timing for provider/model check (skipped in --private mode)
+        if not getattr(orch, "private", False):
+            _append_timing_entry(
+                getattr(orch, "working_dir", None),
+                {
+                    "phase": "background_model_check",
+                    "elapsed": time.time() - start_ts,
+                    "ts": int(start_ts),
+                },
+            )
 
 
 # ---------------------------------------------------------------------------

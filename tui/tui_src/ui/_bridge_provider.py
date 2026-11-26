@@ -530,6 +530,7 @@ class BridgeProviderMixin(AgentBridgeProtocol):
             orch = getattr(self, "_orchestrator", None)
             if orch is not None:
                 orch.adapter = adapter
+                self._normalize_orchestrator_history_on_switch(orch)
             try:
                 self._publish_active_provider_status()
             except Exception:
@@ -538,6 +539,26 @@ class BridgeProviderMixin(AgentBridgeProtocol):
         except Exception as exc:
             logger.error("activate_provider(%s) failed: %s", provider_id, exc)
             return False
+
+    @staticmethod
+    def _normalize_orchestrator_history_on_switch(orch: Any) -> None:
+        """Flatten native tool calls and strip reasoning signatures on model/provider switch (TASK-36)."""
+        try:
+            msg_mgr = getattr(orch, "msg_mgr", None)
+            if msg_mgr is None or not getattr(msg_mgr, "messages", None):
+                return
+            from src.core.inference.history_normalizer import (
+                normalize_history_for_model_switch,
+            )
+
+            lock = getattr(orch, "_msg_mgr_lock", None)
+            if lock is not None:
+                with lock:
+                    msg_mgr.messages = normalize_history_for_model_switch(msg_mgr.messages)
+            else:
+                msg_mgr.messages = normalize_history_for_model_switch(msg_mgr.messages)
+        except Exception as exc:
+            logger.debug("history normalization on switch skipped: %s", exc)
 
     def update_role_model(self, model_id: str, provider_id: str | None = None) -> None:
         """Switch provider (if needed) and update the active adapter's model (TASK-38)."""
@@ -577,7 +598,9 @@ class BridgeProviderMixin(AgentBridgeProtocol):
                     valid.remove(clean_id)
                 valid.insert(0, clean_id)
                 adapter.models[:] = valid
-            if orch is not None and hasattr(orch, "_publish_active_config"):
-                orch._publish_active_config()
+            if orch is not None:
+                self._normalize_orchestrator_history_on_switch(orch)
+                if hasattr(orch, "_publish_active_config"):
+                    orch._publish_active_config()
         except Exception as exc:
             logger.debug("update_role_model adapter update: %s", exc)

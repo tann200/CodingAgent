@@ -124,9 +124,16 @@ class Orchestrator:
         plugin_dir: Optional[str | Path] = None,
         workflow_config: Optional[Any] = None,
         defer_provider_probe: bool = False,
+        private: bool = False,
     ):
+        import os as _os
+
         self._dry_run = dry_run
         self._defer_provider_probe = bool(defer_provider_probe)
+        self.private = bool(private) or (
+            _os.environ.get("CODINGAGENT_PRIVATE", "").strip().lower()
+            in ("1", "true", "yes")
+        )
         self._adapter = adapter
         self.workflow_config = workflow_config
         self._provider_name = ""  # set during provider resolution

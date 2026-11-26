@@ -86,15 +86,19 @@ class RollbackManager:
             rollback_mgr.rollback()
     """
 
-    def __init__(self, workdir: str):
+    def __init__(self, workdir: str, *, private: bool = False):
         self.workdir = Path(workdir)
-        try:
-            from src.tools.tools_config import agent_context_path
-
-            self.snapshot_dir = agent_context_path(self.workdir) / "snapshots"
-        except Exception:
+        self.private = bool(private)
+        if self.private:
             self.snapshot_dir = self.workdir / ".codingAgent" / "snapshots"
-        self.snapshot_dir.mkdir(parents=True, exist_ok=True)
+        else:
+            try:
+                from src.tools.tools_config import agent_context_path
+
+                self.snapshot_dir = agent_context_path(self.workdir) / "snapshots"
+            except Exception:
+                self.snapshot_dir = self.workdir / ".codingAgent" / "snapshots"
+            self.snapshot_dir.mkdir(parents=True, exist_ok=True)
         self.current_snapshot: Optional[str] = None
         self.snapshots: Dict[str, List[FileSnapshot]] = {}
         self._step_to_snapshot: Dict[str, str] = {}
@@ -589,6 +593,8 @@ class RollbackManager:
         return committed
 
     def _persist_snapshot_disk(self, snapshot_id: str, snapshots: List[FileSnapshot]) -> bool:
+        if getattr(self, "private", False):
+            return True
         """Helper to write snapshot data to disk atomically."""
         snapshot_file = self.snapshot_dir / f"{snapshot_id}.json"
         snapshot_data = {

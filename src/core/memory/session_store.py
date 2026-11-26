@@ -37,17 +37,71 @@ def _create_backend(
 
 
 def get_session_store(
-    workdir: Optional[str] = None, backend: Optional[str] = None
+    workdir: Optional[str] = None,
+    backend: Optional[str] = None,
+    *,
+    private: bool = False,
 ) -> Any:
-    """Return the canonical SQLite-backed session store.
+    """Return the canonical SQLite-backed session store (or ``NullSessionStore`` when *private* is True).
 
     When *backend* is passed explicitly, returns the raw ``SqliteSessionStore``.
     Otherwise returns a ``SessionStore`` wrapper that normalises falsy/None
     ``session_id`` arguments to ``"unknown"`` for backward compatibility.
     """
+    if private:
+        return NullSessionStore(workdir)
     if backend is not None:
         return _create_backend(workdir, backend)
     return SessionStore(workdir)
+
+
+class NullSessionStore:
+    """Ephemeral no-op SessionStore for ``--private`` sessions (TASK-36).
+
+    Satisfies the SessionStore interface in memory without creating any SQLite
+    databases, WAL files, or `.codingAgent/` artifacts on disk.
+    """
+
+    _SCHEMA_VERSION = SqliteSessionStore._SCHEMA_VERSION
+
+    def __init__(self, workdir: Optional[str] = None) -> None:
+        self.workdir = Path(workdir) if workdir else Path.cwd()
+        self._workdir = self.workdir
+        self._db_path = None
+        self.private = True
+
+    def get_schema_version(self) -> int:
+        return int(self._SCHEMA_VERSION)
+
+    def add_message(self, *args: Any, **kwargs: Any) -> None:
+        return None
+
+    def add_tool_call(self, *args: Any, **kwargs: Any) -> None:
+        return None
+
+    def add_plan(self, *args: Any, **kwargs: Any) -> None:
+        return None
+
+    def add_error(self, *args: Any, **kwargs: Any) -> None:
+        return None
+
+    def save_session(self, *args: Any, **kwargs: Any) -> None:
+        return None
+
+    def get_messages(self, *args: Any, **kwargs: Any) -> list[Any]:
+        return []
+
+    def list_sessions(self, *args: Any, **kwargs: Any) -> list[Any]:
+        return []
+
+    def close(self) -> None:
+        return None
+
+    def __getattr__(self, name: str) -> Any:
+        def _noop(*args: Any, **kwargs: Any) -> None:
+            return None
+
+        return _noop
 
 
 class SessionStore:
@@ -109,6 +163,7 @@ class SessionStore:
 
 
 __all__ = [
+    "NullSessionStore",
     "SessionStore",
     "SqliteSessionStore",
     "_create_backend",

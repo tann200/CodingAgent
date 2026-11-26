@@ -133,29 +133,38 @@ def _init_infrastructure(orch: Any, message_max_tokens: Optional[int]) -> None:
     # Initialize RollbackManager for automated rollback on failure
     from src.core.orchestration.rollback_manager import RollbackManager
 
-    orch.rollback_manager = RollbackManager(str(orch.working_dir))
+    orch.rollback_manager = RollbackManager(
+        str(orch.working_dir), private=getattr(orch, "private", False)
+    )
     orch._current_snapshot_id = None  # type: ignore[attr-defined]
     orch._step_snapshot_id = None  # type: ignore[attr-defined]
 
-    # Initialize SessionStore (canonical SQLite backend — TASK-24).
+    # Initialize SessionStore (canonical SQLite backend — TASK-24, or ephemeral NullSessionStore in --private mode — TASK-36).
     # Note: GitSnapshotManager (snapshot_manager.py) has been retired in favour
     # of the single transactional RollbackManager initialized above.
-    try:
-        from src.core.memory.session_store import _create_backend as _raw_create
+    if getattr(orch, "private", False):
+        from src.core.memory.session_store import NullSessionStore
 
-        orch.session_store = _raw_create(str(orch.working_dir))
-    except Exception:
+        orch.session_store = NullSessionStore(str(orch.working_dir))
+    else:
         try:
-            from src.core.memory.session_store import get_session_store
+            from src.core.memory.session_store import _create_backend as _raw_create
 
-            orch.session_store = get_session_store(workdir=str(orch.working_dir))
+            orch.session_store = _raw_create(str(orch.working_dir))
         except Exception:
-            orch.session_store = None
+            try:
+                from src.core.memory.session_store import get_session_store
+
+                orch.session_store = get_session_store(workdir=str(orch.working_dir))
+            except Exception:
+                orch.session_store = None
 
     # Initialize SessionLifecycleManager for graceful shutdown and snapshots
     from src.core.orchestration.session_lifecycle import get_session_lifecycle_manager
 
-    orch.lifecycle_manager = get_session_lifecycle_manager(str(orch.working_dir))
+    orch.lifecycle_manager = get_session_lifecycle_manager(
+        str(orch.working_dir), private=getattr(orch, "private", False)
+    )
 
     # Register lifecycle shutdown hook for cleanup
     def _lifecycle_cleanup_hook(session_id: str) -> None:
@@ -199,15 +208,16 @@ def _init_infrastructure(orch: Any, message_max_tokens: Optional[int]) -> None:
 
     orch.lifecycle_manager.on_shutdown("session_store_flush", _lifecycle_cleanup_hook)
 
-    # Subscribe to task completion events for automatic snapshot.
+    # Subscribe to task completion events for automatic snapshot (disabled in --private mode).
     def _on_task_complete(payload: Any) -> None:
-        orch._create_session_snapshot()
+        if not getattr(orch, "private", False):
+            orch._create_session_snapshot()
 
     orch.event_bus.subscribe("task.completed", _on_task_complete)
 
-    # Subscribe to task failure for snapshot before cleanup
+    # Subscribe to task failure for snapshot before cleanup (disabled in --private mode).
     def _on_task_failed(payload: Any) -> None:
-        if payload.get("session_id") == orch._current_task_id:
+        if not getattr(orch, "private", False) and payload.get("session_id") == orch._current_task_id:
             orch._create_session_snapshot()
 
     orch.event_bus.subscribe("task.failed", _on_task_failed)
