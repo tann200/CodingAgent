@@ -151,7 +151,7 @@ def get_toolset_for_role(role: str) -> str:
     Canonical flat toolsets (TASK-33):
       - ``compact-flat``  — read-only / scouting / compact 7–14B models (10 tools, no delegation)
       - ``standard-flat`` — standard implementation / debugging (14 tools)
-      - ``frontier-flat`` — full frontier capability including opt-in delegation (17 tools)
+      - ``frontier-flat`` — full frontier capability including opt-in delegation & tool groups (18 tools)
     """
     role_in = (role or "").strip().lower()
     if role_in in ("compact-flat", "standard-flat", "frontier-flat"):

@@ -79,6 +79,7 @@ TOOL_PERMISSIONS: Dict[str, PermissionLevel] = {
     "web_search": PermissionLevel.DANGER,
     "get_memory": PermissionLevel.READ_ONLY,
     "load_skill": PermissionLevel.READ_ONLY,
+    "load_tool_group": PermissionLevel.READ_ONLY,
     "list_skills": PermissionLevel.READ_ONLY,
     "summarize_structure": PermissionLevel.READ_ONLY,
     # --- workspace write (default) ---

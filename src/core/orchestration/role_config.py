@@ -33,7 +33,7 @@ _IMPL_CORE: tuple[str, ...] = (
     "run_linter", "run_ts_check", "syntax_check",
     "git_read", "git_status", "git_diff", "git_log", "manage_todo", "ask_user",
     "delegate_task", "lsp", "lsp_diagnostics", "lsp_references", "lsp_definition",
-    "web_search", "read_web_page", "load_skill", "list_skills",
+    "web_search", "read_web_page", "load_skill", "load_tool_group", "list_skills",
 )
 
 

@@ -114,7 +114,8 @@ def test_conditional_tool_gating_git_lsp_and_background_task(tmp_path: Path, mon
     assert "git_read" in fr_full_names
     assert "lsp" in fr_full_names
     assert "check_background_task" in fr_full_names
-    assert len(fr_full_names) == 18  # 17 frontier base + 1 dynamic check_background_task
+    assert "load_tool_group" in fr_full_names
+    assert len(fr_full_names) == 19  # 18 frontier base + 1 dynamic check_background_task
 
     # Compact tier (idle) includes delete_file, excludes manage_todo/list_files/git_read/check_background_task
     comp_names = {
@@ -133,3 +134,66 @@ def test_conditional_tool_gating_git_lsp_and_background_task(tmp_path: Path, mon
         "ask_user",
         "load_skill",
     }
+
+
+def test_read_tool_output_eviction_gating_and_load_tool_group(tmp_path: Path, monkeypatch):
+    from src.core.orchestration.tool_output_reducer import ToolOutputStore
+    from src.tools.subagent_tools import _PARENT_ORCHESTRATOR_VAR
+    from src.tools.tool_group_tools import load_tool_group
+
+    reg = build_registry(working_dir=str(tmp_path))
+    monkeypatch.setattr(rp, "_is_lsp_available", lambda _wd=None: False)
+    monkeypatch.delenv("CODINGAGENT_PRIVATE", raising=False)
+
+    # Real-orchestrator-like object (has execute_tool) with NO evicted outputs -> read_tool_output omitted
+    orch = SimpleNamespace(
+        tool_registry=reg,
+        working_dir=str(tmp_path),
+        explore_mode=False,
+        execute_tool=lambda _a: {"ok": True},
+    )
+    idle_names = {
+        s["function"]["name"]
+        for s in rp.resolve_effective_tool_schemas(orch, rp.COMPACT_RUNTIME_POLICY)
+    }
+    assert "read_tool_output" not in idle_names
+
+    # Once an output is evicted into ToolOutputStore -> read_tool_output appears immediately
+    store = ToolOutputStore()
+    store.store("big output" * 500, tool_name="bash")
+    orch._tool_output_store = store
+    after_evict_names = {
+        s["function"]["name"]
+        for s in rp.resolve_effective_tool_schemas(orch, rp.COMPACT_RUNTIME_POLICY)
+    }
+    assert "read_tool_output" in after_evict_names
+
+    # load_tool_group unlocks git-write & ast on demand, while respecting private mode & explore_mode
+    tok = _PARENT_ORCHESTRATOR_VAR.set(orch)
+    try:
+        res_git = load_tool_group(group="git-write")
+        assert res_git["status"] == "ok"
+        assert "git_commit" in res_git["tools"]
+
+        fr_loaded = {
+            s["function"]["name"]
+            for s in rp.resolve_effective_tool_schemas(orch, rp.FRONTIER_RUNTIME_POLICY)
+        }
+        assert {"git_commit", "git_stash", "git_restore"}.issubset(fr_loaded)
+
+        # Read-only explore_mode still blocks git-write even if loaded!
+        orch.explore_mode = True
+        fr_explore = {
+            s["function"]["name"]
+            for s in rp.resolve_effective_tool_schemas(orch, rp.FRONTIER_RUNTIME_POLICY)
+        }
+        assert {"git_commit", "git_stash", "git_restore"}.isdisjoint(fr_explore)
+        orch.explore_mode = False
+
+        # Private mode blocks memory group
+        monkeypatch.setenv("CODINGAGENT_PRIVATE", "1")
+        res_mem = load_tool_group(group="memory")
+        assert res_mem["status"] == "error"
+        assert "private" in res_mem["error"].lower()
+    finally:
+        _PARENT_ORCHESTRATOR_VAR.reset(tok)

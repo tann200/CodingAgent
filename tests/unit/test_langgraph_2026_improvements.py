@@ -132,7 +132,7 @@ class TestModelTiersAndRuntimePolicy2026:
         )
         assert frontier.policy_tier == "frontier"
         assert frontier.toolset_name == "frontier-flat"
-        assert frontier.tool_limit == 17
+        assert frontier.tool_limit == 18
         assert frontier.turn_limit == 60
         assert frontier.max_parallel_reads == 5
         assert frontier.verification_mode == "full"
@@ -201,7 +201,7 @@ class TestFlatToolsetsAndRoleFiltering:
 
         assert len(t_compact) == 10
         assert len(t_standard) == 14
-        assert len(t_frontier) in (16, 17)
+        assert len(t_frontier) in (17, 18)
 
     def test_readonly_roles_and_explore_mode_strip_mutating_tools(self):
         reg = build_registry()

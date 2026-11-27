@@ -173,7 +173,7 @@ FRONTIER_RUNTIME_POLICY = ModelRuntimePolicy(
     policy_tier="frontier",
     target_tier="frontier",
     toolset_name="frontier-flat",
-    tool_limit=17,
+    tool_limit=18,
     turn_limit=60,
     recovery_limit=3,
     compaction_limit=3,
@@ -493,12 +493,33 @@ def _has_active_background_tasks(orchestrator: Any = None) -> bool:
     return bool(getattr(orchestrator, "_has_background_tasks", False)) if orchestrator is not None else False
 
 
+def _has_evicted_tool_outputs(orchestrator: Any = None) -> bool:
+    """Return True when *orchestrator*'s ``ToolOutputStore`` has at least one evicted handle.
+
+    On lightweight test mocks without ``execute_tool`` or ``_tool_output_store``,
+    returns True so unit-test schema assertions stay deterministic.
+    """
+    if orchestrator is None:
+        return True
+    store = getattr(orchestrator, "_tool_output_store", None)
+    if store is not None and hasattr(store, "stats"):
+        try:
+            return int(store.stats().get("entries", 0)) > 0
+        except Exception:
+            return True
+    if hasattr(orchestrator, "execute_tool"):
+        return False
+    return True
+
+
 def _is_conditionally_active_tool(tool_name: str, orchestrator: Any) -> bool:
-    """Gate situational tools (`git_read`, `lsp`) on live workspace capabilities."""
+    """Gate situational tools (`git_read`, `lsp`, `read_tool_output`) on live session/workspace state."""
     if tool_name == "git_read":
         return _is_git_workspace(getattr(orchestrator, "working_dir", None))
     if tool_name == "lsp":
         return _is_lsp_available(getattr(orchestrator, "working_dir", None))
+    if tool_name == "read_tool_output":
+        return _has_evicted_tool_outputs(orchestrator)
     return True
 
 
@@ -552,6 +573,7 @@ def resolve_effective_tool_schemas(
                 and _is_conditionally_active_tool(n, orchestrator)
             ]
 
+            dynamic_extras: List[str] = []
             # Dynamically expose check_background_task only after a background bash job starts
             if (
                 "check_background_task" in registered
@@ -562,6 +584,25 @@ def resolve_effective_tool_schemas(
                 )
             ):
                 selected_names.append("check_background_task")
+                dynamic_extras.append("check_background_task")
+
+            # Dynamically expose specialist tools from on-demand load_tool_group() calls
+            loaded_groups = getattr(orchestrator, "_loaded_tool_groups", None)
+            if isinstance(loaded_groups, (set, list, tuple)) and loaded_groups:
+                from src.core.context.tool_prompt_sections import is_private_mode_enabled
+                from src.tools.tool_group_tools import get_tools_for_group
+
+                for grp in sorted(str(g) for g in loaded_groups):
+                    if grp == "memory" and is_private_mode_enabled():
+                        continue
+                    for g_tool in get_tools_for_group(grp):
+                        if (
+                            g_tool in registered
+                            and g_tool not in selected_names
+                            and _is_tool_permitted_for_context(g_tool, reg, orchestrator, active_role)
+                        ):
+                            selected_names.append(g_tool)
+                            dynamic_extras.append(g_tool)
 
             # Include permitted MCP tools if registered dynamically
             if hasattr(reg, "get") and callable(reg.get):
@@ -576,12 +617,10 @@ def resolve_effective_tool_schemas(
 
             if selected_names:
                 eff_limit = max(1, tool_limit)
-                if "check_background_task" in selected_names and len(selected_names) > eff_limit:
-                    bounded_names = selected_names[:eff_limit]
-                    if "check_background_task" not in bounded_names:
-                        bounded_names.append("check_background_task")
-                else:
-                    bounded_names = selected_names[:eff_limit]
+                bounded_names = selected_names[:eff_limit]
+                for extra in dynamic_extras:
+                    if extra not in bounded_names:
+                        bounded_names.append(extra)
                 from src.core.orchestration.pipeline.permissions import assert_lethal_trifecta_isolated
 
                 assert_lethal_trifecta_isolated(

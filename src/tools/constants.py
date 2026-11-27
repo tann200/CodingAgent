@@ -206,6 +206,7 @@ IDEMPOTENT_TOOLS: frozenset[str] = frozenset(
         "web_search",
         "read_web_page",
         "check_background_task",
+        "load_tool_group",
         "diff_state",
         # ---- overwrite-shaped writes ------------------------------------
         "write_file",

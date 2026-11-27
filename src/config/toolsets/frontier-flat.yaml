@@ -1,5 +1,5 @@
 name: frontier-flat
-description: Flat single-purpose full toolset for frontier and reasoning models (17 tools)
+description: Flat single-purpose full toolset for frontier and reasoning models (18 tools)
 tools:
   - read_file
   - read_tool_output
@@ -18,3 +18,4 @@ tools:
   - delegate_task
   - lsp
   - web_search
+  - load_tool_group
