@@ -342,9 +342,12 @@ class ContextBuilder:
                 pass
         return self.skills.get(skill_name, "")
 
-    def get_skill_catalog_text(self) -> str:
+    def get_skill_catalog_text(self, *, compact_bundled: bool = False) -> str:
         """Return compact static progressive-disclosure skill catalog."""
-        return render_skill_catalog(getattr(self, "skill_catalog", {}))
+        return render_skill_catalog(
+            getattr(self, "skill_catalog", {}),
+            compact_bundled=compact_bundled,
+        )
 
     @staticmethod
     def _get_provider_variant(model_name: str) -> Optional[str]:
@@ -821,6 +824,7 @@ class ContextBuilder:
             select_prompt_partial_fn=lambda mt, pc, ir: self._select_prompt_partial(
                 mt, pc, ir  # type: ignore[arg-type]
             ),
+            model_name=model_name,
         )
 
     def _build_thinking_mode_block(
@@ -911,7 +915,9 @@ class ContextBuilder:
             build_output_format_block_fn=lambda unt, ism, tier: self._build_output_format_block(
                 unt, ism, tier
             ),
-            skill_catalog_text=self.get_skill_catalog_text(),
+            skill_catalog_text=self.get_skill_catalog_text(
+                compact_bundled=tier_str in ("nano", "compact")
+            ),
         )
         with _CACHE_LOCK:
             store_static_prompt_cache_entry(
@@ -1064,6 +1070,7 @@ class ContextBuilder:
         conversation: List[Dict],
         task_description: str,
         conversation_quota: int,
+        use_native_tools: bool = False,
     ) -> List[Dict[str, str]]:
         """Append filtered conversation history and the final task user message."""
         pruned_conversation = self._prune_stale_tool_outputs(
@@ -1083,7 +1090,9 @@ class ContextBuilder:
         )
 
         prompt_content = build_task_prompt_content(
-            self._sanitize_text(task_description), _today_iso()
+            self._sanitize_text(task_description),
+            _today_iso(),
+            use_native_tools=use_native_tools,
         )
         return append_task_message(
             built_messages=built_messages,
@@ -1210,6 +1219,7 @@ class ContextBuilder:
             conversation=conversation,
             task_description=task_description,
             conversation_quota=conversation_quota,
+            use_native_tools=use_native_tools,
         )
 
         built_messages = redact_data(built_messages)

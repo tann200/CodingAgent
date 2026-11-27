@@ -49,12 +49,10 @@ def test_static_system_parts_skips_duplicate_available_tools_when_native_tools_e
     assert "<think>" not in result
 
 
-def test_thinking_mode_omitted_for_reasoning_models():
+def test_thinking_mode_omitted_for_all_tiers_and_models():
     assert build_thinking_mode_block(tier_str="medium", is_reasoning_model=True) == ""
     assert build_thinking_mode_block(tier_str="frontier", is_reasoning_model=True) == ""
-    assert "<thinking_mode>" in build_thinking_mode_block(
-        tier_str="frontier", is_reasoning_model=False
-    )
+    assert build_thinking_mode_block(tier_str="frontier", is_reasoning_model=False) == ""
 
 
 def test_select_role_for_compact_and_nano_uses_small_role():
@@ -271,3 +269,137 @@ def test_select_prompt_partial_routes_gemini_flash_lite_to_small():
         )
         == "gemini-frontier.md"
     )
+
+
+def test_core_system_prompt_token_ceilings_after_deduplication(tmp_path):
+    import re
+    from src.core.inference.tokenizer import count_tokens
+
+    ContextBuilder.clear_cache()
+    cb = ContextBuilder(working_dir=str(tmp_path))
+    tools = [
+        {"name": "read_file", "description": "Read a file."},
+        {"name": "edit_file_atomic", "description": "Edit a file."},
+        {"name": "write_file", "description": "Write a file."},
+        {"name": "bash", "description": "Run a shell command."},
+    ]
+
+    for tier, model, ceiling in (
+        ("compact", "gemini-3.5-flash-lite", 950),
+        ("frontier", "claude-sonnet-4-6", 1450),
+        ("frontier", "o3", 1450),
+    ):
+        msgs = cb.build_prompt(
+            role_name="operational",
+            active_skills=[],
+            task_description="Fix the bug in app.py",
+            tools=tools,
+            conversation=[],
+            model_tier=tier,
+            model_name=model,
+            provider_capabilities={"model": model, "supports_native_tools": True},
+            include_prior_context=False,
+        )
+        core_sys = re.sub(
+            r"<project_instructions[\s\S]*?</project_instructions[^>]*>",
+            "",
+            msgs[0]["content"],
+        )
+        toks = count_tokens(core_sys)
+        assert toks <= ceiling, f"{tier}/{model} core system prompt regressed to {toks} tok (ceiling {ceiling})"
+        assert "<thinking_mode>" not in core_sys
+        assert "Execute the next action using JSON function calling format." not in msgs[-1]["content"]
+
+
+def test_compact_bundled_skill_catalog_preserves_project_skills_and_collapses_bundled(tmp_path):
+    from pathlib import Path
+    from src.core.context.agent_brain_loading import SkillMeta, render_skill_catalog
+
+    skills = {
+        "custom-deploy": SkillMeta(
+            name="custom-deploy",
+            description="Project-specific deploy checklist",
+            path=Path(tmp_path / "custom.md"),
+            provenance="project",
+            source_scope=".codingagent",
+        ),
+        "dry": SkillMeta(
+            name="dry",
+            description="Avoid code duplication across modules",
+            path=Path(tmp_path / "dry.md"),
+            provenance="bundled",
+            source_scope="bundled",
+        ),
+        "refactor": SkillMeta(
+            name="refactor",
+            description="Refactor safely in small steps",
+            path=Path(tmp_path / "refactor.md"),
+            provenance="bundled",
+            source_scope="bundled",
+        ),
+    }
+
+    full = render_skill_catalog(skills, compact_bundled=False)
+    compact = render_skill_catalog(skills, compact_bundled=True)
+    assert "- custom-deploy: Project-specific deploy checklist" in compact
+    assert "Bundled: dry, refactor" in compact
+    assert "Avoid code duplication" not in compact
+    assert len(compact) < len(full)
+
+
+def test_compact_dedup_hit_and_truncated_tool_call_recovery():
+    from src.core.orchestration.loop_guards import (
+        build_incomplete_turn_nudge,
+        compact_dedup_hit,
+        extract_finish_reason,
+    )
+
+    large_body = "x = 1\n" * 200
+    compacted = compact_dedup_hit(
+        "read_file",
+        {"path": "app.py"},
+        {"ok": True, "status": "ok", "path": "app.py", "content": large_body},
+    )
+    assert compacted["dedup_cache_hit"] is True
+    assert compacted["ok"] is True
+    assert "Already read unchanged" in compacted["content"]
+    assert len(compacted["content"]) < len(large_body)
+
+    # Small results stay intact
+    small = compact_dedup_hit("read_file", {"path": "tiny.py"}, {"ok": True, "content": "a = 1"})
+    assert small["content"] == "a = 1"
+
+    # finish_reason == "length" produces chunking recovery guidance
+    resp_len = {"choices": [{"finish_reason": "length", "message": {"content": ""}}]}
+    assert extract_finish_reason(resp_len) == "length"
+    nudge = build_incomplete_turn_nudge("empty_response", "empty", response=resp_len)
+    assert "truncated at the output token limit" in nudge
+    assert "Split large file edits into smaller chunks" in nudge
+
+
+def test_subagent_budget_capsule_and_targeted_pytest_fallback(tmp_path):
+    from src.tools.subagent_payloads import build_subagent_budget_capsule
+    from src.core.orchestration.graph.nodes.verification_helpers import discover_targeted_pytest_files
+
+    scout_capsule = build_subagent_budget_capsule(
+        role="scout", mode="scout", max_steps=15, tools_required=True
+    )
+    assert 'max_steps="15"' in scout_capsule
+    assert "uncovered gaps" in scout_capsule
+    assert "Tool evidence is mandatory" in scout_capsule
+
+    wt_capsule = build_subagent_budget_capsule(
+        role="operational", mode="worktree", max_steps=20, tools_required=False
+    )
+    assert "Tool evidence is mandatory" not in wt_capsule
+
+    # Targeted pytest discovery picks up non-stem-matching test file importing modified module
+    mod = tmp_path / "math_ops.py"
+    mod.write_text("def add(a, b):\n    return a + b\n", encoding="utf-8")
+    tests_dir = tmp_path / "tests"
+    tests_dir.mkdir()
+    suite = tests_dir / "test_all.py"
+    suite.write_text("from math_ops import add\ndef test_add():\n    assert add(1, 2) == 3\n", encoding="utf-8")
+
+    found = discover_targeted_pytest_files([str(mod)], tmp_path)
+    assert str(suite.resolve()) in found

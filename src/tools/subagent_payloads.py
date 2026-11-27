@@ -142,6 +142,27 @@ def build_graph_state_base(
     }
 
 
+def build_subagent_budget_capsule(
+    *,
+    role: str,
+    mode: str,
+    max_steps: int = 20,
+    tools_required: bool = False,
+) -> str:
+    """Return a concise budget & grounding capsule appended to delegated subagent prompts."""
+    lines = [
+        f"<subagent_budget role=\"{role}\" mode=\"{mode}\" max_steps=\"{max_steps}\">",
+        f"- You have a bounded budget of ~{max_steps} turns. Focus directly on the assigned subtask.",
+        "- Before exhausting your budget, synthesize your verified findings and explicitly list any uncovered gaps.",
+    ]
+    if tools_required:
+        lines.append(
+            "- Tool evidence is mandatory: inspect the workspace with read/search tools before answering; do not guess from memory."
+        )
+    lines.append("</subagent_budget>")
+    return "\n".join(lines)
+
+
 def build_subagent_initial_state(
     *, subtask_description: str, child_session_id: str, working_dir: str, system_prompt: str,
     current_role: str, parent_session_id: Optional[str], delegation_depth: int,

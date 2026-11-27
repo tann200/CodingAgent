@@ -35,9 +35,10 @@ class ThinkingMode(str, Enum):
 # emit <think> blocks but still need a different prompting style (no CoT
 # instructions, direct output, no streaming tool-call format).
 _REASONING_MODEL_PATTERNS = (
-    "qwen3",  # Covers qwen3, qwen3.5, qwen3.5-9b
+    "qwen3",  # Covers qwen3, qwen3.5, qwen3.5-9b, qwen3.8-27b
     "deepseek-r1",
     "deepseek_r1",
+    "deepseek-reasoner",
     "qwq",
     # OpenAI o-series reasoning models
     "o1-",
@@ -47,6 +48,10 @@ _REASONING_MODEL_PATTERNS = (
     "o3-",
     "o4-",
 )
+
+# Bare OpenAI o-series model names (e.g. "o1", "o3", "o4", "openai/o3", "o3:latest")
+# matched on token boundaries so non-reasoning names like "gpt-4o" never match.
+_BARE_O_SERIES_RE = re.compile(r"(?:^|[/:\s])o[134](?:$|[-\s:@])")
 
 # Qwen3 specifically supports /no_think to suppress the think block entirely.
 _NO_THINK_SUPPORTED_PATTERNS = (
@@ -78,10 +83,14 @@ def strip_thinking(text: str) -> str:
 
 
 def is_reasoning_model(model_id: str) -> bool:
-    """Return True when *model_id* is known to emit ＜think＞ blocks by default."""
+    """Return True when *model_id* is a known reasoning-first model."""
     # BUG-FIX: handle non-string input gracefully
-    lowered = str(model_id).lower() if model_id is not None else ""
-    return any(pat in lowered for pat in _REASONING_MODEL_PATTERNS)
+    lowered = str(model_id).lower().strip() if model_id is not None else ""
+    if not lowered:
+        return False
+    return any(pat in lowered for pat in _REASONING_MODEL_PATTERNS) or bool(
+        _BARE_O_SERIES_RE.search(lowered)
+    )
 
 
 def supports_no_think(model_id: str) -> bool:

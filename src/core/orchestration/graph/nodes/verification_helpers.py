@@ -158,6 +158,37 @@ def discover_targeted_pytest_files(
             tests_root / "integration" / f"test_{stem}.py",
         ):
             _add(candidate)
+
+    # Fallback for small workspaces or tests whose filename doesn't mirror the module stem
+    # (e.g. test_all.py importing modified module `math_ops`): bounded shallow scan only.
+    if not matched:
+        mod_stems = {
+            resolve_modified_path(str(raw), workdir).stem
+            for raw in modified_files
+            if str(raw).endswith(".py")
+        } - {"", "__init__"}
+        if mod_stems:
+            shallow_tests: List[Path] = []
+            for base_dir in (workdir, tests_root, tests_root / "unit"):
+                if not base_dir.is_dir():
+                    continue
+                for entry in sorted(base_dir.iterdir()):
+                    if entry.is_file() and entry.suffix == ".py" and (
+                        entry.name.startswith("test_") or entry.name.endswith("_test.py")
+                    ):
+                        shallow_tests.append(entry)
+                    if len(shallow_tests) >= 12:
+                        break
+            for tf in shallow_tests:
+                try:
+                    txt = tf.read_text(encoding="utf-8", errors="ignore")[:8000]
+                except OSError:
+                    continue
+                if any(stem in txt for stem in mod_stems):
+                    _add(tf)
+            if not matched and 1 <= len(shallow_tests) <= 3:
+                for tf in shallow_tests:
+                    _add(tf)
     return matched
 
 

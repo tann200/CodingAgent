@@ -23,6 +23,16 @@ class TestIsReasoningModel:
     def test_qwq(self):
         assert is_reasoning_model("qwq-32b-preview") is True
 
+    def test_bare_openai_o_series_detected(self):
+        assert is_reasoning_model("o1") is True
+        assert is_reasoning_model("o3") is True
+        assert is_reasoning_model("o4") is True
+        assert is_reasoning_model("openai/o3") is True
+        assert is_reasoning_model("o4-mini") is True
+        assert is_reasoning_model("deepseek-reasoner") is True
+        assert is_reasoning_model("gpt-4o") is False
+        assert is_reasoning_model("gpt-4o-mini") is False
+
     def test_llama_not_reasoning(self):
         assert is_reasoning_model("meta-llama/Llama-3.1-8B-Instruct") is False
 

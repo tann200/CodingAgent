@@ -207,8 +207,70 @@ def cap_consecutive_invalid_turns(consecutive_count: int, limit: int = 2) -> boo
     return int(consecutive_count or 0) >= max(1, int(limit))
 
 
-def build_incomplete_turn_nudge(err_code: str, error_msg: str) -> str:
+def compact_dedup_hit(
+    tool_name: str,
+    tool_args: Mapping[str, Any],
+    cached: Dict[str, Any],
+    *,
+    max_repeat_chars: int = 400,
+) -> Dict[str, Any]:
+    """Return a deduplicated tool result, compacting large unchanged ``read_file`` repeats."""
+    out = dict(cached)
+    out["dedup_cache_hit"] = True
+    if tool_name != "read_file":
+        return out
+    path_label = str(tool_args.get("path") or out.get("path") or "file")
+    notice = (
+        f"[Already read unchanged in this session ({path_label}); "
+        "refer to the earlier read_file output in conversation history.]"
+    )
+    if isinstance(out.get("content"), str) and len(out["content"]) > max_repeat_chars:
+        out["content"] = notice
+    inner = out.get("result")
+    if isinstance(inner, dict) and isinstance(inner.get("content"), str) and len(inner["content"]) > max_repeat_chars:
+        out["result"] = {**inner, "content": notice}
+    return out
+
+
+def extract_finish_reason(response: Any) -> str:
+    """Extract normalized ``finish_reason`` from an OpenAI/Anthropic/Gemini response dict."""
+    if isinstance(response, dict):
+        choices = response.get("choices")
+        if isinstance(choices, list) and choices and isinstance(choices[0], dict):
+            fr = choices[0].get("finish_reason") or choices[0].get("stop_reason")
+            if isinstance(fr, str) and fr:
+                return fr.strip().lower()
+        fr_top = response.get("finish_reason") or response.get("stop_reason")
+        if isinstance(fr_top, str) and fr_top:
+            return fr_top.strip().lower()
+    else:
+        fr_attr = getattr(response, "finish_reason", None) or getattr(response, "stop_reason", None)
+        if isinstance(fr_attr, str) and fr_attr:
+            return fr_attr.strip().lower()
+    return ""
+
+
+def build_truncated_tool_call_feedback() -> str:
+    """Return corrective guidance when completion hits max_tokens mid-tool-call."""
+    return (
+        "<system_reminder>\n"
+        "Your previous response was truncated at the output token limit before completing "
+        "the tool call. Do NOT repeat the same oversized write. Split large file edits into "
+        "smaller chunks (e.g., write a minimal skeleton with write_file and apply focused "
+        "edit_file_atomic patches).\n"
+        "</system_reminder>"
+    )
+
+
+def build_incomplete_turn_nudge(
+    err_code: str,
+    error_msg: str,
+    *,
+    response: Any = None,
+) -> str:
     """Build an explicit tool-action steering reminder when a model stops prematurely."""
+    if extract_finish_reason(response) in ("length", "max_tokens"):
+        return build_truncated_tool_call_feedback()
     if err_code in ("unverified_text_only_completion", "unverified_mutation_missing"):
         return (
             f"<system_reminder>\nIncomplete turn ({err_code}): {error_msg}\n"

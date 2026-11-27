@@ -268,15 +268,27 @@ def render_skill_catalog(
     skills: Mapping[str, SkillMeta],
     *,
     max_desc_chars: int = 80,
+    compact_bundled: bool = False,
 ) -> str:
-    """Render compact progressive-disclosure skill index (~15 tokens/skill, KV-cache static)."""
+    """Render compact progressive-disclosure skill index (~15 tokens/skill, KV-cache static).
+
+    When *compact_bundled* is True (``nano`` / ``compact`` tiers), workspace and user
+    skills keep their full ``- name: description`` entries while bundled skills collapse
+    onto a single comma-separated line to save ~250 prompt tokens per turn.
+    """
     if not skills:
         return ""
     lines = ["Available skills (call load_skill(name) when relevant):"]
+    bundled_names: list[str] = []
     for name in sorted(skills.keys(), key=str.lower):
         meta = skills[name]
+        if compact_bundled and meta.provenance == "bundled":
+            bundled_names.append(meta.name)
+            continue
         desc = " ".join((meta.description or "").split())
         if len(desc) > max_desc_chars:
             desc = desc[: max_desc_chars - 3].rstrip() + "..."
         lines.append(f"- {meta.name}: {desc}")
+    if bundled_names:
+        lines.append(f"Bundled: {', '.join(bundled_names)}")
     return "\n".join(lines)

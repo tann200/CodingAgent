@@ -670,7 +670,7 @@ async def frontier_loop_node(
                     )
             from src.core.orchestration.loop_guards import augment_turn_messages
 
-            messages = augment_turn_messages(messages, state, turns_taken)
+            messages = augment_turn_messages(messages, state, turns_taken - 1)
 
             try:
                 try:
@@ -783,7 +783,7 @@ async def frontier_loop_node(
                     from src.core.orchestration.loop_guards import build_incomplete_turn_nudge
 
                     history = list(history)
-                    history.append({"role": "user", "content": build_incomplete_turn_nudge(err_code, str(last_result.get("error") or ""))})
+                    history.append({"role": "user", "content": build_incomplete_turn_nudge(err_code, str(last_result.get("error") or ""), response=response)})
                     continue
                 errors = list(errors) + [err_code]
             else:

@@ -103,9 +103,16 @@ def build_repository_intelligence_block(
     return _tagged_block("repository_intelligence", "\n".join(repo_entries))
 
 
-def build_task_prompt_content(task_description: str, today_iso: str) -> str:
-    return (
+def build_task_prompt_content(
+    task_description: str,
+    today_iso: str,
+    *,
+    use_native_tools: bool = False,
+) -> str:
+    base = (
         f"<task>\n{task_description}\n</task>\n"
-        f"<context>\nToday's date: {today_iso}\n</context>\n\n"
-        "Execute the next action using JSON function calling format."
+        f"<context>\nToday's date: {today_iso}\n</context>"
     )
+    if use_native_tools:
+        return base
+    return f"{base}\n\nExecute the next action using JSON function calling format."

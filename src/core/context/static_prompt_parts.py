@@ -5,6 +5,11 @@ import re
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Mapping, Optional, Sequence, Tuple
 
+from src.core.context.tool_prompt_sections import (
+    build_active_tool_guidance_block,
+    build_security_contract_block,
+)
+
 logger = logging.getLogger(__name__)
 
 
@@ -174,8 +179,7 @@ def build_model_constraints_block(
                 logger.debug("static_prompt_parts: get_context_budget failed: %s", exc)
         lines = [
             f"Tier: {tier_str.upper()} | Context: {context_tokens:,} tokens | Tools: {len(tools)} available",
-            f"Max plan steps: {step_limit} | Output format: JSON function call (required, no YAML)",
-            "Not available: parallel tool calls, subagent delegation, extended reasoning",
+            f"Max plan steps: {step_limit} | Batch independent read/search calls; keep mutations sequential.",
         ]
         return "<model_constraints>\n" + "\n".join(lines) + "\n</model_constraints>"
     except Exception as exc:
@@ -275,13 +279,14 @@ def build_thinking_guidance_block(
     provider_capabilities: Optional[Mapping[str, object]],
     is_reasoning_model_fn: Optional[Callable[[str], bool]],
     select_prompt_partial_fn: Callable[[Optional[str], Optional[Mapping[str, object]], bool], str],
+    model_name: str = "",
 ) -> str:
     caps = provider_capabilities or {}
     is_reasoning_model = False
     try:
         if is_reasoning_model_fn is None:
             raise ImportError("thinking_utils unavailable")
-        active_model = str(caps.get("model", ""))
+        active_model = str(model_name or caps.get("model", ""))
         is_reasoning_model = bool(active_model and is_reasoning_model_fn(active_model))
     except Exception as exc:
         logger.debug("static_prompt_parts: is_reasoning_model check failed: %s", exc)
@@ -292,18 +297,9 @@ def build_thinking_guidance_block(
 
 
 def build_thinking_mode_block(*, tier_str: str, is_reasoning_model: bool) -> str:
-    # Reasoning models perform internal reasoning natively (and beast.txt explicitly
-    # forbids narrating chain-of-thought), so only emit explicit pre-call reflection
-    # for non-reasoning frontier/large models.
-    if tier_str in ("frontier", "large") and not is_reasoning_model:
-        return (
-            "<thinking_mode>\n"
-            "Before every tool call, briefly state:\n"
-            "1. What you expect this call to return.\n"
-            "2. What you will do if it fails or returns unexpected output.\n"
-            "This reflection is mandatory - do not skip it.\n"
-            "</thinking_mode>"
-        )
+    # Pre-call chain-of-thought narration ("Before every tool call, briefly state...")
+    # contradicts direct tool execution and wastes output tokens on every turn.
+    # Reasoning models reason natively; non-reasoning models should emit tool calls directly.
     return ""
 
 
@@ -334,8 +330,15 @@ def build_static_system_parts(
     parts: List[str] = []
     tier_str = (model_tier or "").lower()
 
-    parts.append(f"<identity>\n{sanitize_text(soul)}\n</identity>")
+    if soul and soul.strip():
+        parts.append(f"<identity>\n{sanitize_text(soul)}\n</identity>")
     parts.append(f"<role>\n{sanitize_text(role_content)}\n</role>")
+
+    tool_guidance = build_active_tool_guidance_block(tools, model_tier=model_tier)
+    if tool_guidance:
+        parts.append(tool_guidance)
+
+    parts.append(build_security_contract_block())
 
     model_constraints = build_model_constraints_block_fn(model_tier, tools)
     if model_constraints:
@@ -383,7 +386,7 @@ def build_static_system_parts(
     is_reasoning_model = False
     try:
         if is_reasoning_model_fn is not None:
-            active_model = str(caps.get("model", ""))
+            active_model = str(model_name or caps.get("model", ""))
             is_reasoning_model = bool(
                 active_model and is_reasoning_model_fn(active_model)
             )

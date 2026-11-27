@@ -139,11 +139,12 @@ def test_build_output_format_block_small_contains_json_only_instruction():
     assert "Output ONLY the JSON function call" in result
 
 
-def test_build_thinking_mode_block_frontier_enabled():
-    result = build_thinking_mode_block(tier_str="frontier", is_reasoning_model=False)
-
-    assert "<thinking_mode>" in result
-    assert "Before every tool call" in result
+def test_build_thinking_mode_block_frontier_disabled():
+    # Contradictory pre-call narration (<thinking_mode>) is intentionally disabled
+    # across all tiers so models emit direct tool calls without filler prose.
+    assert build_thinking_mode_block(tier_str="frontier", is_reasoning_model=False) == ""
+    assert build_thinking_mode_block(tier_str="frontier", is_reasoning_model=True) == ""
+    assert build_thinking_mode_block(tier_str="compact", is_reasoning_model=False) == ""
 
 
 def test_build_static_system_parts_assembles_expected_sections():

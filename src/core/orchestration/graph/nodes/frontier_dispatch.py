@@ -313,7 +313,7 @@ async def execute_raw_tool(
     """Execute one tool action through ``orchestrator.execute_tool`` with TASK-34 guards."""
     import asyncio
     from src.core.orchestration.graph.validation_authority import get_or_create_debt_tracker
-    from src.core.orchestration.loop_guards import get_or_create_read_dedup_cache
+    from src.core.orchestration.loop_guards import compact_dedup_hit, get_or_create_read_dedup_cache
 
     if not orchestrator:
         return {"ok": False, "error": "orchestrator unavailable"}
@@ -326,8 +326,7 @@ async def execute_raw_tool(
     if not dedup.is_invalidating(t_name):
         cached = dedup.get(t_name, t_args)
         if cached is not None:
-            cached["dedup_cache_hit"] = True
-            return cached
+            return compact_dedup_hit(t_name, t_args, cached)
 
     try:
         if run_async or model_tier in ("large", "frontier", "medium"):

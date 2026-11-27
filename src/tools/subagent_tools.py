@@ -16,10 +16,10 @@ from typing import Any, Dict, List, Optional, cast
 from src.core.paths import get_sessions_dir
 from src.tools._tool import PermissionKind, tool
 from src.tools.subagent_payloads import (
-    SCOUT_READONLY_TOOLS, build_delegate_result_text, build_subagent_initial_state,
-    build_subagent_manifest, build_subagent_roles_payload, canonicalize_subagent_role,
-    compute_effective_tool_policy, persist_child_session_file, publish_delegation_event,
-    validate_parallel_subtasks,
+    SCOUT_READONLY_TOOLS, build_delegate_result_text, build_subagent_budget_capsule,
+    build_subagent_initial_state, build_subagent_manifest, build_subagent_roles_payload,
+    canonicalize_subagent_role, compute_effective_tool_policy, persist_child_session_file,
+    publish_delegation_event, validate_parallel_subtasks,
 )
 
 logger = logging.getLogger(__name__)
@@ -239,7 +239,14 @@ def delegate_task(
             wt_task_id = f"wt_{child_session_id}"
             exec_workdir = asyncio.run(wt_mgr.create(task_id=wt_task_id))
 
-        system_prompt = get_agent_brain_manager().compile_system_prompt("scout" if effective_mode == "scout" else canonical_role)
+        base_system_prompt = get_agent_brain_manager().compile_system_prompt("scout" if effective_mode == "scout" else canonical_role)
+        budget_capsule = build_subagent_budget_capsule(
+            role="scout" if effective_mode == "scout" else canonical_role,
+            mode=effective_mode,
+            max_steps=20,
+            tools_required=(effective_mode == "scout"),
+        )
+        system_prompt = f"{base_system_prompt}\n\n{budget_capsule}" if base_system_prompt else budget_capsule
         override_model = model if model is not None else get_default_model_for_role(canonical_role)
         sub_orch = SubagentOrchestrator(
             role="scout" if effective_mode == "scout" else role,
