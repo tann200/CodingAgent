@@ -110,7 +110,7 @@ def normalize_tool_calls_with_ids(
         else:
             raw_id = str(getattr(tc, "id", "") or "").strip()
         call_id = raw_id or f"call_{turn_index}_{idx + 1}"
-        openai_tc = {
+        openai_tc: Dict[str, Any] = {
             "id": call_id,
             "type": "function",
             "function": {
@@ -118,6 +118,11 @@ def normalize_tool_calls_with_ids(
                 "arguments": json.dumps(tool_args, ensure_ascii=False, default=str),
             },
         }
+        # Preserve provider-specific tool_call extensions (e.g. Gemini 3
+        # extra_content.google.thought_signature required on subsequent turns).
+        raw_extra = tc.get("extra_content") if isinstance(tc, dict) else getattr(tc, "extra_content", None)
+        if isinstance(raw_extra, dict) and raw_extra:
+            openai_tc["extra_content"] = raw_extra
         normalized.append((call_id, tool_name, tool_args, openai_tc))
     return normalized
 

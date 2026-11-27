@@ -186,3 +186,38 @@ class TestGeminiAdapter:
         assert abs((OpenAICompatibleAdapter._parse_retry_wait_seconds("500ms") or 0.0) - 0.5) < 1e-6
         assert OpenAICompatibleAdapter._parse_retry_wait_seconds("1m5s") == 65.0
         assert OpenAICompatibleAdapter._parse_retry_wait_seconds("invalid") is None
+
+    def test_transient_rpm_429_is_not_treated_as_hard_quota(self):
+        """Per-minute (15 RPM) Gemini 429s must still retry, unlike daily RPD 429s."""
+        from src.core.inference.adapters.openai_compat_adapter import OpenAICompatibleAdapter
+
+        rpm_resp = _mock_response(
+            429,
+            {
+                "error": {
+                    "code": 429,
+                    "message": "You exceeded your current quota, please check your plan and billing details. Quota exceeded for metric: generate_content_free_tier_requests, limit: 15. Please retry in 8.5s.",
+                }
+            },
+        )
+        rpm_resp.headers = {}
+        assert OpenAICompatibleAdapter._is_hard_quota_429(rpm_resp) is False
+
+    def test_normalize_tool_calls_preserves_gemini_thought_signature(self):
+        """Gemini 3 extra_content.google.thought_signature must survive history normalization."""
+        from src.core.orchestration.graph.nodes.frontier_dispatch import (
+            normalize_tool_calls_with_ids,
+        )
+
+        raw_tc = {
+            "id": "call_gem_1",
+            "type": "function",
+            "function": {"name": "write_file", "arguments": '{"path": "a.py", "content": "x=1"}'},
+            "extra_content": {"google": {"thought_signature": "sig_abc123"}},
+        }
+        norm = normalize_tool_calls_with_ids([raw_tc], turn_index=0)
+        assert len(norm) == 1
+        _, name, args, openai_tc = norm[0]
+        assert name == "write_file"
+        assert args["path"] == "a.py"
+        assert openai_tc["extra_content"] == {"google": {"thought_signature": "sig_abc123"}}

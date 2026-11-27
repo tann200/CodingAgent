@@ -397,14 +397,20 @@ class OpenAICompatibleAdapter(LLMClient):
 
     _HARD_QUOTA_PATTERNS = (
         "per day",
-        "exceeded your current quota",
-        "check your plan and billing",
+        "requests per day",
+        "limit: 0",
         "insufficient_quota",
     )
 
     @classmethod
     def _is_hard_quota_429(cls, response: Any) -> bool:
-        """Return True when a 429 response indicates daily/billing quota exhaustion."""
+        """Return True when a 429 response indicates daily/zero/billing quota exhaustion.
+
+        Note: Google Gemini includes generic wording ("You exceeded your current
+        quota, please check your plan and billing details") on BOTH transient
+        per-minute (RPM) and daily (RPD) 429s, so we match specifically on daily,
+        zero-limit, multi-hour retry hints, or Retry-After > 60s.
+        """
         if response is None or getattr(response, "status_code", None) != 429:
             return False
         try:
@@ -501,6 +507,7 @@ class OpenAICompatibleAdapter(LLMClient):
                 _retry_wait = float(2**_attempt)  # default: 1s, 2s
                 if r is not None and r.status_code == 429:
                     hdrs = getattr(r, "headers", None) or {}
+                    found_hdr_wait = False
                     for _hdr in (
                         "retry-after",
                         "x-ratelimit-reset-tokens",
@@ -510,7 +517,16 @@ class OpenAICompatibleAdapter(LLMClient):
                         parsed = self._parse_retry_wait_seconds(hdrs.get(_hdr))
                         if parsed is not None and parsed > 0:
                             _retry_wait = min(parsed, 30.0)
+                            found_hdr_wait = True
                             break
+                    if not found_hdr_wait:
+                        try:
+                            _btxt = str(getattr(r, "text", "") or "")
+                            _bm = re.search(r"retry\s+in\s+(\d+(?:\.\d+)?)s", _btxt, re.IGNORECASE)
+                            if _bm:
+                                _retry_wait = min(float(_bm.group(1)), 30.0)
+                        except Exception:
+                            pass
                 time.sleep(_retry_wait + random.random())
                 # P2-3: time.sleep() here is intentional and safe.
                 # chat() is a synchronous method that must ALWAYS be called via

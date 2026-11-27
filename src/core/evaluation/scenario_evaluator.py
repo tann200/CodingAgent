@@ -318,6 +318,7 @@ class ScenarioEvaluator:
                     metrics["tool_calls_total"] += 1
                     if self.debug:
                         tname = _payload_field(payload, "tool", None) or _payload_field(payload, "tool_name", "?")
+                        tc_id = str(_payload_field(payload, "tool_call_id", "") or "")
                         args = _payload_field(payload, "args", None) or _payload_field(payload, "arguments", None)
                         arg_hint = ""
                         if isinstance(args, dict):
@@ -327,16 +328,28 @@ class ScenarioEvaluator:
                                     break
                             if not arg_hint and args:
                                 arg_hint = f" keys={list(args.keys())[:4]}"
-                        turn_state["tool_starts"][str(tname)] = datetime.now()
+                        key = tc_id or str(tname)
+                        turn_state["tool_starts"][key] = (str(tname), datetime.now())
                         self._emit_debug(f"  TOOL start #{metrics['tool_calls_total']}: {tname}{arg_hint}")
 
                 def _on_tool_finish(payload: Any) -> None:
                     if not self.debug:
                         return
-                    tname = _payload_field(payload, "tool", None) or _payload_field(payload, "tool_name", "?")
+                    tc_id = str(_payload_field(payload, "tool_call_id", "") or "")
+                    started = turn_state["tool_starts"].pop(tc_id, None) if tc_id else None
+                    tname = (
+                        _payload_field(payload, "tool", None)
+                        or _payload_field(payload, "tool_name", None)
+                        or (started[0] if started else None)
+                        or _payload_field(payload, "title", "?")
+                    )
+                    if started is None:
+                        started = turn_state["tool_starts"].pop(str(tname), None)
+                    status_val = _payload_field(payload, "status", None)
                     ok_val = _payload_field(payload, "ok", None)
-                    t_start = turn_state["tool_starts"].pop(str(tname), None)
-                    ms = int((datetime.now() - t_start).total_seconds() * 1000) if t_start else -1
+                    if ok_val is None and status_val is not None:
+                        ok_val = str(status_val).lower() == "completed"
+                    ms = int((datetime.now() - started[1]).total_seconds() * 1000) if started else -1
                     err_val = _payload_field(payload, "error", None)
                     err_str = f" err={str(err_val)[:80]}" if err_val else ""
                     self._emit_debug(f"  TOOL done  {tname} ok={ok_val} ({ms}ms){err_str}")
