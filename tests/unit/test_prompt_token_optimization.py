@@ -119,3 +119,54 @@ def test_resolve_runtime_policy_honors_provider_and_model_policy_tier_override()
     orch2 = SimpleNamespace(_adapter=adapter2, _provider_name="custom", model="my-27b-model")
     pol2 = resolve_runtime_policy(orch2, model="my-27b-model", provider="custom")
     assert pol2.policy_tier == "compact"
+
+
+def test_scenario_evaluator_debug_logging(tmp_path, capsys):
+    from src.core.evaluation.scenario_evaluator import Scenario, ScenarioEvaluator
+
+    class _FakeBus:
+        def __init__(self):
+            self._subs = {}
+
+        def subscribe(self, topic, fn):
+            self._subs.setdefault(topic, []).append(fn)
+
+        def unsubscribe(self, topic, fn):
+            if topic in self._subs and fn in self._subs[topic]:
+                self._subs[topic].remove(fn)
+
+        def publish(self, topic, payload):
+            for fn in list(self._subs.get(topic, [])):
+                fn(payload)
+
+    bus = _FakeBus()
+
+    class _FakeAgent:
+        event_bus = bus
+        working_dir = None
+        _adapter = SimpleNamespace(name="gemini", default_model="gemini-3.5-flash-lite")
+
+        def run_agent_once(self, *args, **kwargs):
+            bus.publish("model.response", {"prompt_tokens": 500, "completion_tokens": 40, "latency": 0.42, "model": "gemini-3.5-flash-lite"})
+            bus.publish("tool.execute.start", {"tool": "write_file", "args": {"path": "hello.py"}})
+            bus.publish("tool.execute.finish", {"tool": "write_file", "ok": True})
+            (Path(self.working_dir) / "hello.py").write_text("def hello():\n    return 'hi'\n", encoding="utf-8")
+            return {"assistant_message": "done"}
+
+    from pathlib import Path
+
+    ev = ScenarioEvaluator(workdir=str(tmp_path), debug=True)
+    sc = Scenario(
+        name="dbg_demo",
+        description="demo",
+        task="Create hello.py",
+        expected_files={"hello.py": "def hello"},
+    )
+    res = ev.run_scenario(sc, lambda: _FakeAgent())
+    out = capsys.readouterr().out
+    assert res.status == "pass"
+    assert ">>> dbg_demo | provider=gemini model=gemini-3.5-flash-lite" in out
+    assert "LLM  call #1: 0.42s | tok=(500p/40c)" in out
+    assert "TOOL start #1: write_file path='hello.py'" in out
+    assert "TOOL done  write_file ok=True" in out
+    assert "<<< dbg_demo: PASS" in out

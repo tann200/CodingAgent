@@ -149,3 +149,40 @@ class TestGeminiAdapter:
         assert g["disable_thinking"] is False
         assert "gemini-3.6-flash" in g["models"]
         assert "gemini-3.5-flash-lite" in g["models"]
+
+    def test_hard_daily_quota_429_fails_fast_without_retry(self):
+        """Daily/billing quota 429s must not trigger 3x retry backoff loops."""
+        from src.core.inference.adapters.gemini_adapter import GeminiAdapter
+
+        a = GeminiAdapter(api_key="test_key")
+        quota_resp = _mock_response(
+            429,
+            {
+                "error": {
+                    "code": 429,
+                    "message": "Quota exceeded: Generate content requests per day limit exceeded on Free Tier. Please retry in 18h10m.",
+                }
+            },
+        )
+        quota_resp.headers = {}
+        calls = []
+
+        def _fake_post(*args, **kwargs):
+            calls.append(1)
+            return quota_resp
+
+        with patch.object(a, "_safe_post", side_effect=_fake_post), patch("time.sleep") as mock_sleep:
+            res = a._execute_with_retry("https://example.invalid/chat", {}, stream=False)
+
+        assert res is quota_resp
+        assert len(calls) == 1
+        mock_sleep.assert_not_called()
+
+    def test_parse_retry_wait_seconds_handles_go_durations(self):
+        from src.core.inference.adapters.openai_compat_adapter import OpenAICompatibleAdapter
+
+        assert OpenAICompatibleAdapter._parse_retry_wait_seconds("12") == 12.0
+        assert OpenAICompatibleAdapter._parse_retry_wait_seconds("24.5s") == 24.5
+        assert abs((OpenAICompatibleAdapter._parse_retry_wait_seconds("500ms") or 0.0) - 0.5) < 1e-6
+        assert OpenAICompatibleAdapter._parse_retry_wait_seconds("1m5s") == 65.0
+        assert OpenAICompatibleAdapter._parse_retry_wait_seconds("invalid") is None

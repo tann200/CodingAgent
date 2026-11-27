@@ -395,6 +395,54 @@ class OpenAICompatibleAdapter(LLMClient):
         if _disable_think and "think" not in payload:
             payload["think"] = False
 
+    _HARD_QUOTA_PATTERNS = (
+        "per day",
+        "exceeded your current quota",
+        "check your plan and billing",
+        "insufficient_quota",
+    )
+
+    @classmethod
+    def _is_hard_quota_429(cls, response: Any) -> bool:
+        """Return True when a 429 response indicates daily/billing quota exhaustion."""
+        if response is None or getattr(response, "status_code", None) != 429:
+            return False
+        try:
+            ra = (getattr(response, "headers", None) or {}).get("retry-after")
+            if ra is not None and float(ra) > 60.0:
+                return True
+        except (TypeError, ValueError):
+            pass
+        try:
+            body = str(getattr(response, "text", "") or "").lower()
+        except Exception:
+            body = ""
+        if any(pat in body for pat in cls._HARD_QUOTA_PATTERNS):
+            return True
+        if re.search(r"retry\s+in\s+\d+h", body):
+            return True
+        return False
+
+    @staticmethod
+    def _parse_retry_wait_seconds(raw_val: Any) -> Optional[float]:
+        """Parse numeric seconds or Go-style durations ('24.8s', '577ms', '1m5s')."""
+        if raw_val is None:
+            return None
+        s = str(raw_val).strip().lower()
+        if not s:
+            return None
+        try:
+            return float(s)
+        except ValueError:
+            pass
+        m = re.fullmatch(r"(?:(\d+(?:\.\d+)?)m)?(?:(\d+(?:\.\d+)?)ms|(\d+(?:\.\d+)?)s)?", s)
+        if not m or not any(m.groups()):
+            return None
+        mins = float(m.group(1) or 0.0)
+        ms = float(m.group(2) or 0.0)
+        secs = float(m.group(3) or 0.0)
+        return mins * 60.0 + secs + ms / 1000.0
+
     def _execute_with_retry(
         self,
         ep: str,
@@ -405,7 +453,8 @@ class OpenAICompatibleAdapter(LLMClient):
         """POST *payload* to *ep* with exponential-backoff retry on transient errors.
 
         Returns the raw requests.Response (streaming or non-streaming).
-        Raises on unrecoverable errors.
+        Fails fast on daily/billing hard-quota 429s so callers do not waste
+        multiple retry cycles hammering an exhausted quota.
         """
         _MAX_RETRIES = 3
         effective_timeout = timeout if timeout is not None else self.DEFAULT_TIMEOUT
@@ -421,6 +470,12 @@ class OpenAICompatibleAdapter(LLMClient):
                     stream=stream,
                 )
                 if not is_retryable_status_code(r.status_code):
+                    return r
+                if r.status_code == 429 and self._is_hard_quota_429(r):
+                    _logger.warning(
+                        "%s.chat: status 429 (hard/daily quota exhausted), failing fast without retry",
+                        self.__class__.__name__,
+                    )
                     return r
                 _logger.warning(
                     "%s.chat attempt %d/%d: status %d, retrying",
@@ -443,20 +498,19 @@ class OpenAICompatibleAdapter(LLMClient):
                     _MAX_RETRIES,
                 )
             if _attempt < _MAX_RETRIES - 1:
-                _retry_wait = 2**_attempt  # default: 1s, 2s
+                _retry_wait = float(2**_attempt)  # default: 1s, 2s
                 if r is not None and r.status_code == 429:
+                    hdrs = getattr(r, "headers", None) or {}
                     for _hdr in (
                         "retry-after",
+                        "x-ratelimit-reset-tokens",
                         "x-ratelimit-reset-requests",
                         "x-ratelimit-reset",
                     ):
-                        _hval = r.headers.get(_hdr)
-                        if _hval:
-                            try:
-                                _retry_wait = min(float(_hval), 30.0)
-                                break
-                            except ValueError:
-                                continue
+                        parsed = self._parse_retry_wait_seconds(hdrs.get(_hdr))
+                        if parsed is not None and parsed > 0:
+                            _retry_wait = min(parsed, 30.0)
+                            break
                 time.sleep(_retry_wait + random.random())
                 # P2-3: time.sleep() here is intentional and safe.
                 # chat() is a synchronous method that must ALWAYS be called via

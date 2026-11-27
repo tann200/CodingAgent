@@ -8,6 +8,7 @@ similar to SWE-bench style evaluations.
 import json
 import logging
 import math
+import os
 import shlex
 import subprocess
 import sys
@@ -148,11 +149,24 @@ class ScenarioEvaluator:
         summary = evaluator.get_summary(results)
     """
 
-    def __init__(self, workdir: Optional[str] = None):
+    def __init__(self, workdir: Optional[str] = None, *, debug: Optional[bool] = None):
         self._own_tempdir = workdir is None
         self.workdir = Path(workdir) if workdir else Path(tempfile.mkdtemp())
         self.scenarios: List[Scenario] = []
         self.results: List[ScenarioResult] = []
+        if debug is None:
+            self.debug = os.getenv("CODINGAGENT_EVAL_DEBUG", "").strip().lower() in (
+                "1",
+                "true",
+                "yes",
+            )
+        else:
+            self.debug = bool(debug)
+
+    def _emit_debug(self, msg: str) -> None:
+        if self.debug:
+            ts = datetime.now().strftime("%H:%M:%S")
+            print(f"[EVAL {ts}] {msg}", flush=True)
 
     def cleanup(self) -> None:
         """Remove the temporary work directory if it was created by this instance."""
@@ -280,10 +294,52 @@ class ScenarioEvaluator:
             logger.info(f"Running scenario: {scenario.name}")
             agent = agent_factory()
 
+            turn_state: Dict[str, Any] = {
+                "llm_calls": 0,
+                "llm_seconds": 0.0,
+                "tool_starts": {},
+            }
+            if self.debug:
+                _ad = getattr(agent, "_adapter", None) or getattr(agent, "adapter", None)
+                _prov = getattr(_ad, "name", None) or getattr(agent, "_provider_name", None) or "?"
+                _mdl = getattr(_ad, "default_model", None) or getattr(agent, "model", None) or "?"
+                self._emit_debug(
+                    f">>> {scenario.name} | provider={_prov} model={_mdl} workdir={scenario_dir}"
+                )
+
             bus = getattr(agent, "event_bus", None) if agent is not None else None
             if bus is not None and hasattr(bus, "subscribe"):
+                def _payload_field(payload: Any, key: str, default: Any = None) -> Any:
+                    if isinstance(payload, dict):
+                        return payload.get(key, default)
+                    return getattr(payload, key, default)
+
                 def _on_tool_start(payload: Any) -> None:
                     metrics["tool_calls_total"] += 1
+                    if self.debug:
+                        tname = _payload_field(payload, "tool", None) or _payload_field(payload, "tool_name", "?")
+                        args = _payload_field(payload, "args", None) or _payload_field(payload, "arguments", None)
+                        arg_hint = ""
+                        if isinstance(args, dict):
+                            for k in ("path", "file_path", "pattern", "command", "action", "name"):
+                                if k in args and args[k]:
+                                    arg_hint = f" {k}={str(args[k])[:60]!r}"
+                                    break
+                            if not arg_hint and args:
+                                arg_hint = f" keys={list(args.keys())[:4]}"
+                        turn_state["tool_starts"][str(tname)] = datetime.now()
+                        self._emit_debug(f"  TOOL start #{metrics['tool_calls_total']}: {tname}{arg_hint}")
+
+                def _on_tool_finish(payload: Any) -> None:
+                    if not self.debug:
+                        return
+                    tname = _payload_field(payload, "tool", None) or _payload_field(payload, "tool_name", "?")
+                    ok_val = _payload_field(payload, "ok", None)
+                    t_start = turn_state["tool_starts"].pop(str(tname), None)
+                    ms = int((datetime.now() - t_start).total_seconds() * 1000) if t_start else -1
+                    err_val = _payload_field(payload, "error", None)
+                    err_str = f" err={str(err_val)[:80]}" if err_val else ""
+                    self._emit_debug(f"  TOOL done  {tname} ok={ok_val} ({ms}ms){err_str}")
 
                 def _on_tool_error(payload: Any) -> None:
                     err = str(payload.get("error", "") if isinstance(payload, dict) else payload).lower()
@@ -292,6 +348,9 @@ class ScenarioEvaluator:
                         for tok in ("malformed", "invalid argument", "validation", "missing required", "json", "unknown tool")
                     ):
                         metrics["malformed_tool_calls"] += 1
+                    if self.debug:
+                        tname = _payload_field(payload, "tool", None) or _payload_field(payload, "tool_name", "?")
+                        self._emit_debug(f"  TOOL error {tname}: {err[:120]}")
 
                 def _payload_int(payload: Any, key: str) -> int:
                     if isinstance(payload, dict):
@@ -314,11 +373,20 @@ class ScenarioEvaluator:
                         return 0.0
 
                 def _on_model_response(payload: Any) -> None:
-                    metrics["prompt_tokens"] += _payload_int(payload, "prompt_tokens")
-                    metrics["completion_tokens"] += _payload_int(payload, "completion_tokens")
+                    pt = _payload_int(payload, "prompt_tokens")
+                    ct = _payload_int(payload, "completion_tokens")
+                    metrics["prompt_tokens"] += pt
+                    metrics["completion_tokens"] += ct
                     lat = _payload_float(payload, "latency")
                     if metrics["prefill_latency_ms"] == 0.0 and lat > 0.0:
                         metrics["prefill_latency_ms"] = lat * 1000.0
+                    turn_state["llm_calls"] += 1
+                    turn_state["llm_seconds"] += lat
+                    if self.debug:
+                        m_name = _payload_field(payload, "model", "") or ""
+                        self._emit_debug(
+                            f"  LLM  call #{turn_state['llm_calls']}: {lat:.2f}s | tok=({pt}p/{ct}c) | model={m_name}"
+                        )
 
                 def _on_usage_turn_summary(payload: Any) -> None:
                     if metrics["prompt_tokens"] == 0 and metrics["completion_tokens"] == 0:
@@ -333,6 +401,7 @@ class ScenarioEvaluator:
 
                 for topic, fn in (
                     ("tool.execute.start", _on_tool_start),
+                    ("tool.execute.finish", _on_tool_finish),
                     ("tool.execute.error", _on_tool_error),
                     ("model.response", _on_model_response),
                     ("usage.turn_summary", _on_usage_turn_summary),
@@ -413,12 +482,24 @@ class ScenarioEvaluator:
                         pass
 
             # Verify
+            v_start = datetime.now()
             passed, verification_output, edit_ok, verify_ran, verify_ok = (
                 self._verify_scenario_detailed(scenario, scenario_dir)
             )
+            v_ms = int((datetime.now() - v_start).total_seconds() * 1000)
 
             end_time = datetime.now()
             duration = (end_time - start_time).total_seconds()
+            if self.debug:
+                v_snip = ""
+                if not passed and verification_output:
+                    v_snip = f" | {str(verification_output).strip().splitlines()[-1][:120]}"
+                self._emit_debug(
+                    f"<<< {scenario.name}: {'PASS' if passed else 'FAIL'} in {duration:.2f}s "
+                    f"(llm={turn_state['llm_calls']} calls/{turn_state['llm_seconds']:.2f}s, "
+                    f"tools={metrics['tool_calls_total']}, verify={v_ms}ms, "
+                    f"tok={metrics['prompt_tokens']}p/{metrics['completion_tokens']}c){v_snip}"
+                )
 
             return ScenarioResult(
                 scenario_name=scenario.name,
