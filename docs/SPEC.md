@@ -15,7 +15,7 @@
 1. **Mandatory Compliance:** Every pull request, refactor, bug fix, or new feature MUST satisfy all **MUST** / **MUST NOT** invariants in this specification alongside [`AGENTS.md`](file:///Users/tann200/PycharmProjects/CodingAgent/AGENTS.md).
 2. **Fail-Closed Default:** Whenever a permission check, workspace boundary, trust verification, sandbox backend, contract validation, or config resolution fails unexpectedly, execution **MUST fail closed** (deny/abort with structured error). Catching broad exceptions to return `None` / `True` / raw host fallback is prohibited in security gates.
 3. **Hermetic & Behavioral Verification:**
-   - Every behavioral change MUST include focused regression tests exercising the **live dispatch path** (not bypassing `Orchestrator.execute_tool()`, LangGraph node boundaries, or Textual message posting).
+   - Every behavioral change MUST include focused regression tests exercising the **live dispatch path** (not bypassing `Orchestrator.execute_tool()`, `AgentRunner` node boundaries, or Textual message posting).
    - Unit and mock-integration tests MUST NOT require live LLM providers or bypass sandbox enforcement globally in shared fixtures.
    - Any change affecting system boundaries, runtime paths, CLI commands, or security contracts MUST update [`ARCHITECTURE.md`](file:///Users/tann200/PycharmProjects/CodingAgent/ARCHITECTURE.md) and [`README.md`](file:///Users/tann200/PycharmProjects/CodingAgent/README.md) in the same change set.
 

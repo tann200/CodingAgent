@@ -86,23 +86,32 @@ class TestFrontierLoopSanitizesToolOutput:
     def test_dispatch_call_site_uses_the_sanitizing_helper(self) -> None:
         """Guard the wiring itself.
 
-        Asserts the module source calls ``_sanitize_tool_output`` where tool
-        results are normalized, so a future refactor cannot silently revert to
-        the truncation-only helper.
+        Asserts the dispatch path sanitizes tool results via ``_sanitize_tool_output``
+        (either called directly in ``frontier_loop_node.py`` or wired into
+        ``frontier_turn_helpers.py`` as ``sanitize_fn``), so a future refactor
+        cannot silently revert to the truncation-only helper.
         """
         source = FRONTIER_LOOP_PATH.read_text(encoding="utf-8")
+        helpers_path = FRONTIER_LOOP_PATH.with_name("frontier_turn_helpers.py")
+        helpers_source = helpers_path.read_text(encoding="utf-8") if helpers_path.exists() else ""
+
         tree = ast.parse(source)
         calls = {
             node.func.id
             for node in ast.walk(tree)
             if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
         }
-        assert "_sanitize_tool_output" in calls, (
-            "frontier_loop no longer calls _sanitize_tool_output — tool results would "
-            "re-enter the model context unscanned"
+        wired_via_helpers = (
+            "sanitize_fn=_sanitize_tool_output" in source
+            and "sanitize_fn(tool_result)" in helpers_source
+        )
+        assert "_sanitize_tool_output" in calls or wired_via_helpers, (
+            "frontier_loop no longer routes tool results through _sanitize_tool_output — "
+            "tool results would re-enter the model context unscanned"
         )
         # The raw truncation-only helper must not be the tool-result entry point.
         assert "tool_result = _truncate_tool_output(tool_result)" not in source
+        assert "tool_result = _truncate_tool_output(tool_result)" not in helpers_source
 
 
 # ---------------------------------------------------------------------------

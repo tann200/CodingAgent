@@ -232,6 +232,7 @@ async def dispatch_tool_calls_impl(
     sanitize_fn: Callable[[dict], dict],
     truncate_fn: Callable[[dict], dict],
     execute_raw_tool_fn: Callable[..., Awaitable[Any]] = execute_raw_tool,
+    refresh_index_fn: Callable[..., Any] = refresh_index_after_write,
     use_native_tools: bool = False,
     max_parallel_reads: int = 1,
     normalized_calls: list | None = None,
@@ -338,7 +339,7 @@ async def dispatch_tool_calls_impl(
             except Exception:
                 pass
 
-            refresh_index_after_write(tool_name, tool_args, workdir)
+            refresh_index_fn(tool_name, tool_args, workdir)
             append_tool_result_to_history(
                 history=history,
                 use_native_tools=use_native_tools,

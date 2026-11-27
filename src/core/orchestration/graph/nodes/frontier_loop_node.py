@@ -51,7 +51,10 @@ from src.core.orchestration.graph.nodes.node_utils import (
     _notify_provider_limit,
     _resolve_orchestrator,
 )
-from src.core.orchestration.graph.nodes.repo_context import build_repo_context_block
+from src.core.orchestration.graph.nodes.repo_context import (
+    build_repo_context_block,
+    refresh_index_after_write,
+)
 from src.core.orchestration.graph.nodes.tool_output_truncation import (
     TOOL_LARGE_TEXT_FIELDS,
     TOOL_OUTPUT_MAX_BYTES,
@@ -196,6 +199,7 @@ async def _dispatch_tool_calls(
         sanitize_fn=_sanitize_tool_output,
         truncate_fn=_truncate_tool_output,
         execute_raw_tool_fn=execute_raw_tool,
+        refresh_index_fn=refresh_index_after_write,
         use_native_tools=use_native_tools,
         max_parallel_reads=max_parallel_reads,
         normalized_calls=normalized_calls,
