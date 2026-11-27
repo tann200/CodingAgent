@@ -170,3 +170,22 @@ def test_scenario_evaluator_debug_logging(tmp_path, capsys):
     assert "TOOL start #1: write_file path='hello.py'" in out
     assert "TOOL done  write_file ok=True" in out
     assert "<<< dbg_demo: PASS" in out
+
+
+def test_grep_excludes_internal_codingagent_dir_and_binary_files(tmp_path):
+    from src.tools.system_tools import grep
+
+    (tmp_path / "app.py").write_text("def compute_total(x):\n    return x\n", encoding="utf-8")
+    internal = tmp_path / ".codingAgent" / "snapshots"
+    internal.mkdir(parents=True)
+    (internal / "backup.py").write_text("def compute_total(x):\n    return x\n", encoding="utf-8")
+    (tmp_path / "blob.bin").write_bytes(b"\x00\x01compute_total\x00\x02")
+
+    res = grep("compute_total", path=".", workdir=tmp_path)
+    assert res.get("ok") is True
+    payload = res.get("output") or res.get("result") or {}
+    matches = payload.get("matches") or []
+    paths = [m.get("file_path", "") for m in matches]
+    assert any(p.endswith("app.py") for p in paths)
+    assert not any(".codingAgent" in p for p in paths)
+    assert not any(p.endswith("blob.bin") for p in paths)

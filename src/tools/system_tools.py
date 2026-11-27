@@ -87,12 +87,25 @@ def grep(
             ErrorCode.PERMISSION,
         ).to_dict()
 
+    _NOISE_EXCLUDE_DIRS = (
+        ".codingAgent",
+        ".codingagent",
+        "__pycache__",
+        ".pytest_cache",
+        ".mypy_cache",
+        ".ruff_cache",
+        ".venv",
+        "venv",
+        "node_modules",
+    )
+
     try:
         cmd = [
             "grep",
             "-r",
             "-n",
             "-H",
+            "-I",
         ]
         if include:
             cmd += [f"--include={include}"]
@@ -101,6 +114,10 @@ def grep(
             cmd.append(f"--exclude={pat}")
         for d in SECRET_SEARCH_EXCLUDE_DIRS:
             cmd.append(f"--exclude-dir={d}")
+        search_parts = set(search_path.parts)
+        for d in _NOISE_EXCLUDE_DIRS:
+            if d not in search_parts:
+                cmd.append(f"--exclude-dir={d}")
         if context > 0:
             cmd += ["-C", str(context)]
         cmd += ["-e", pattern, "--", str(search_path)]
