@@ -403,3 +403,17 @@ def test_subagent_budget_capsule_and_targeted_pytest_fallback(tmp_path):
 
     found = discover_targeted_pytest_files([str(mod)], tmp_path)
     assert str(suite.resolve()) in found
+
+
+def test_degenerate_repetition_detection_and_nudge():
+    from src.core.orchestration.loop_guards import (
+        build_incomplete_turn_nudge,
+        detect_degenerate_repetition,
+    )
+
+    repeated = "\n".join(["I will check the file next and verify everything."] * 5)
+    assert detect_degenerate_repetition(repeated) is True
+    assert detect_degenerate_repetition("Line one is distinct.\nLine two is also distinct.") is False
+
+    nudge = build_incomplete_turn_nudge("unverified_text_only_completion", "no tool", content_text=repeated)
+    assert "repetitive output loop" in nudge

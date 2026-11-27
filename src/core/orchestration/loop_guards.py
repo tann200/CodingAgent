@@ -262,15 +262,46 @@ def build_truncated_tool_call_feedback() -> str:
     )
 
 
+def detect_degenerate_repetition(text: str, *, min_repeats: int = 4, min_line_len: int = 12) -> bool:
+    """Return True when model output degrades into repeated identical lines."""
+    if not text or len(text) < min_repeats * min_line_len:
+        return False
+    lines = [ln.strip() for ln in text.splitlines() if len(ln.strip()) >= min_line_len]
+    if len(lines) < min_repeats:
+        return False
+    run = 1
+    for idx in range(1, len(lines)):
+        if lines[idx] == lines[idx - 1]:
+            run += 1
+            if run >= min_repeats:
+                return True
+        else:
+            run = 1
+    return False
+
+
+def build_degenerate_repetition_notice() -> str:
+    """Return corrective steering when a turn degrades into repeated output lines."""
+    return (
+        "<system_reminder>\n"
+        "Your previous response entered a repetitive output loop. Stop repeating text. "
+        "Emit either one concrete tool call that makes progress or a concise 1–2 sentence factual summary.\n"
+        "</system_reminder>"
+    )
+
+
 def build_incomplete_turn_nudge(
     err_code: str,
     error_msg: str,
     *,
     response: Any = None,
+    content_text: str = "",
 ) -> str:
     """Build an explicit tool-action steering reminder when a model stops prematurely."""
     if extract_finish_reason(response) in ("length", "max_tokens"):
         return build_truncated_tool_call_feedback()
+    if detect_degenerate_repetition(content_text):
+        return build_degenerate_repetition_notice()
     if err_code in ("unverified_text_only_completion", "unverified_mutation_missing"):
         return (
             f"<system_reminder>\nIncomplete turn ({err_code}): {error_msg}\n"

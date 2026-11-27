@@ -28,6 +28,7 @@ def compute_static_prompt_cache_key(
     is_simple_mode: bool,
     provider_variant: str,
     working_dir: str,
+    private_mode: bool = False,
 ) -> Tuple:
     try:
         serialized = json.dumps(tools, sort_keys=True, default=str)
@@ -51,6 +52,7 @@ def compute_static_prompt_cache_key(
         is_simple_mode,
         provider_variant,
         working_dir,
+        bool(private_mode),
     )
 
 

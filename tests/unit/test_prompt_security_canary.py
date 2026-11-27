@@ -82,3 +82,50 @@ def test_active_tool_guidance_gates_clauses_strictly_to_active_tools():
     assert "lsp_diagnostics" in wrapped
     assert "delegate_task" in wrapped
     assert "untrusted external data" in wrapped
+
+
+def test_private_mode_prompt_line_injected_and_cache_isolated(tmp_path, monkeypatch):
+    from src.core.context.tool_prompt_sections import PRIVATE_PROMPT_LINE
+
+    ContextBuilder.clear_cache()
+    cb = ContextBuilder(working_dir=str(tmp_path))
+    tools = [{"name": "read_file", "description": "Read a file."}]
+
+    monkeypatch.delenv("CODINGAGENT_PRIVATE", raising=False)
+    normal_msgs = cb.build_prompt(
+        role_name="operational",
+        active_skills=[],
+        task_description="Inspect app.py",
+        tools=tools,
+        conversation=[],
+        model_tier="compact",
+        model_name="gemini-3.5-flash-lite",
+        provider_capabilities={"model": "gemini-3.5-flash-lite", "supports_native_tools": True},
+    )
+    assert PRIVATE_PROMPT_LINE not in normal_msgs[0]["content"]
+
+    monkeypatch.setenv("CODINGAGENT_PRIVATE", "1")
+    private_msgs = cb.build_prompt(
+        role_name="operational",
+        active_skills=[],
+        task_description="Inspect app.py",
+        tools=tools,
+        conversation=[],
+        model_tier="compact",
+        model_name="gemini-3.5-flash-lite",
+        provider_capabilities={"model": "gemini-3.5-flash-lite", "supports_native_tools": True},
+    )
+    assert PRIVATE_PROMPT_LINE in private_msgs[0]["content"]
+
+
+def test_no_stale_legacy_tool_names_in_all_prompt_templates():
+    from pathlib import Path
+
+    stale_refs = ("TodoWrite", "batch tool", "bash_readonly")
+    for root in (Path("src/core/prompts/templates"), Path("src/config/agent-brain")):
+        for path in list(root.rglob("*.md")) + list(root.rglob("*.txt")):
+            if path.name == "README.md":
+                continue
+            text = path.read_text(encoding="utf-8")
+            for bad in stale_refs:
+                assert bad not in text, f"Stale tool reference {bad!r} found in {path}"

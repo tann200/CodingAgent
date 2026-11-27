@@ -862,6 +862,8 @@ class ContextBuilder:
         # prune to the same set will share a cache entry.
         tools = self._prune_tools(tools, model_tier)
 
+        from src.core.context.tool_prompt_sections import is_private_mode_enabled
+
         provider_variant = self._get_provider_variant(model_name) or ""
         cache_key: Tuple = compute_static_prompt_cache_key(
             role_name=role_name,
@@ -874,6 +876,7 @@ class ContextBuilder:
             is_simple_mode=is_simple_mode,
             provider_variant=provider_variant,
             working_dir=str(self._agent_context_dir.parent),
+            private_mode=is_private_mode_enabled(),
         )
 
         with _CACHE_LOCK:
