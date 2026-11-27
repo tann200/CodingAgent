@@ -322,8 +322,14 @@ class ScenarioEvaluator:
 
                 def _on_usage_turn_summary(payload: Any) -> None:
                     if metrics["prompt_tokens"] == 0 and metrics["completion_tokens"] == 0:
-                        metrics["prompt_tokens"] += _payload_int(payload, "prompt_tokens")
-                        metrics["completion_tokens"] += _payload_int(payload, "completion_tokens")
+                        metrics["prompt_tokens"] += (
+                            _payload_int(payload, "prompt_tokens")
+                            or _payload_int(payload, "input_tokens")
+                        )
+                        metrics["completion_tokens"] += (
+                            _payload_int(payload, "completion_tokens")
+                            or _payload_int(payload, "output_tokens")
+                        )
 
                 for topic, fn in (
                     ("tool.execute.start", _on_tool_start),

@@ -575,6 +575,11 @@ def consume_generator_stream(
         "prompt_tokens": p_tokens,
         "completion_tokens": c_tokens,
         "total_tokens": p_tokens + c_tokens,
+        "usage": {
+            "prompt_tokens": p_tokens,
+            "completion_tokens": c_tokens,
+            "total_tokens": p_tokens + c_tokens,
+        },
         "choices": [choice],
         "text": full_text,
         "streamed": True,

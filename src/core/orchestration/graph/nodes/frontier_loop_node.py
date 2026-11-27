@@ -230,11 +230,14 @@ async def _call_llm_for_turn(
     if _pol_tier:
         _call_kwargs["policy_tier"] = str(_pol_tier)
     _ver_retries = int(getattr(orchestrator, "_last_verification_retries", 0) or 0)
-    if _ver_retries > 0:
+    _nudge_retries = int(getattr(orchestrator, "_incomplete_nudge_retries", 0) or 0)
+    _retry_idx = max(_ver_retries, _nudge_retries)
+    if _retry_idx > 0:
         from src.core.orchestration.loop_guards import compute_retry_temperature
 
-        _call_kwargs["verification_retries"] = _ver_retries
-        _call_kwargs["temperature"] = compute_retry_temperature(0.2, _ver_retries)
+        if _ver_retries > 0:
+            _call_kwargs["verification_retries"] = _ver_retries
+        _call_kwargs["temperature"] = compute_retry_temperature(0.2, _retry_idx)
     response = await asyncio.wait_for(call_model(**_call_kwargs), timeout=_llm_timeout)
 
     content_text = _extract_content_text(response)
@@ -774,17 +777,12 @@ async def frontier_loop_node(
                     and turns_taken < effective_max_turns
                 ):
                     incomplete_nudges += 1
+                    if orchestrator is not None:
+                        setattr(orchestrator, "_incomplete_nudge_retries", incomplete_nudges)
+                    from src.core.orchestration.loop_guards import build_incomplete_turn_nudge
+
                     history = list(history)
-                    history.append(
-                        {
-                            "role": "user",
-                            "content": (
-                                f"<system_reminder>\nIncomplete turn ({err_code}): "
-                                f"{last_result.get('error')}\nCall the appropriate tool "
-                                "to complete the requested work before finishing.\n</system_reminder>"
-                            ),
-                        }
-                    )
+                    history.append({"role": "user", "content": build_incomplete_turn_nudge(err_code, str(last_result.get("error") or ""))})
                     continue
                 errors = list(errors) + [err_code]
             else:
@@ -792,6 +790,8 @@ async def frontier_loop_node(
             break
 
         # Track mutating tool calls
+        if orchestrator is not None and bool(getattr(orchestrator, "_incomplete_nudge_retries", False)):
+            setattr(orchestrator, "_incomplete_nudge_retries", 0)
         for tc in tool_calls:
             tool_name, _ = _normalize_tool_call(tc)
             if tool_name and tool_name in _MODIFYING_TOOL_NAMES:

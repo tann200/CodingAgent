@@ -40,13 +40,19 @@ def _scenario_outcomes(results: list) -> Dict[str, Dict[str, Any]]:
             rec["completion_tokens"] = int(completion_tokens)
         if tokens_used is not None:
             rec["tokens_used"] = int(tokens_used)
+        tool_calls_total = _field(r, "tool_calls_total")
+        if tool_calls_total is None:
+            tool_calls_total = _field(r, "total_tool_calls")
         tool_calls = _field(r, "tool_calls")
-        if tool_calls is None:
-            tool_calls = _field(r, "total_tool_calls")
         if isinstance(tool_calls, (list, tuple)):
-            rec["tool_calls"] = len(tool_calls)
+            tc_count = len(tool_calls)
+            if isinstance(tool_calls_total, (int, float)) and int(tool_calls_total) > tc_count:
+                tc_count = int(tool_calls_total)
+            rec["tool_calls"] = tc_count
         elif isinstance(tool_calls, (int, float)):
             rec["tool_calls"] = int(tool_calls)
+        elif isinstance(tool_calls_total, (int, float)):
+            rec["tool_calls"] = int(tool_calls_total)
         malformed = _field(r, "malformed_tool_calls")
         if malformed is not None:
             rec["malformed_tool_calls"] = int(malformed)

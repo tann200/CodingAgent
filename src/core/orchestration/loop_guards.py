@@ -207,6 +207,23 @@ def cap_consecutive_invalid_turns(consecutive_count: int, limit: int = 2) -> boo
     return int(consecutive_count or 0) >= max(1, int(limit))
 
 
+def build_incomplete_turn_nudge(err_code: str, error_msg: str) -> str:
+    """Build an explicit tool-action steering reminder when a model stops prematurely."""
+    if err_code in ("unverified_text_only_completion", "unverified_mutation_missing"):
+        return (
+            f"<system_reminder>\nIncomplete turn ({err_code}): {error_msg}\n"
+            "Do NOT reply with prose or markdown code fences. Invoke the appropriate "
+            "file tool now (e.g. write_file(path=..., content=...) to create a file or "
+            "edit_file_atomic(path=..., old_string=..., new_string=...) to edit an existing file).\n"
+            "</system_reminder>"
+        )
+    return (
+        f"<system_reminder>\nIncomplete turn ({err_code}): {error_msg}\n"
+        "Call the appropriate tool to complete the requested work before finishing.\n"
+        "</system_reminder>"
+    )
+
+
 def augment_turn_messages(
     messages: List[Dict[str, Any]],
     state: Mapping[str, Any],

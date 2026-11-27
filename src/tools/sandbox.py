@@ -741,6 +741,10 @@ def run_sandboxed(
                     else:
                         run_env = _scrub_sandbox_env(os.environ)
                     run_env["TMPDIR"] = str(private_tmp)
+                    _py_bin_dir = str(Path(sys.executable).resolve().parent)
+                    _cur_path = run_env.get("PATH", "")
+                    if _py_bin_dir and _py_bin_dir not in _cur_path.split(os.pathsep):
+                        run_env["PATH"] = f"{_py_bin_dir}{os.pathsep}{_cur_path}" if _cur_path else _py_bin_dir
                     exec_kwargs["env"] = run_env
 
                     result = _run_subprocess_proc_group(
@@ -749,6 +753,15 @@ def run_sandboxed(
                     _stderr = result.stderr or ""
                     if isinstance(_stderr, bytes):
                         _stderr = _stderr.decode(errors="replace")
+                    if result.returncode == 71 and "execvp()" in str(_stderr):
+                        # sandbox-exec applied the profile cleanly; the target binary
+                        # simply was not found inside PATH -> return normal 127 exit.
+                        return subprocess.CompletedProcess(
+                            args=cmd,
+                            returncode=127,
+                            stdout=result.stdout,
+                            stderr=result.stderr,
+                        )
                     if result.returncode in (65, 71) and (
                         "sandbox-exec:" in str(_stderr)
                         or "sandbox_apply:" in str(_stderr)

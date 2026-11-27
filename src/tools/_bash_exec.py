@@ -11,7 +11,9 @@ import logging
 import os
 import re as _re
 import shlex
+import shutil
 import subprocess
+import sys
 import unicodedata
 import uuid
 from pathlib import Path
@@ -894,6 +896,9 @@ def bash(
         except OSError as e:
             return {"status": "error", "error": f"OS error: {e}"}
 
+    if cmd_parts and cmd_parts[0] == "python" and shutil.which("python") is None:
+        cmd_parts = [sys.executable] + list(cmd_parts[1:])
+
     try:
         result = _sandbox.run_sandboxed(
             cmd_parts,
@@ -1091,6 +1096,9 @@ def bash_readonly(
 
     # Execute inside sandbox (network disabled) — prevents exfiltration even for
     # read-only commands. Falls back to plain subprocess when bwrap unavailable.
+
+    if cmd_parts and cmd_parts[0] == "python" and shutil.which("python") is None:
+        cmd_parts = [sys.executable] + list(cmd_parts[1:])
 
     try:
         result = _sandbox.run_sandboxed(

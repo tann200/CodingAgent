@@ -1670,6 +1670,33 @@ async def call_model(
         get_token_budget_monitor=_get_token_budget_monitor,
     )
 
+    # Publish final token telemetry for streamed responses (whose adapter-level
+    # @with_telemetry fired before stream consumption when counts were 0).
+    if isinstance(res, dict) and res.get("streamed"):
+        _raw_p: Any = res.get("prompt_tokens")
+        _raw_c: Any = res.get("completion_tokens")
+        _raw_lat: Any = res.get("latency")
+        _sp = int(_raw_p or 0)
+        _sc = int(_raw_c or 0)
+        if _sp > 0 or _sc > 0:
+            try:
+                from src.core.inference.telemetry import publish_model_response
+                from src.core.orchestration.event_bus import get_event_bus as _get_eb
+
+                _tbus = _call_event_bus or _get_eb()
+                if _tbus is not None:
+                    publish_model_response(
+                        _tbus,
+                        str(res.get("provider") or provider or "unknown"),
+                        str(res.get("model") or model or "unknown"),
+                        _sp,
+                        _sc,
+                        _sp + _sc,
+                        float(_raw_lat or 0.0),
+                    )
+            except Exception:
+                pass
+
     # Gap 3: HOOK_LLM_RESPONSE — lets plugins observe every model response.
     _publish_llm_response_hook(
         enabled=_LLM_MGR_HAS_HOOKS,
