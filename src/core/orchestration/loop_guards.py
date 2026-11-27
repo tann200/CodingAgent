@@ -17,6 +17,8 @@ PURE_READ_DEDUP_TOOLS: frozenset[str] = frozenset(
         "find_files",
         "find_symbol",
         "glob",
+        "git_read",
+        "lsp",
     }
 )
 

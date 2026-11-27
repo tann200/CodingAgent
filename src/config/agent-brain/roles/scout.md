@@ -1,7 +1,7 @@
 ---
 name: Scout Agent
 description: Rapid read-only codebase exploration — finds files, patterns, and dependencies
-tools: read_file, read_tool_output, list_files, glob, grep, search_code, find_symbol, find_references, git_status, git_diff, git_log, load_skill, list_skills
+tools: read_file, read_tool_output, list_files, glob, grep, search_code, find_symbol, find_references, git_read, git_status, git_diff, git_log, lsp, load_skill, list_skills
 priority: high
 ---
 

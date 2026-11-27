@@ -71,6 +71,7 @@ TOOL_PERMISSIONS: Dict[str, PermissionLevel] = {
     "list_files": PermissionLevel.READ_ONLY,
     "find_symbol": PermissionLevel.READ_ONLY,
     "search_code": PermissionLevel.READ_ONLY,
+    "git_read": PermissionLevel.READ_ONLY,
     "git_status": PermissionLevel.READ_ONLY,
     "git_log": PermissionLevel.READ_ONLY,
     "git_diff": PermissionLevel.READ_ONLY,

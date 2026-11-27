@@ -33,10 +33,12 @@ _PARALLEL_SAFE_READ_TOOLS: frozenset[str] = frozenset(
         "grep",
         "find_symbol",
         "search_code",
+        "git_read",
         "git_status",
         "git_diff",
         "get_git_diff",
         "git_log",
+        "lsp",
         "lsp_diagnostics",
         "lsp_references",
         "lsp_definition",
@@ -348,6 +350,9 @@ async def execute_raw_tool(
     elif isinstance(res, dict):
         dedup.put(t_name, t_args, res)
 
+    if t_name == "bash" and t_args.get("run_in_background") and isinstance(res, dict):
+        if res.get("ok") is not False and res.get("status") != "error":
+            setattr(orchestrator, "_has_background_tasks", True)
     if t_name in ("bash", "run_tests", "run_linter") and isinstance(res, dict):
         raw_inner = res.get("result")
         inner: Dict[str, Any] = raw_inner if isinstance(raw_inner, dict) else res

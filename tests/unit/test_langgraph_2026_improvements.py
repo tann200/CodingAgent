@@ -104,7 +104,7 @@ class TestModelTiersAndRuntimePolicy2026:
         )
         assert nano.policy_tier == "nano"
         assert nano.toolset_name == "compact-flat"
-        assert nano.tool_limit == 14
+        assert nano.tool_limit == 10
         assert nano.turn_limit == 16
         assert nano.use_verification is False
 
@@ -113,7 +113,7 @@ class TestModelTiersAndRuntimePolicy2026:
         )
         assert compact.policy_tier == "compact"
         assert compact.toolset_name == "compact-flat"
-        assert compact.tool_limit == 14
+        assert compact.tool_limit == 10
         assert compact.turn_limit == 24
         assert compact.max_parallel_reads == 2
         assert compact.verification_mode == "targeted"
@@ -123,7 +123,7 @@ class TestModelTiersAndRuntimePolicy2026:
         )
         assert standard.policy_tier == "standard"
         assert standard.toolset_name == "standard-flat"
-        assert standard.tool_limit == 20
+        assert standard.tool_limit == 14
         assert standard.turn_limit == 36
         assert standard.max_parallel_reads == 3
 
@@ -132,7 +132,7 @@ class TestModelTiersAndRuntimePolicy2026:
         )
         assert frontier.policy_tier == "frontier"
         assert frontier.toolset_name == "frontier-flat"
-        assert frontier.tool_limit == 26
+        assert frontier.tool_limit == 17
         assert frontier.turn_limit == 60
         assert frontier.max_parallel_reads == 5
         assert frontier.verification_mode == "full"
@@ -199,9 +199,9 @@ class TestFlatToolsetsAndRoleFiltering:
             orch, p_frontier, active_role="operational"
         )
 
-        assert len(t_compact) == 14
-        assert len(t_standard) == 20
-        assert len(t_frontier) == 26
+        assert len(t_compact) == 10
+        assert len(t_standard) == 14
+        assert len(t_frontier) in (16, 17)
 
     def test_readonly_roles_and_explore_mode_strip_mutating_tools(self):
         reg = build_registry()

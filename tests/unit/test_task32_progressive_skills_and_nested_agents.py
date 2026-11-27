@@ -230,7 +230,7 @@ def test_context_report_shows_catalog_savings(tmp_path: Path) -> None:
     sk = report["sections"]["skills_catalog"]
     assert sk["count"] >= 5
     assert sk["catalog_tokens"] < sk["full_bodies_tokens"]
-    assert report["sections"]["tool_schemas"]["count"] == 14
+    assert report["sections"]["tool_schemas"]["count"] == 10
 
 
 def test_tui_slash_skill_direct_invocation(tmp_path: Path) -> None:

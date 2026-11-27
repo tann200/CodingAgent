@@ -112,7 +112,7 @@ class TestTokenEfficiencyAndParallelWavesBenchmark:
     """Benchmark token footprint reduction and parallel wave dispatch speed."""
 
     def test_compact_vs_frontier_toolset_token_efficiency(self):
-        """compact-flat (14 tools) must reduce tool schema size by >= 40% vs frontier-flat (26 tools)."""
+        """compact-flat (10 tools) must reduce tool schema size by >= 40% vs frontier-flat (17 tools)."""
         workdir = _make_workdir()
         orch = _make_orchestrator(workdir)
 
@@ -128,13 +128,15 @@ class TestTokenEfficiencyAndParallelWavesBenchmark:
         assert len(compact_schemas) <= COMPACT_RUNTIME_POLICY.tool_limit, (
             f"Expected <= {COMPACT_RUNTIME_POLICY.tool_limit} tools for compact-flat, got {len(compact_schemas)}"
         )
-        assert len(frontier_schemas) >= 20, f"Expected >= 20 tools for frontier-flat, got {len(frontier_schemas)}"
+        assert 15 <= len(frontier_schemas) <= FRONTIER_RUNTIME_POLICY.tool_limit, (
+            f"Expected 15..{FRONTIER_RUNTIME_POLICY.tool_limit} tools for frontier-flat, got {len(frontier_schemas)}"
+        )
 
         compact_bytes = len(json.dumps(compact_schemas))
         frontier_bytes = len(json.dumps(frontier_schemas))
         reduction_ratio = 1.0 - (compact_bytes / frontier_bytes)
 
-        # Must save at least 40% tool schema footprint to maximize KV cache and prompt efficiency on 9-14B models
+        # Must save at least 40% tool schema footprint on compact vs frontier models
         assert reduction_ratio >= 0.40, f"Expected >= 40% reduction, achieved {reduction_ratio * 100:.1f}%"
 
     @pytest.mark.asyncio

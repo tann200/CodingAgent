@@ -70,15 +70,17 @@ def build_active_tool_guidance_block(
     if "manage_todo" in active and tier not in ("nano", "compact"):
         clauses.append("- Multi-step (3+ steps): track items with `manage_todo`; skip for simple tasks.")
 
-    if "find_symbol" in active or "lsp_diagnostics" in active:
-        if "find_symbol" in active and "lsp_diagnostics" in active:
+    has_lsp = "lsp" in active or "lsp_diagnostics" in active
+    if "find_symbol" in active or has_lsp:
+        lsp_name = "lsp" if "lsp" in active else "lsp_diagnostics"
+        if "find_symbol" in active and has_lsp:
             clauses.append(
-                "- Use `find_symbol` for symbol definitions; skip redundant `lsp_diagnostics` calls when edit output already reports diagnostics."
+                f"- Use `find_symbol` for symbol definitions; skip redundant `{lsp_name}` diagnostics calls when edit output already reports diagnostics."
             )
         elif "find_symbol" in active:
             clauses.append("- Use `find_symbol` for symbol definitions; use `grep` for exact strings/regex.")
         else:
-            clauses.append("- Skip redundant `lsp_diagnostics` calls when edit output already reports diagnostics.")
+            clauses.append(f"- Skip redundant `{lsp_name}` diagnostics calls when edit output already reports diagnostics.")
 
     if "delegate_task" in active:
         clauses.append(

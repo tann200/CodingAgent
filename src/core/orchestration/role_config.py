@@ -15,7 +15,8 @@ _READ_CORE: tuple[str, ...] = (
     "search_code", "find_symbol", "find_references", "memory_search",
 )
 _READ_EXTENDED: tuple[str, ...] = (
-    *_READ_CORE, "bash_readonly", "git_log", "git_diff", "git_status",
+    *_READ_CORE, "bash_readonly", "git_read", "git_log", "git_diff", "git_status",
+    "lsp", "lsp_diagnostics", "lsp_references", "lsp_definition",
     "analyze_repository", "initialize_repo_intelligence",
     "multi_file_summary", "batched_file_read", "load_skill",
 )
@@ -30,8 +31,8 @@ _IMPL_CORE: tuple[str, ...] = (
     "edit_by_line_range", "multiedit", "apply_patch", "delete_file",
     "bash", "check_background_task", "run_tests", "run_js_tests",
     "run_linter", "run_ts_check", "syntax_check",
-    "git_status", "git_diff", "git_log", "manage_todo", "ask_user",
-    "delegate_task", "lsp_diagnostics", "lsp_references", "lsp_definition",
+    "git_read", "git_status", "git_diff", "git_log", "manage_todo", "ask_user",
+    "delegate_task", "lsp", "lsp_diagnostics", "lsp_references", "lsp_definition",
     "web_search", "read_web_page", "load_skill", "list_skills",
 )
 

@@ -177,7 +177,7 @@ def test_compact_flat_tool_schemas_include_read_and_write_for_core_registry(tmp_
     rt = resolve_runtime_policy(orch, model="Qwen3.5-9B.Q4_K_S.gguf", provider="llama_server")
     schemas = resolve_effective_tool_schemas(orch, rt, active_role="operational")
     names = {s["function"]["name"] for s in schemas}
-    assert {"read_file", "write_file", "edit_file_atomic", "grep", "run_tests"}.issubset(names)
+    assert {"read_file", "write_file", "edit_file_atomic", "grep", "bash", "delete_file"}.issubset(names)
 
 
 def test_message_bus_run_sync_delivery_handles_executor_shutdown():

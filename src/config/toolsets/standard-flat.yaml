@@ -1,23 +1,17 @@
 name: standard-flat
-description: Flat single-purpose toolset for 15-70B dense and 20-35B MoE workhorse models (20 tools)
+description: Flat single-purpose toolset for 15-70B dense and 20-35B MoE workhorse models (14 tools)
 tools:
   - read_file
   - read_tool_output
-  - list_files
   - glob
   - grep
   - edit_file_atomic
   - write_file
+  - delete_file
   - bash
-  - run_tests
-  - git_status
-  - git_diff
-  - manage_todo
   - ask_user
   - load_skill
-  - multiedit
-  - apply_patch
   - find_symbol
-  - run_linter
-  - git_log
-  - check_background_task
+  - manage_todo
+  - git_read
+  - read_web_page

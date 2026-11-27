@@ -33,7 +33,7 @@ _VALIDATION_TOOLS: frozenset[str] = frozenset(
     {"run_tests", "run_js_tests", "run_linter", "lsp_diagnostics"}
 )
 _DIFF_TOOLS: frozenset[str] = frozenset({"git_diff", "get_git_diff", "diff_state"})
-_GIT_TOOLS: frozenset[str] = frozenset({"git_status", "git_log"})
+_GIT_TOOLS: frozenset[str] = frozenset({"git_read", "git_status", "git_log"})
 _SEARCH_TOOLS: frozenset[str] = frozenset(
     {"grep", "search_code", "find_files", "glob", "find_references", "list_files"}
 )

@@ -149,9 +149,9 @@ def get_toolset_for_role(role: str) -> str:
     """Map an input role or tier name to one of the 3 canonical flat toolsets.
 
     Canonical flat toolsets (TASK-33):
-      - ``compact-flat``  — read-only / scouting / compact 9–14B models (14 tools, no delegation)
-      - ``standard-flat`` — standard implementation / debugging (20 tools)
-      - ``frontier-flat`` — full frontier capability including opt-in delegation (26 tools)
+      - ``compact-flat``  — read-only / scouting / compact 7–14B models (10 tools, no delegation)
+      - ``standard-flat`` — standard implementation / debugging (14 tools)
+      - ``frontier-flat`` — full frontier capability including opt-in delegation (17 tools)
     """
     role_in = (role or "").strip().lower()
     if role_in in ("compact-flat", "standard-flat", "frontier-flat"):

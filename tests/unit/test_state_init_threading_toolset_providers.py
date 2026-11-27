@@ -302,21 +302,22 @@ class TestOrchestratorRoleFilteredToolSelection:
         return orc
 
     def test_debugger_role_gets_debug_tools(self):
-        """Debugger role maps to standard-flat toolset (read, grep, run_tests, edit_file_atomic)."""
+        """Debugger role maps to standard-flat toolset (read, grep, find_symbol, bash, edit_file_atomic)."""
         all_tools = [
             "read_file",
-            "list_files",
+            "glob",
             "grep",
             "find_symbol",
-            "run_tests",
-            "run_linter",
+            "bash",
+            "git_read",
             "write_file",
             "edit_file_atomic",
         ]
         orc = self._make_orchestrator_with_tools(all_tools)
         tools = orc.get_tools_for_role("debugger")
         names = {t["name"] for t in tools}
-        assert "run_tests" in names, "debugger role must have run_tests tool"
+        assert "bash" in names, "debugger role must have bash tool"
+        assert "find_symbol" in names, "debugger role must have find_symbol tool"
         assert "read_file" in names, "debugger role must have read_file tool"
         assert "edit_file_atomic" in names, "debugger role must have edit_file_atomic tool"
 
@@ -326,20 +327,20 @@ class TestOrchestratorRoleFilteredToolSelection:
             "read_file",
             "write_file",
             "edit_file_atomic",
-            "list_files",
+            "delete_file",
             "glob",
             "find_symbol",
             "grep",
-            "run_tests",
-            "run_linter",
-            "apply_patch",
+            "bash",
+            "git_read",
         ]
         orc = self._make_orchestrator_with_tools(all_tools)
         tools = orc.get_tools_for_role("operational")
         names = {t["name"] for t in tools}
         assert "write_file" in names
         assert "edit_file_atomic" in names
-        assert "apply_patch" in names
+        assert "delete_file" in names
+        assert "git_read" in names
 
     def test_unknown_role_falls_back_to_full_registry(self):
         """Unknown role must fall back to full registry (graceful degradation)."""

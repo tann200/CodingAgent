@@ -1172,6 +1172,11 @@ def bash_readonly(
         return {"status": "error", "error": f"OS error: {e}"}
 
 
+def has_active_background_tasks() -> bool:
+    """Return True when at least one background bash subprocess handle is tracked."""
+    return bool(_SPAWNED_BG_PROCS)
+
+
 @tool(tags=["coding"], permission_kind=PermissionKind.NONE)
 def check_background_task(
     task_id: str, workdir: object = _WORKDIR_DEFAULT

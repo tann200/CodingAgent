@@ -11,7 +11,7 @@ from __future__ import annotations
 import subprocess
 import logging
 from pathlib import Path
-from typing import Dict, Any, Optional
+from typing import Dict, Any, Literal, Optional
 
 from src.tools._tool import tool, PermissionKind
 
@@ -50,6 +50,35 @@ def _run_git(args: list[str], workdir: Path, timeout: int = 30) -> Dict[str, Any
         return {"status": "error", "error": f"git command timed out after {timeout}s"}
     except Exception as e:
         return {"status": "error", "error": str(e)}
+
+
+@tool(tags=["coding"], permission_kind=PermissionKind.GIT_READ)
+def git_read(
+    action: Literal["status", "diff", "log"] = "status",
+    staged: bool = False,
+    path: Optional[str] = None,
+    max_count: int = 10,
+    workdir: Path = DEFAULT_WORKDIR,
+) -> Dict[str, Any]:
+    """Read-only git inspection (`status`, `diff`, or `log`).
+
+    Args:
+        action: Operation to run: ``status``, ``diff``, or ``log``.
+        staged: For ``diff``, show staged index changes (`--cached`).
+        path: For ``diff``, limit output to a specific path.
+        max_count: For ``log``, maximum commits to return (default 10).
+    """
+    act = (action or "").strip().lower()
+    if act == "status":
+        return git_status(workdir=workdir)
+    if act == "diff":
+        return git_diff(workdir=workdir, staged=staged, path=path)
+    if act == "log":
+        return git_log(workdir=workdir, max_count=max_count)
+    return {
+        "status": "error",
+        "error": f"Unknown git_read action {action!r}. Expected 'status', 'diff', or 'log'.",
+    }
 
 
 @tool(tags=["coding"], permission_kind=PermissionKind.GIT_READ)

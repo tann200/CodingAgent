@@ -12,6 +12,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, replace
 import logging
+from pathlib import Path
 from typing import Any, Dict, List, Literal, Mapping, Optional
 
 from src.core.inference.model_tiers import ModelTier, classify_model, is_nano_model
@@ -115,7 +116,7 @@ NANO_RUNTIME_POLICY = ModelRuntimePolicy(
     policy_tier="nano",
     target_tier="medium",
     toolset_name="compact-flat",
-    tool_limit=14,
+    tool_limit=10,
     turn_limit=16,
     recovery_limit=1,
     compaction_limit=1,
@@ -134,7 +135,7 @@ COMPACT_RUNTIME_POLICY = ModelRuntimePolicy(
     policy_tier="compact",
     target_tier="medium",
     toolset_name="compact-flat",
-    tool_limit=14,
+    tool_limit=10,
     turn_limit=24,
     recovery_limit=2,
     compaction_limit=2,
@@ -153,7 +154,7 @@ STANDARD_RUNTIME_POLICY = ModelRuntimePolicy(
     policy_tier="standard",
     target_tier="medium",
     toolset_name="standard-flat",
-    tool_limit=20,
+    tool_limit=14,
     turn_limit=36,
     recovery_limit=2,
     compaction_limit=2,
@@ -172,7 +173,7 @@ FRONTIER_RUNTIME_POLICY = ModelRuntimePolicy(
     policy_tier="frontier",
     target_tier="frontier",
     toolset_name="frontier-flat",
-    tool_limit=26,
+    tool_limit=17,
     turn_limit=60,
     recovery_limit=3,
     compaction_limit=3,
@@ -439,10 +440,10 @@ def _is_tool_permitted_for_context(
     # Enforce role_config explicit allowed/denied lists for specialized roles
     if norm_role not in ("operational", "general"):
         if not is_tool_allowed_for_role(tool_name, norm_role):
-            # Allow flat read primitives (glob, grep, git_status, git_diff) on read/review roles
+            # Allow flat read primitives (glob, grep, git_read, lsp) on read/review roles
             if not (
                 norm_role in ("reviewer", "strategic")
-                and tool_name in {"glob", "grep", "git_status", "git_diff", "git_log", "find_symbol", "read_tool_output"}
+                and tool_name in {"glob", "grep", "git_read", "git_status", "git_diff", "git_log", "lsp", "find_symbol", "read_tool_output"}
             ):
                 return False
 
@@ -454,6 +455,50 @@ def _is_tool_permitted_for_context(
         except Exception:
             pass
 
+    return True
+
+
+def _is_git_workspace(workdir: Any) -> bool:
+    """Stat-only check for a ``.git`` entry in *workdir* or any ancestor directory."""
+    if not workdir:
+        return True
+    try:
+        cursor = Path(str(workdir)).resolve()
+        for parent in (cursor, *cursor.parents):
+            if (parent / ".git").exists():
+                return True
+        return False
+    except OSError:
+        return True
+
+
+def _is_lsp_available(workdir: Any = None) -> bool:
+    """Return True when at least one configured LSP server binary is available on PATH."""
+    try:
+        from src.core.indexing.lsp_manager import _find_cmd, _load_server_config
+
+        cfg = _load_server_config()
+        if not isinstance(cfg, Mapping):
+            return False
+        return any(
+            isinstance(entry, Mapping) and _find_cmd(dict(entry)) is not None
+            for entry in cfg.values()
+        )
+    except Exception:
+        return False
+
+
+def _has_active_background_tasks(orchestrator: Any = None) -> bool:
+    """Return True when *orchestrator* has spawned a background bash job in this session."""
+    return bool(getattr(orchestrator, "_has_background_tasks", False)) if orchestrator is not None else False
+
+
+def _is_conditionally_active_tool(tool_name: str, orchestrator: Any) -> bool:
+    """Gate situational tools (`git_read`, `lsp`) on live workspace capabilities."""
+    if tool_name == "git_read":
+        return _is_git_workspace(getattr(orchestrator, "working_dir", None))
+    if tool_name == "lsp":
+        return _is_lsp_available(getattr(orchestrator, "working_dir", None))
     return True
 
 
@@ -504,7 +549,19 @@ def resolve_effective_tool_schemas(
                 for n in yaml_names
                 if n in registered
                 and _is_tool_permitted_for_context(n, reg, orchestrator, active_role)
+                and _is_conditionally_active_tool(n, orchestrator)
             ]
+
+            # Dynamically expose check_background_task only after a background bash job starts
+            if (
+                "check_background_task" in registered
+                and "check_background_task" not in selected_names
+                and _has_active_background_tasks(orchestrator)
+                and _is_tool_permitted_for_context(
+                    "check_background_task", reg, orchestrator, active_role
+                )
+            ):
+                selected_names.append("check_background_task")
 
             # Include permitted MCP tools if registered dynamically
             if hasattr(reg, "get") and callable(reg.get):
@@ -518,7 +575,13 @@ def resolve_effective_tool_schemas(
                         selected_names.append(n)
 
             if selected_names:
-                bounded_names = selected_names[: max(1, tool_limit)]
+                eff_limit = max(1, tool_limit)
+                if "check_background_task" in selected_names and len(selected_names) > eff_limit:
+                    bounded_names = selected_names[:eff_limit]
+                    if "check_background_task" not in bounded_names:
+                        bounded_names.append("check_background_task")
+                else:
+                    bounded_names = selected_names[:eff_limit]
                 from src.core.orchestration.pipeline.permissions import assert_lethal_trifecta_isolated
 
                 assert_lethal_trifecta_isolated(

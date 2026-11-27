@@ -28,7 +28,7 @@ from __future__ import annotations
 
 import logging
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Literal, Optional
 
 from src.tools._tool import TOOL_ATTR, PermissionKind, ok, tool
 
@@ -408,11 +408,80 @@ async def lsp_rename(
         return ok(_UNAVAILABLE_MSG)
 
 
+@tool(
+    name="lsp",
+    description="Unified read-only LSP query (`diagnostics`, `definition`, `references`, `symbols`, or `hover`).",
+    permission_kind=PermissionKind.LSP_READ,
+    tags=["coding", "debug"],
+)
+async def lsp(
+    action: Literal["diagnostics", "definition", "references", "symbols", "hover"],
+    path: str,
+    line: Optional[int] = None,
+    col: Optional[int] = None,
+    working_dir: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Run a read-only language server query on *path*.
+
+    Args:
+        action: Query type: ``diagnostics``, ``definition``, ``references``, ``symbols``, or ``hover``.
+        path: Workspace-relative or absolute file path.
+        line: 0-based line number (required for ``definition``, ``references``, ``hover``).
+        col: 0-based column number (required for ``definition``, ``references``, ``hover``).
+    """
+    act = (action or "").strip().lower()
+    if act == "diagnostics":
+        return await lsp_diagnostics(path=path, working_dir=working_dir)
+    if act == "symbols":
+        return await lsp_symbols(path=path, working_dir=working_dir)
+    if act in ("definition", "references", "hover"):
+        if line is None or col is None:
+            return {
+                "ok": False,
+                "status": "error",
+                "error": f"lsp(action='{act}') requires integer 'line' and 'col' (0-based).",
+            }
+        if act == "definition":
+            return await lsp_definition(path=path, line=line, col=col, working_dir=working_dir)
+        if act == "references":
+            return await lsp_references(path=path, line=line, col=col, working_dir=working_dir)
+        return await lsp_hover(path=path, line=line, col=col, working_dir=working_dir)
+    return {
+        "ok": False,
+        "status": "error",
+        "error": (
+            f"Unknown lsp action {action!r}. "
+            "Expected 'diagnostics', 'definition', 'references', 'symbols', or 'hover'."
+        ),
+    }
+
+
 # ---------------------------------------------------------------------------
 # Tool schema definitions (used by ToolRegistry.register)
 # ---------------------------------------------------------------------------
 
 LSP_TOOL_SCHEMAS = [
+    {
+        "name": "lsp",
+        "description": "Unified read-only LSP query (`diagnostics`, `definition`, `references`, `symbols`, or `hover`).",
+        "permission": "read_only",
+        "permission_kind": "LSP",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "action": {
+                    "type": "string",
+                    "enum": ["diagnostics", "definition", "references", "symbols", "hover"],
+                    "description": "LSP query type.",
+                },
+                "path": {"type": "string", "description": "Path to the target file."},
+                "line": {"type": "integer", "description": "0-based line number (for definition/references/hover)."},
+                "col": {"type": "integer", "description": "0-based column number (for definition/references/hover)."},
+            },
+            "required": ["action", "path"],
+        },
+        "fn": lsp,
+    },
     {
         "name": "lsp_diagnostics",
         "description": "Get lint/type errors for a file from the language server.",
