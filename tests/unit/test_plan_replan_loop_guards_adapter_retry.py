@@ -118,19 +118,19 @@ class TestSettingsPanelAtomicProvidersJsonWrite:
     def test_llm_manager_persist_writes_atomically(self):
         """The second live writer must also be atomic.
 
-        P3-3 added ``ProviderManager._persist_active_provider`` (llm_manager)
-        as a production providers.json writer triggered by model.routing
-        events; it must use mkstemp + os.replace, not in-place write_text.
+        P3-3 added ``ProviderManager._persist_active_provider`` (re-exported by
+        llm_manager from provider_manager) as a production providers.json writer
+        triggered by model.routing events; it must use mkstemp + os.replace, not
+        in-place write_text.
         """
-        src_path = (
-            Path(__file__).parent.parent.parent
-            / "src/core/inference/llm_manager.py"
-        )
-        source = src_path.read_text()
-        assert "tempfile.mkstemp" in source, "mkstemp not found in llm_manager.py"
-        assert "os.replace" in source, "os.replace not found in llm_manager.py"
+        import inspect
+        from src.core.inference.llm_manager import ProviderManager
+
+        source = inspect.getsource(ProviderManager._persist_active_provider)
+        assert "tempfile.mkstemp" in source, "mkstemp not found in ProviderManager._persist_active_provider"
+        assert "os.replace" in source, "os.replace not found in ProviderManager._persist_active_provider"
         assert "cfg_path.write_text" not in source, (
-            "in-place providers.json write found in llm_manager._persist_active_provider"
+            "in-place providers.json write found in ProviderManager._persist_active_provider"
         )
 
 
