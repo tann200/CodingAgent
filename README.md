@@ -7,7 +7,7 @@ This document is generated from the live codebase. For architecture, see [ARCHIT
 ## Requirements
 
 - Python 3.11 or later
-- A configured model provider. Provider configuration is loaded from `src/config/providers.json` and user preferences.
+- A configured model provider. Bundled provider defaults live in `src/config/providers.json` (including local Ollama, LM Studio, MLX, `llama_server`, plus cloud adapters for Groq, Google Gemini via AI Studio OpenAI-compatible API, Anthropic, GitHub Copilot, and LiteLLM). API keys, active provider/model choices, and optional `policy_tier` / `model_policy_tiers` overrides are stored strictly outside the repository in user preferences (`~/.coding_agent/prefs.json`, `0o600`) or environment variables (`GROQ_API_KEY`, `GEMINI_API_KEY` / `GOOGLE_API_KEY`, `ANTHROPIC_API_KEY`).
 - Optional server dependencies for HTTP/SSE/WebSocket support: `pip install -e '.[server]'`
 
 Install the application and development dependencies:

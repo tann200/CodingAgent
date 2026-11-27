@@ -478,13 +478,23 @@ class ToolRegistry:
             return out["result"]
         return out
 
-    def get_openai_functions(self, include_aliases: bool = False) -> List[Dict[str, Any]]:
+    def get_openai_functions(
+        self,
+        include_aliases: bool = False,
+        *,
+        compact: bool = False,
+    ) -> List[Dict[str, Any]]:
         """Return registered tools formatted as OpenAI function-calling schemas.
 
         Entries marked ``schema_visibility='alias_only'`` (capability wrappers,
         short aliases, and deprecated duplicates) remain executable in the
         registry while hidden from default schemas unless ``include_aliases``
         is True or ``filter_by_names()`` explicitly selected them.
+
+        When ``compact=True`` (used for ``nano`` and ``compact`` runtime policy
+        tiers), redundant docstring prefixes and verbose parameter prose are
+        tightened while preserving every parameter name, type, enum, and
+        required constraint.
         """
         with self._lock:
             items = list(self._tools.items())
@@ -519,6 +529,8 @@ class ToolRegistry:
             if fn_name in seen:
                 continue
             seen.add(fn_name)
+            if compact:
+                schema = _compact_openai_schema(schema)
             result.append(schema)
         return result
 
@@ -585,6 +597,61 @@ class ToolRegistry:
 # ---------------------------------------------------------------------------
 # Schema helper
 # ---------------------------------------------------------------------------
+
+
+def _shorten_sentence(text: str, max_chars: int) -> str:
+    """Return a concise single-sentence description without losing core meaning."""
+    s = " ".join(str(text or "").split()).strip()
+    if not s:
+        return ""
+    # Strip redundant leading `tool_name(arg1, arg2) -> ` signature prefixes
+    arrow = s.find("->")
+    if 0 < arrow < 60 and "(" in s[:arrow] and ")" in s[:arrow]:
+        s = s[arrow + 2 :].strip()
+    # Keep only the first sentence when longer than max_chars
+    if len(s) > max_chars:
+        dot = s.find(". ")
+        if 12 <= dot <= max_chars:
+            s = s[: dot + 1]
+        elif len(s) > max_chars:
+            s = s[: max_chars - 1].rstrip(" ,;:") + "."
+    return s
+
+
+def _compact_openai_schema(schema: Dict[str, Any]) -> Dict[str, Any]:
+    """Produce a token-compact copy of an OpenAI tool schema without dropping fields."""
+    fn = schema.get("function")
+    if not isinstance(fn, dict):
+        return schema
+    params = fn.get("parameters")
+    new_params = params
+    if isinstance(params, dict):
+        props = params.get("properties")
+        if isinstance(props, dict):
+            compact_props: Dict[str, Any] = {}
+            for pname, pval in props.items():
+                if not isinstance(pval, dict):
+                    compact_props[pname] = pval
+                    continue
+                cp = dict(pval)
+                pdesc = cp.get("description")
+                if isinstance(pdesc, str) and pdesc:
+                    short = _shorten_sentence(pdesc, 72)
+                    # Drop self-evident descriptions when enum or obvious name conveys it
+                    if cp.get("enum") and len(short) > 40:
+                        cp.pop("description", None)
+                    elif short:
+                        cp["description"] = short
+                compact_props[pname] = cp
+            new_params = {**params, "properties": compact_props}
+    return {
+        **schema,
+        "function": {
+            **fn,
+            "description": _shorten_sentence(str(fn.get("description") or ""), 96),
+            "parameters": new_params,
+        },
+    }
 
 
 def _minimal_schema(name: str, fn: Callable, description: str) -> dict:

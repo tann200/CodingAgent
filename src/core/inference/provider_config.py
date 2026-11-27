@@ -84,6 +84,10 @@ def apply_user_prefs_to_providers(
             if isinstance(ov, dict):
                 if ov.get("base_url"):
                     item["base_url"] = ov["base_url"]
+                if ov.get("policy_tier"):
+                    item["policy_tier"] = ov["policy_tier"]
+                if isinstance(ov.get("model_policy_tiers"), dict):
+                    item["model_policy_tiers"] = dict(ov["model_policy_tiers"])
                 if not selected_provider and "active" in ov and isinstance(ov["active"], bool):
                     item["active"] = ov["active"]
         if selected_provider and pkey == selected_provider and selected_model:

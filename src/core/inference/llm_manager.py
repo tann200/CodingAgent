@@ -771,8 +771,11 @@ class ProviderManager(ProviderManagerProtocol):
             lookup = (raw_type or raw_name).lower().replace("-", "_").replace(" ", "_")
             _MAP: Dict[str, str] = {
                 "anthropic": "anthropic",
+                "gemini": "gemini",
+                "google": "gemini",
                 "openai": "openai",
                 "openrouter": "openai",
+                "groq": "openai",
                 "github_copilot": "openai",
                 "copilot": "openai",
                 "ollama": "local",

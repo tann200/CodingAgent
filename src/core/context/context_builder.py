@@ -383,7 +383,7 @@ class ContextBuilder:
                 if content:
                     return content
             # 2. Tier variant
-            if tier == "small":
+            if tier in ("small", "compact", "nano"):
                 content = self.roles.get("operational-small", "")
                 if content:
                     return content

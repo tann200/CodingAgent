@@ -14,9 +14,13 @@ from src.core.utils.strings import valid_str as _valid_str, extract_str as _extr
 _PROVIDER_FAMILY_MAP: Dict[str, str] = {
     # Anthropic
     "anthropic": "anthropic",
+    # Google Gemini
+    "gemini": "gemini",
+    "google": "gemini",
     # OpenAI-compatible cloud
     "openai": "openai",
     "openrouter": "openai",
+    "groq": "openai",
     "github_copilot": "openai",
     "copilot": "openai",
     # Local / self-hosted
@@ -134,8 +138,13 @@ def get_provider_capabilities_impl(orch: Any) -> Dict[str, Any]:
             raw_name = _extract_str(provider_attr.get("name"))
             raw_type = _extract_str(provider_attr.get("type"))
             capabilities["supports_native_tools"] = bool(
-                provider_attr.get("supports_native_tools", False)
+                provider_attr.get(
+                    "supports_native_tools",
+                    getattr(orch._adapter, "supports_native_tools", False),
+                )
             )
+        elif getattr(orch._adapter, "supports_native_tools", False) is True:
+            capabilities["supports_native_tools"] = True
 
         # Fall back to adapter.name (present on many adapters)
         if not raw_name:

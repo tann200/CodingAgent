@@ -167,6 +167,7 @@ async def _prepare_turn_messages(
             provider_caps,
             None,
             model_tier,
+            model_name,
         )
         built_messages = await run_with_correlation(loop, None, partial_fn)
         messages = list(built_messages) if isinstance(built_messages, list) else []

@@ -160,3 +160,87 @@ class TestGroqAdapter:
         assert g["active"] is False
         assert "llama-3.1-8b-instant" in g["models"]
         assert g.get("small_model") == "llama-3.1-8b-instant"
+        assert g.get("skip_functions_compat") is True
+        assert g.get("disable_thinking") is False
+
+    def test_apply_provider_flags_strips_legacy_functions_and_think(self):
+        """Groq rejects both legacy 'functions' mirrored from 'tools' and Ollama's 'think' key."""
+        from src.core.inference.adapters.groq_adapter import GroqAdapter
+
+        a = GroqAdapter(api_key="gsk_test")
+        a.provider = {"disable_thinking": True, "skip_functions_compat": False}
+        payload = {
+            "model": "qwen/qwen3.8-27b",
+            "messages": [{"role": "user", "content": "hi"}],
+            "tools": [
+                {
+                    "type": "function",
+                    "function": {"name": "read_file", "parameters": {"type": "object"}},
+                }
+            ],
+            "think": False,
+        }
+        a._apply_provider_flags(payload)
+        assert "functions" not in payload
+        assert "think" not in payload
+        assert "tools" in payload
+
+    def test_generate_sends_tools_without_functions_or_think(self):
+        """End-to-end mocked generate() omits 'functions' and 'think' from Groq HTTP body."""
+        from src.core.inference.adapters.groq_adapter import GroqAdapter
+
+        captured = {}
+
+        def _fake_post(url, headers, payload, timeout=None, stream=False):
+            captured["payload"] = dict(payload)
+            return _mock_response(
+                200,
+                {
+                    "id": "chatcmpl-1",
+                    "choices": [
+                        {
+                            "message": {
+                                "role": "assistant",
+                                "content": "",
+                                "tool_calls": [
+                                    {
+                                        "id": "call_1",
+                                        "type": "function",
+                                        "function": {
+                                            "name": "read_file",
+                                            "arguments": '{"path": "README.md"}',
+                                        },
+                                    }
+                                ],
+                            },
+                            "finish_reason": "tool_calls",
+                        }
+                    ],
+                    "usage": {
+                        "prompt_tokens": 50,
+                        "completion_tokens": 12,
+                        "total_tokens": 62,
+                    },
+                },
+            )
+
+        a = GroqAdapter(api_key="gsk_test")
+        a.provider = {"disable_thinking": True}
+        with patch.object(a, "_safe_post", side_effect=_fake_post):
+            res = a.generate(
+                messages=[{"role": "user", "content": "Read README.md"}],
+                model="qwen/qwen3.8-27b",
+                tools=[
+                    {
+                        "type": "function",
+                        "function": {
+                            "name": "read_file",
+                            "parameters": {"type": "object", "properties": {}},
+                        },
+                    }
+                ],
+            )
+        assert res.get("ok") is True
+        assert "tools" in captured["payload"]
+        assert "functions" not in captured["payload"]
+        assert "think" not in captured["payload"]

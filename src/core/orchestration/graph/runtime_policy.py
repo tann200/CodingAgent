@@ -221,6 +221,97 @@ def resolve_policy_tier(model_name: str, context_window: int = 0) -> PolicyTier:
     return "frontier"
 
 
+_VALID_POLICY_TIERS: frozenset[str] = frozenset({"nano", "compact", "standard", "frontier"})
+
+
+def _resolve_provider_policy_tier_override(
+    orchestrator: Any,
+    provider: Optional[str],
+    model: str,
+) -> Optional[PolicyTier]:
+    """Return an explicit ``policy_tier`` override configured for a provider or model.
+
+    Lookup order:
+      1. ``adapter.provider`` dict (``model_policy_tiers[model]`` then ``policy_tier``)
+      2. ``UserPrefs`` ``providers.<provider>`` (``model_policy_tiers[model]`` then ``policy_tier``)
+      3. Bundled ``src/config/providers.json`` matching *provider*
+    """
+    adapter = (
+        (getattr(orchestrator, "_adapter", None) or getattr(orchestrator, "adapter", None))
+        if orchestrator is not None
+        else None
+    )
+    prov_name = (
+        provider
+        or (getattr(orchestrator, "_provider_name", None) if orchestrator is not None else None)
+        or (getattr(adapter, "name", None) if adapter is not None else None)
+        or ""
+    )
+    prov_key = str(prov_name).strip().lower().replace("-", "_").replace(" ", "_")
+    model_lower = (model or "").strip().lower()
+
+    def _extract_from_cfg(cfg: Any) -> Optional[PolicyTier]:
+        if not isinstance(cfg, dict):
+            return None
+        mpt = cfg.get("model_policy_tiers")
+        if isinstance(mpt, dict) and model_lower:
+            for mk, mv in mpt.items():
+                if str(mk).strip().lower() == model_lower:
+                    cand = str(mv).strip().lower()
+                    if cand in _VALID_POLICY_TIERS:
+                        return cand  # type: ignore[return-value]
+        pt = cfg.get("policy_tier")
+        if isinstance(pt, str):
+            cand = pt.strip().lower()
+            if cand in _VALID_POLICY_TIERS:
+                return cand  # type: ignore[return-value]
+        return None
+
+    # 1. Adapter provider dict
+    if adapter is not None:
+        hit = _extract_from_cfg(getattr(adapter, "provider", None))
+        if hit:
+            return hit
+
+    if not prov_key:
+        return None
+
+    # 2. UserPrefs provider override
+    try:
+        from src.core.user_prefs import UserPrefs
+
+        prefs = UserPrefs.load()
+        provs = prefs.data.get("providers")
+        if isinstance(provs, dict):
+            hit = _extract_from_cfg(provs.get(prov_key))
+            if hit:
+                return hit
+    except Exception:
+        pass
+
+    # 3. Bundled providers.json entry
+    try:
+        import json
+        from pathlib import Path
+
+        cfg_path = Path(__file__).parents[3] / "config" / "providers.json"
+        if cfg_path.exists():
+            raw = json.loads(cfg_path.read_text(encoding="utf-8"))
+            entries = raw if isinstance(raw, list) else [raw]
+            for entry in entries:
+                if not isinstance(entry, dict):
+                    continue
+                ek = str(entry.get("type") or entry.get("name") or "").strip().lower().replace("-", "_").replace(" ", "_")
+                if ek == prov_key:
+                    hit = _extract_from_cfg(entry)
+                    if hit:
+                        return hit
+    except Exception:
+        pass
+
+    return None
+
+
 def resolve_runtime_policy(
     orchestrator: Any = None,
     *,
@@ -230,8 +321,8 @@ def resolve_runtime_policy(
 ) -> ModelRuntimePolicy:
     """Resolve the authoritative ``ModelRuntimePolicy`` for an orchestrator or model.
 
-    Honors explicit ``orchestrator.workflow_config`` overrides when present so
-    caller-configured limits remain authoritative.
+    Honors explicit ``orchestrator.workflow_config`` overrides and per-provider /
+    per-model ``policy_tier`` settings when present.
     """
     resolved_model = model or ""
     resolved_ctx = int(context_window or 0)
@@ -254,7 +345,10 @@ def resolve_runtime_policy(
             except Exception:
                 resolved_ctx = 0
 
-    p_tier = resolve_policy_tier(resolved_model, resolved_ctx)
+    override_tier = _resolve_provider_policy_tier_override(
+        orchestrator, provider, resolved_model
+    )
+    p_tier = override_tier or resolve_policy_tier(resolved_model, resolved_ctx)
     base = get_runtime_policy_for_tier(p_tier)
 
     if resolved_ctx > 0:
@@ -382,15 +476,19 @@ def resolve_effective_tool_schemas(
         return []
 
     if isinstance(runtime_policy, ModelRuntimePolicy):
+        policy_tier_str = str(runtime_policy.policy_tier)
         toolset_name = runtime_policy.toolset_name
         tool_limit = runtime_policy.tool_limit
     elif isinstance(runtime_policy, Mapping):
+        policy_tier_str = str(runtime_policy.get("policy_tier") or "standard")
         toolset_name = str(runtime_policy.get("toolset_name") or "standard-flat")
         tool_limit = int(runtime_policy.get("tool_limit") or 18)
     else:
         resolved = resolve_runtime_policy(orchestrator)
+        policy_tier_str = str(resolved.policy_tier)
         toolset_name = resolved.toolset_name
         tool_limit = resolved.tool_limit
+    use_compact_schemas = policy_tier_str in ("nano", "compact")
 
     # Real ToolRegistry path: load curated flat toolset YAML and filter by permissions
     from src.tools._registry import ToolRegistry as _ToolsRegistry
@@ -428,7 +526,9 @@ def resolve_effective_tool_schemas(
                     role=active_role,
                     explore_mode=bool(getattr(orchestrator, "explore_mode", False)),
                 )
-                return reg.filter_by_names(bounded_names).get_openai_functions()
+                return reg.filter_by_names(bounded_names).get_openai_functions(
+                    compact=use_compact_schemas
+                )
             if getattr(orchestrator, "explore_mode", False) or (active_role or "operational") not in ("operational", "general"):
                 return []
         except Exception as exc:

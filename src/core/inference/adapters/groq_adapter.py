@@ -5,18 +5,19 @@ fully OpenAI-compatible (https://api.groq.com/openai/v1).
 
 This adapter extends OpenAICompatibleAdapter with:
   - Hardcoded BASE_URL — no base_url in providers.json needed.
-  - API key loaded from UserPrefs (~/.config/codingagent/prefs.json) or the
+  - API key loaded from UserPrefs (~/.coding_agent/prefs.json) or the
     GROQ_API_KEY environment variable.
-  - A curated default model list focused on SMALL/MEDIUM tier models suited
-    for fast inference.
+  - Strict OpenAI payload hygiene: skips deprecated ``functions`` mirroring
+    and never sends Ollama's non-standard ``think`` field (Groq rejects both
+    with HTTP 400).
+  - A curated default model list focused on fast open-weight coding models.
   - REQUIRES_API_KEY flag so the TUI can show the key entry UI.
 
 Model tier mapping
 ------------------
-  SMALL  : llama-3.1-8b-instant    (~8B)  — ultra-fast, good for analyst/reviewer
-  MEDIUM : llama-3.3-70b-versatile (~70B) — balanced speed + capability
-  MEDIUM : mixtral-8x7b-32768      (~47B effective) — fast MoE model
-  FRONTIER: llama-3.1-405b-*       — large, use sparingly (rate-limited)
+  SMALL  : llama-3.1-8b-instant / openai/gpt-oss-20b — ultra-fast
+  MEDIUM : llama-3.3-70b-versatile / qwen/qwen3.8-27b — strong coding + tools
+  LARGE  : openai/gpt-oss-120b — high-capability open-weight reasoning
 
 ProviderManager convention:
   type = "groq" in providers.json → imports this module →
@@ -43,8 +44,9 @@ _MODELS_URL = "https://api.groq.com/openai/v1/models"
 _DEFAULT_MODELS = [
     "llama-3.1-8b-instant",  # SMALL  — 8B, ~500 tok/s, best latency
     "llama-3.3-70b-versatile",  # MEDIUM — 70B, strong general capability
-    "mixtral-8x7b-32768",  # MEDIUM — MoE, 32K context, strong code
-    "gemma2-9b-it",  # SMALL  — Google Gemma 9B instruction
+    "qwen/qwen3.8-27b",  # MEDIUM — Qwen 3.8 27B coding + native tools
+    "openai/gpt-oss-120b",  # LARGE  — 120B open-weight reasoning + tools
+    "openai/gpt-oss-20b",  # SMALL  — 20B fast open-weight + tools
 ]
 
 
@@ -56,6 +58,13 @@ class GroqAdapter(OpenAICompatibleAdapter):
 
     # Tells the TUI settings modal to show the API key entry UI.
     REQUIRES_API_KEY = True
+
+    # Native OpenAI-style function calling is supported natively.
+    supports_native_tools = True
+
+    # Groq strictly enforces the modern OpenAI `tools` schema and rejects
+    # legacy `functions` entries copied from `tools`.
+    _skip_functions_compat = True
 
     def __init__(
         self,
@@ -112,6 +121,17 @@ class GroqAdapter(OpenAICompatibleAdapter):
 
     def _headers(self) -> Dict[str, str]:
         return super()._headers()
+
+    def _apply_provider_flags(self, payload: Dict[str, Any]) -> None:
+        """Keep Groq payloads strictly OpenAI-compatible.
+
+        Groq rejects both legacy ``functions`` mirrored from ``tools``
+        (``'functions.0.name' : property 'name' is missing``) and Ollama's
+        non-standard ``think`` key (``property 'think' is unsupported``).
+        """
+        payload.pop("think", None)
+        if "tools" in payload:
+            payload.pop("functions", None)
 
     # ------------------------------------------------------------------
     # Model listing — Groq /models endpoint requires auth

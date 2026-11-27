@@ -235,14 +235,8 @@ def build_output_format_block(
     if use_native_tools:
         return (
             "<output_format>\n"
-            "You MUST think step-by-step. Write your internal reasoning inside <think> tags.\n"
-            "You have access to native tools. Use the native JSON function calling API.\n"
-            "Do NOT output markdown code blocks for tool calls.\n"
-            "IMPORTANT: Call tools using the native function calling format.\n"
-            "After executing a tool, your response will include the tool's result.\n"
-            "If the tool result completes the user's task, do NOT make more tool calls.\n"
-            "Simply summarize the result or indicate task completion.\n"
-            "Only call another tool if the result requires follow-up action.\n"
+            "Use the native JSON function calling API for all tool calls; do not emit markdown tool blocks.\n"
+            "Stop calling tools once the task is verified complete and reply concisely.\n"
             "</output_format>"
         )
     if is_simple_mode:
@@ -298,7 +292,10 @@ def build_thinking_guidance_block(
 
 
 def build_thinking_mode_block(*, tier_str: str, is_reasoning_model: bool) -> str:
-    if tier_str in ("frontier", "large") or is_reasoning_model:
+    # Reasoning models perform internal reasoning natively (and beast.txt explicitly
+    # forbids narrating chain-of-thought), so only emit explicit pre-call reflection
+    # for non-reasoning frontier/large models.
+    if tier_str in ("frontier", "large") and not is_reasoning_model:
         return (
             "<thinking_mode>\n"
             "Before every tool call, briefly state:\n"
@@ -366,8 +363,13 @@ def build_static_system_parts(
                 f"<active_skills>\n{chr(10).join(skill_contents)}\n</active_skills>"
             )
 
-    tools_text = render_tools_for_tier_fn(tools, model_tier)
-    parts.append(f"<available_tools>\n{tools_text}\n</available_tools>")
+    # When native tool calling is active, full OpenAI JSON schemas are already
+    # sent in the API `tools` payload — skip the duplicate <available_tools>
+    # text list to avoid paying ~2x tool-schema token cost on every turn.
+    if not use_native_tools:
+        tools_text = render_tools_for_tier_fn(tools, model_tier)
+        if tools_text:
+            parts.append(f"<available_tools>\n{tools_text}\n</available_tools>")
 
     thinking_guidance = build_thinking_guidance_block_fn(
         model_tier,
