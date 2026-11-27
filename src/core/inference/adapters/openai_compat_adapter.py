@@ -344,7 +344,16 @@ class OpenAICompatibleAdapter(LLMClient):
         filtered = {
             k: v
             for k, v in kwargs.items()
-            if k not in ("num_ctx", "kv_cache_quant", "disable_thinking")
+            if k
+            not in (
+                "num_ctx",
+                "kv_cache_quant",
+                "disable_thinking",
+                "policy_tier",
+                "verification_retries",
+                "reasoning_effort",
+                "correlation_id",
+            )
         }
         if isinstance(messages, (list, tuple)):
             payload: Dict[str, Any] = {
@@ -516,7 +525,7 @@ class OpenAICompatibleAdapter(LLMClient):
                     ):
                         parsed = self._parse_retry_wait_seconds(hdrs.get(_hdr))
                         if parsed is not None and parsed > 0:
-                            _retry_wait = min(parsed, 30.0)
+                            _retry_wait = min(parsed, 62.0)
                             found_hdr_wait = True
                             break
                     if not found_hdr_wait:
@@ -524,7 +533,7 @@ class OpenAICompatibleAdapter(LLMClient):
                             _btxt = str(getattr(r, "text", "") or "")
                             _bm = re.search(r"retry\s+in\s+(\d+(?:\.\d+)?)s", _btxt, re.IGNORECASE)
                             if _bm:
-                                _retry_wait = min(float(_bm.group(1)), 30.0)
+                                _retry_wait = min(float(_bm.group(1)), 62.0)
                         except Exception:
                             pass
                 time.sleep(_retry_wait + random.random())

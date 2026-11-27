@@ -354,9 +354,25 @@ async def execute_raw_tool(
         inner: Dict[str, Any] = raw_inner if isinstance(raw_inner, dict) else res
         cmd_str = str(t_args.get("command") or inner.get("command") or ("pytest" if t_name == "run_tests" else ""))
         if cmd_str:
-            rc = inner.get("returncode")
-            passed = bool(rc == 0) if rc is not None else bool(res.get("ok") is True or inner.get("status") == "ok")
-            debt.record_command(cmd_str, passed=passed)
+            raw_rc = inner.get("returncode")
+            if raw_rc is None:
+                raw_rc = inner.get("exit_code")
+            try:
+                exit_code = int(raw_rc) if raw_rc is not None else None
+            except (TypeError, ValueError):
+                exit_code = None
+            is_skipped = str(inner.get("status") or "").lower() == "skipped"
+            passed = (
+                bool(exit_code == 0)
+                if exit_code is not None
+                else bool(res.get("ok") is True and inner.get("status") in (None, "ok"))
+            )
+            debt.record_command(
+                cmd_str,
+                passed=passed,
+                exit_code=exit_code,
+                skipped=is_skipped,
+            )
     return res
 
 

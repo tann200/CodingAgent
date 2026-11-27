@@ -707,8 +707,8 @@ def get_default_scenarios() -> List[Scenario]:
         Scenario(
             name="test_creation",
             description="Create a simple unit test",
-            task="Create a test file test_math.py with a test for a math function",
-            expected_files={"test_math.py": "import pytest"},
+            task="Create a test file test_math.py with a pytest test function for a math operation (e.g. addition).",
+            expected_files={"test_math.py": "def test_"},
             test_command="python -m pytest -q test_math.py",
             difficulty="easy",
             category="single_file_edit",
@@ -921,12 +921,13 @@ def get_default_scenarios() -> List[Scenario]:
             },
             expected_files={
                 "constants.py": "3.14159",
-                "geometry.py": "from constants import",
-                "physics.py": "from constants import",
+                "geometry.py": "constants",
+                "physics.py": "constants",
             },
             test_command=(
                 "python -c \""
                 "import constants, geometry, physics; "
+                "assert '3.14159' not in open('geometry.py').read() and '9.81' not in open('physics.py').read(); "
                 "assert abs(geometry.circle_area(1) - 3.14159) < 1e-4 and abs(physics.weight(2) - 19.62) < 1e-4\""
             ),
             difficulty="medium",
@@ -999,12 +1000,12 @@ def get_default_scenarios() -> List[Scenario]:
                     "    return items\n"
                 ),
             },
-            expected_files={"accumulator.py": "if items is None"},
+            expected_files={"accumulator.py": "None"},
             test_command=(
                 "python -c \""
                 "from accumulator import collect; "
-                "a = collect(1); b = collect(2); "
-                "assert a != b, 'mutable default not fixed'\""
+                "a = collect(1); b = collect(2); c = collect(3, [0]); "
+                "assert a == [1] and b == [2] and a is not b and c == [0, 3], 'mutable default not fixed'\""
             ),
             difficulty="medium",
             category="bug_fix",
@@ -1016,9 +1017,11 @@ def get_default_scenarios() -> List[Scenario]:
             name="trace_call_chain",
             description="Follow a 5-file call chain to find the root cause",
             task=(
-                "The function `run_pipeline` in pipeline.py is raising a KeyError. "
-                "Trace through the call chain (pipeline.py → stage.py → transform.py → "
-                "validator.py → schema.py) and fix the root cause."
+                "The function `run_pipeline` in pipeline.py raises a KeyError when a record "
+                "is missing optional fields. Trace through the call chain "
+                "(pipeline.py → stage.py → transform.py → validator.py → schema.py) and fix "
+                "validator.py using safe lookup (`record.get(f)`) so missing fields do not "
+                "raise a KeyError and partial records pass through safely."
             ),
             setup_files={
                 "schema.py": "REQUIRED_FIELDS = ['name', 'value']\n",
@@ -1050,7 +1053,7 @@ def get_default_scenarios() -> List[Scenario]:
             test_command=(
                 "python -c \""
                 "from pipeline import run_pipeline; "
-                "assert run_pipeline([{'name': 'a'}]) == [{'name': 'a'}]\""
+                "assert run_pipeline([{'name': 'a'}, {'name': 'b', 'value': 2}]) == [{'name': 'a'}, {'name': 'b', 'value': '2'}]\""
             ),
             difficulty="hard",
             category="context_boundary",
@@ -1168,11 +1171,13 @@ def get_default_scenarios() -> List[Scenario]:
                     "]\n"
                 ),
             },
-            expected_files={"records.py": "3}"},
+            expected_files={},
             test_command=(
                 "python -c \""
                 "import records; "
-                "assert len(records.records) == 2 and all(list(r.keys()) == sorted(r.keys()) for r in records.records)\""
+                "dict_lines = [l for l in open('records.py').read().splitlines() if '{' in l and '}' in l]; "
+                "assert len(dict_lines) == 2 and len(records.records) == 2 "
+                "and all(list(r.keys()) == sorted(r.keys()) for r in records.records)\""
             ),
             difficulty="medium",
             category="disambiguation",

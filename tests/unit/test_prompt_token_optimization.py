@@ -189,3 +189,85 @@ def test_grep_excludes_internal_codingagent_dir_and_binary_files(tmp_path):
     assert any(p.endswith("app.py") for p in paths)
     assert not any(".codingAgent" in p for p in paths)
     assert not any(p.endswith("blob.bin") for p in paths)
+
+
+def test_openai_compat_build_payload_strips_internal_orchestration_kwargs():
+    from src.core.inference.adapters.gemini_adapter import GeminiAdapter
+
+    a = GeminiAdapter(api_key="test_key")
+    payload, _ = a._build_payload(
+        messages=[{"role": "user", "content": "hi"}],
+        model_name="gemini-3.5-flash-lite",
+        kwargs={
+            "temperature": 0.2,
+            "verification_retries": 1,
+            "policy_tier": "compact",
+            "reasoning_effort": "low",
+            "correlation_id": "cid-123",
+        },
+    )
+    assert payload["temperature"] == 0.2
+    for leaked in ("verification_retries", "policy_tier", "reasoning_effort", "correlation_id"):
+        assert leaked not in payload
+
+
+def test_validation_debt_ignores_rc5_rc127_skipped_and_accepts_python_test_runners():
+    from src.core.orchestration.graph.validation_authority import ValidationDebtTracker
+
+    t = ValidationDebtTracker()
+    # Non-failure exits must never create debt
+    t.record_command("pytest", passed=False, exit_code=5)
+    t.record_command("pytest", passed=False, exit_code=127)
+    t.record_command("pytest", passed=False, skipped=True)
+    assert t.unpaid_debt() == []
+
+    # Real failure (rc=1) creates debt; post-mutation unittest/pytest pays it down
+    t.record_command("pytest", passed=False, exit_code=1)
+    assert t.unpaid_debt() == ["pytest"]
+    t.record_mutation()
+    t.record_command("python3 -m unittest test_merge.py", passed=True, exit_code=0)
+    assert t.unpaid_debt() == []
+
+
+def test_run_tests_falls_back_to_sys_executable_when_pytest_not_on_path(tmp_path, monkeypatch):
+    from unittest.mock import MagicMock
+    from src.tools import verification_tools
+
+    (tmp_path / "test_ok.py").write_text("def test_one():\n    assert 1 + 1 == 2\n", encoding="utf-8")
+    monkeypatch.setattr(verification_tools.shutil, "which", lambda _name: None)
+    captured_cmd = []
+
+    def _fake_run(cmd, **kwargs):
+        captured_cmd.append(list(cmd))
+        proc = MagicMock()
+        proc.returncode = 0
+        proc.stdout = "1 passed in 0.01s\n"
+        return proc
+
+    monkeypatch.setattr(verification_tools, "_run_subprocess", _fake_run)
+    res = verification_tools.run_tests(str(tmp_path))
+    assert res["status"] == "ok"
+    assert captured_cmd and captured_cmd[0][:3] == [verification_tools.sys.executable, "-m", "pytest"]
+
+
+def test_select_prompt_partial_routes_gemini_flash_lite_to_small():
+    from src.core.context.static_prompt_parts import select_prompt_partial
+
+    assert (
+        select_prompt_partial(
+            model_tier="compact",
+            provider_capabilities={"model": "gemini-3.5-flash-lite"},
+            is_reasoning=False,
+            load_partial=lambda name: name,
+        )
+        == "gemini-small.md"
+    )
+    assert (
+        select_prompt_partial(
+            model_tier="frontier",
+            provider_capabilities={"model": "gemini-3.1-pro-preview"},
+            is_reasoning=False,
+            load_partial=lambda name: name,
+        )
+        == "gemini-frontier.md"
+    )

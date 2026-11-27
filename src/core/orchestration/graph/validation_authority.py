@@ -200,14 +200,23 @@ class ValidationDebtTracker:
         *,
         passed: bool,
         after_mutation: Optional[bool] = None,
+        exit_code: Optional[int] = None,
+        skipped: bool = False,
     ) -> Dict[str, Any]:
-        """Record a shell validation command outcome and update red->green debt."""
+        """Record a shell validation command outcome and update red->green debt.
+
+        Non-test-failure outcomes — ``skipped=True``, pytest exit code ``5``
+        (no tests collected), or shell ``126``/``127`` (command not found / not
+        executable) — never create red->green baseline debt.
+        """
         info = classify_shell_validation(command)
         is_after = self.has_mutated if after_mutation is None else bool(after_mutation)
         stages = info["stages"] or [normalize_validation_command(command)]
         val_stages = [s for s in stages if is_validation_command(s)]
 
-        if not passed and not is_after:
+        _is_non_failure_exit = skipped or (exit_code in (5, 126, 127))
+
+        if not passed and not is_after and not _is_non_failure_exit:
             # Red baseline failure observed before first mutation -> create red->green debt
             for st in val_stages:
                 self.red_debt.add(st)
@@ -221,6 +230,15 @@ class ValidationDebtTracker:
             if norm_full:
                 self.passed_after_mutation.add(norm_full)
                 self.red_debt.discard(norm_full)
+            # A confirmed green Python test run (e.g. `pytest test_x.py`,
+            # `python3 -m pytest`, `python3 -m unittest`) pays down bare
+            # Python test-runner debt (`pytest` / `python -m pytest` / `unittest`).
+            _lower_stages = " ".join(val_stages).lower()
+            if any(tok in _lower_stages for tok in ("pytest", "unittest")):
+                for existing in list(self.red_debt):
+                    ex_low = existing.lower()
+                    if any(tok in ex_low for tok in ("pytest", "unittest")):
+                        self.red_debt.discard(existing)
 
         return {
             **info,

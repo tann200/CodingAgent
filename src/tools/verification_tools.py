@@ -5,6 +5,7 @@ import subprocess
 import shutil
 import os
 import re
+import sys
 import time
 
 try:
@@ -99,10 +100,17 @@ def run_tests(
     except ValueError as e:
         return {"status": "error", "error": str(e)}
     try:
-        if not shutil.which("pytest"):
-            return {"status": "skipped", "reason": "pytest not installed"}
+        pytest_bin = shutil.which("pytest")
+        if pytest_bin:
+            base_pytest_cmd = [pytest_bin]
+        else:
+            import importlib.util as _ilu
 
-        cmd = ["pytest", "-v", "--tb=short"]
+            if _ilu.find_spec("pytest") is None:
+                return {"status": "skipped", "reason": "pytest not installed"}
+            base_pytest_cmd = [sys.executable, "-m", "pytest"]
+
+        cmd = [*base_pytest_cmd, "-v", "--tb=short"]
 
         if use_last_failed:
             cmd.append("--lf")
@@ -123,7 +131,7 @@ def run_tests(
             output = proc.stdout
             test_ids = _extract_collected_test_ids(output)
             if test_ids:
-                cmd = ["pytest", "-v", "--tb=short", "--lf"]
+                cmd = [*base_pytest_cmd, "-v", "--tb=short", "--lf"]
             else:
                 use_last_failed = False
 
@@ -143,12 +151,12 @@ def run_tests(
                 if proc.returncode not in (0, 5):
                     changed_ids = _extract_collected_test_ids(proc.stdout)
                     if changed_ids:
-                        cmd = ["pytest", "-v", "--tb=short"]
+                        cmd = [*base_pytest_cmd, "-v", "--tb=short"]
                         cmd.extend(["--collect-only"] + list(changed_ids))
                     else:
-                        cmd = ["pytest", "-v", "--tb=short", workdir]
+                        cmd = [*base_pytest_cmd, "-v", "--tb=short", workdir]
                 else:
-                    cmd = ["pytest", "-v", "--tb=short"]
+                    cmd = [*base_pytest_cmd, "-v", "--tb=short"]
                     cmd.extend(test_ids)
             else:
                 cmd.append(workdir)
