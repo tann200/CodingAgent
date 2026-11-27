@@ -41,7 +41,7 @@ class TestGeminiAdapter:
             a = GeminiAdapter()
         assert a.name == "gemini"
         assert a.base_url == "https://generativelanguage.googleapis.com/v1beta/openai"
-        assert a.default_model == "gemini-2.5-flash"
+        assert a.default_model == "gemini-3.6-flash"
         assert a.supports_native_tools is True
         assert a.REQUIRES_API_KEY is True
         assert a.api_key is None
@@ -110,8 +110,13 @@ class TestGeminiAdapter:
 
         api_response = {
             "data": [
-                {"id": "models/gemini-2.5-flash"},
-                {"id": "models/gemini-2.5-pro"},
+                {"id": "models/gemini-3.6-flash"},
+                {"id": "models/gemini-3.5-flash-lite"},
+                {"id": "models/gemma-4-31b-it"},
+                {"id": "models/gemini-3.1-flash-image"},
+                {"id": "models/gemini-3.8-live"},
+                {"id": "models/gemini-2.5-flash-native-audio-latest"},
+                {"id": "models/gemini-robotics-er-2-preview"},
                 {"id": "models/text-embedding-004"},
                 {"id": "models/gemini-embedding-001"},
                 {"id": "models/imagen-3.0-generate-002"},
@@ -121,7 +126,7 @@ class TestGeminiAdapter:
         with patch("requests.get", return_value=_mock_response(200, api_response)):
             result = a.get_models_from_api()
         ids = [m["id"] for m in result["models"]]
-        assert ids == ["gemini-2.5-flash", "gemini-2.5-pro"]
+        assert ids == ["gemini-3.6-flash", "gemini-3.5-flash-lite", "gemma-4-31b-it"]
 
     def test_validate_connection(self):
         from src.core.inference.adapters.gemini_adapter import GeminiAdapter
@@ -142,4 +147,5 @@ class TestGeminiAdapter:
         assert g["supports_native_tools"] is True
         assert g["skip_functions_compat"] is True
         assert g["disable_thinking"] is False
-        assert "gemini-2.5-flash" in g["models"]
+        assert "gemini-3.6-flash" in g["models"]
+        assert "gemini-3.5-flash-lite" in g["models"]

@@ -38,17 +38,41 @@ _GEMINI_BASE_URL = "https://generativelanguage.googleapis.com/v1beta/openai"
 _MODELS_URL = f"{_GEMINI_BASE_URL}/models"
 
 _DEFAULT_MODELS = [
+    "gemini-3.6-flash",
+    "gemini-3.8-flash",
+    "gemini-3.5-flash",
+    "gemini-3.5-flash-lite",
+    "gemini-3.1-flash-lite",
+    "gemini-3.1-pro-preview",
     "gemini-2.5-flash",
-    "gemini-2.5-flash-lite",
-    "gemini-2.5-pro",
+    "gemma-4-31b-it",
+    "gemma-4-26b-a4b-it",
 ]
+
+_NON_CHAT_SUBSTRINGS = (
+    "embedding",
+    "imagen",
+    "-image",
+    "veo",
+    "tts",
+    "aqa",
+    "-live",
+    "native-audio",
+    "transcribe",
+    "robotics",
+    "computer-use",
+    "nano-banana",
+    "decision",
+    "lyria",
+    "genie",
+)
 
 
 class GeminiAdapter(OpenAICompatibleAdapter):
     """Adapter for Google Gemini via AI Studio's OpenAI-compatible API."""
 
     BASE_URL = _GEMINI_BASE_URL
-    DEFAULT_MODEL = "gemini-2.5-flash"
+    DEFAULT_MODEL = "gemini-3.6-flash"
 
     # Tells the TUI settings modal to show the API key entry UI.
     REQUIRES_API_KEY = True
@@ -173,10 +197,10 @@ class GeminiAdapter(OpenAICompatibleAdapter):
                 continue
             model_id = self._normalize_model_id(str(raw_id).strip())
             lower = model_id.lower()
-            # Filter out embedding/imagen/veo/aqa non-chat endpoints
-            if not lower.startswith("gemini"):
+            # Keep Gemini and Gemma chat/coding models; exclude media/audio/embedding endpoints
+            if not (lower.startswith("gemini") or lower.startswith("gemma")):
                 continue
-            if any(skip in lower for skip in ("embedding", "imagen", "veo", "tts", "aqa")):
+            if any(skip in lower for skip in _NON_CHAT_SUBSTRINGS):
                 continue
             if model_id in seen:
                 continue
