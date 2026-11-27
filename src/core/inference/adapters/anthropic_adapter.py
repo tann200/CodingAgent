@@ -69,8 +69,8 @@ class AnthropicAdapter(OpenAICompatibleAdapter):
     BASE_URL = _ANTHROPIC_BASE_URL
     REQUIRES_API_KEY = True
 
-    # Default to claude-3-5-sonnet (broadly available, good cache hit rate)
-    DEFAULT_MODEL = "claude-3-5-sonnet-20241022"
+    # Default to current frontier Claude Sonnet
+    DEFAULT_MODEL = "claude-sonnet-4-6"
     DEFAULT_MAX_TOKENS = 4096
 
     def __init__(

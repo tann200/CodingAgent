@@ -39,7 +39,7 @@ class TestGroqAdapter:
             a = GroqAdapter()
         assert a.name == "groq"
         assert a.base_url == "https://api.groq.com/openai/v1"
-        assert a.default_model == "llama-3.1-8b-instant"
+        assert a.default_model == "qwen/qwen3.8-27b"
 
     def test_instantiation_with_key(self):
         """API key is stored on adapter."""
@@ -158,8 +158,9 @@ class TestGroqAdapter:
         assert len(groq_entries) == 1
         g = groq_entries[0]
         assert g["active"] is False
-        assert "llama-3.1-8b-instant" in g["models"]
-        assert g.get("small_model") == "llama-3.1-8b-instant"
+        assert "qwen/qwen3.8-27b" in g["models"]
+        assert g.get("small_model") == "openai/gpt-oss-20b"
+        assert "llama-3.1-8b-instant" not in g["models"]
         assert g.get("skip_functions_compat") is True
         assert g.get("disable_thinking") is False
 

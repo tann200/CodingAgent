@@ -149,6 +149,30 @@ class ProviderFallbackChain:
         except Exception:
             return original_model
 
+    def _is_candidate_authenticated(self, candidate_key: str, mgr: Any) -> bool:
+        """Return False when a fallback provider demonstrably lacks required credentials."""
+        if not mgr or not hasattr(mgr, "get_provider"):
+            return True
+        try:
+            adapter = mgr.get_provider(candidate_key)
+        except Exception:
+            return True
+        if adapter is None:
+            return True
+        if getattr(adapter, "REQUIRES_API_KEY", False) is True:
+            key = getattr(adapter, "api_key", None)
+            if not (isinstance(key, str) and key.strip()):
+                return False
+        if getattr(adapter, "AUTH_FLOW", None) == "github_device":
+            try:
+                from src.core.inference.adapters.github_copilot_auth import is_authenticated
+
+                if not is_authenticated():
+                    return False
+            except Exception:
+                return False
+        return True
+
     async def call(
         self,
         *,
@@ -210,6 +234,14 @@ class ProviderFallbackChain:
                     continue
             except Exception:
                 pass
+
+            # Skip cloud fallback candidates that lack required credentials
+            if not self._is_candidate_authenticated(candidate_key, mgr):
+                logger.debug(
+                    "ProviderFallbackChain: skipping %r — missing credentials",
+                    candidate_key,
+                )
+                continue
 
             attempts += 1
             logger.info(

@@ -21,25 +21,50 @@ logger = logging.getLogger(__name__)
 # TASK-18: Model pricing table — (input $/1k tokens, output $/1k tokens).
 # Prices sourced from public provider documentation; update as needed.
 _PRICING: dict[str, tuple[float, float]] = {
-    # OpenAI
+    # OpenAI (2025-2026 + legacy)
+    "gpt-6": (0.005, 0.020),
+    "gpt-5": (0.0025, 0.010),
     "gpt-4o": (0.0025, 0.010),
     "gpt-4o-mini": (0.00015, 0.0006),
     "gpt-4-turbo": (0.010, 0.030),
     "gpt-4": (0.030, 0.060),
     "gpt-3.5-turbo": (0.0005, 0.0015),
+    "o4-mini": (0.0011, 0.0044),
+    "o3": (0.002, 0.008),
+    "o3-mini": (0.0011, 0.0044),
     "o1": (0.015, 0.060),
     "o1-mini": (0.003, 0.012),
-    "o3-mini": (0.001, 0.004),
-    # Anthropic
+    # Anthropic (2025-2026 + legacy)
+    "claude-opus-4-6": (0.015, 0.075),
+    "claude-opus-4.6": (0.015, 0.075),
+    "claude-sonnet-4-6": (0.003, 0.015),
+    "claude-sonnet-4.6": (0.003, 0.015),
+    "claude-sonnet-4-5": (0.003, 0.015),
+    "claude-sonnet-4.5": (0.003, 0.015),
+    "claude-haiku-4-5": (0.0008, 0.004),
     "claude-3-5-sonnet-20241022": (0.003, 0.015),
     "claude-3-5-haiku-20241022": (0.0008, 0.004),
     "claude-3-opus-20240229": (0.015, 0.075),
     "claude-3-sonnet-20240229": (0.003, 0.015),
     "claude-3-haiku-20240307": (0.00025, 0.00125),
-    # Gemini (Google)
+    # Google Gemini & Gemma (2025-2026 + legacy)
+    "gemini-3.6-flash": (0.0003, 0.0012),
+    "gemini-3.5-flash-lite": (0.000075, 0.0003),
+    "gemini-3.5-flash": (0.00025, 0.001),
+    "gemini-3.1-pro-preview": (0.00125, 0.005),
+    "gemini-3.1-flash-lite": (0.000075, 0.0003),
+    "gemini-2.5-pro": (0.00125, 0.005),
+    "gemini-2.5-flash": (0.00015, 0.0006),
+    "gemma-4-31b-it": (0.0001, 0.0002),
+    "gemma-4-26b-a4b-it": (0.00008, 0.00016),
     "gemini-1.5-pro": (0.00125, 0.005),
     "gemini-1.5-flash": (0.000075, 0.0003),
     "gemini-2.0-flash": (0.0001, 0.0004),
+    # Groq / Open-weight (2025-2026 + legacy)
+    "qwen/qwen3.8-27b": (0.0003, 0.0006),
+    "openai/gpt-oss-120b": (0.0005, 0.001),
+    "openai/gpt-oss-20b": (0.0001, 0.0002),
+    "llama-3.3-70b-versatile": (0.00059, 0.00079),
     # Mistral
     "mistral-large-latest": (0.002, 0.006),
     "mistral-small-latest": (0.0002, 0.0006),

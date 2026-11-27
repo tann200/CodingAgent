@@ -64,9 +64,11 @@ _DEFAULT_MODELS = [
     "claude-sonnet-4.5",
     "claude-3.7-sonnet",
     "claude-3.5-sonnet",
-    "o1",
+    "o3",
     "o3-mini",
-    "gemini-2.0-flash-001",
+    "o4-mini",
+    "gemini-3.5-flash",
+    "gemini-2.5-pro",
 ]
 
 

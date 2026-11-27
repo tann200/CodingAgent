@@ -373,3 +373,68 @@ class TestSingleton:
 
     def test_get_fallback_chain_is_provider_fallback_chain(self):
         assert isinstance(get_fallback_chain(), ProviderFallbackChain)
+
+
+def test_fallback_chain_skips_unauthenticated_api_key_and_copilot_candidates(monkeypatch):
+    from types import SimpleNamespace
+
+    chain = ProviderFallbackChain()
+    monkeypatch.setenv("LLM_PROVIDER_FALLBACK_ENABLED", "1")
+    monkeypatch.setenv("LLM_PROVIDER_FALLBACK_MAX", "2")
+    monkeypatch.delenv("LLM_PROVIDER_FALLBACK_ORDER", raising=False)
+
+    adapters = {
+        "groq_no_key": SimpleNamespace(REQUIRES_API_KEY=True, api_key=None, models=["openai/gpt-oss-20b"], default_model="openai/gpt-oss-20b"),
+        "github_copilot": SimpleNamespace(REQUIRES_API_KEY=False, AUTH_FLOW="github_device", models=["gpt-5"], default_model="gpt-5"),
+        "ollama": SimpleNamespace(REQUIRES_API_KEY=False, models=["qwen3.5:9b"], default_model="qwen3.5:9b"),
+    }
+
+    class _FakeMgr:
+        def list_providers(self):
+            return ["gemini", "groq_no_key", "github_copilot", "ollama"]
+
+        def get_provider(self, key):
+            return adapters.get(key)
+
+    class _ClosedCB:
+        def is_open(self):
+            return False
+
+    monkeypatch.setattr("src.core.inference.adapters.github_copilot_auth.is_authenticated", lambda: False)
+
+    called_providers = []
+
+    async def _fake_call(messages, provider=None, model=None, *args, **kw):
+        called_providers.append((provider, model))
+        return {"ok": True, "choices": [{"message": {"content": "ok"}}]}
+
+    res, used = asyncio.run(
+        chain.call(
+            primary_result={"ok": False, "error": "rate_limit"},
+            primary_provider="gemini",
+            messages=[{"role": "user", "content": "hi"}],
+            model="gemini-3.5-flash-lite",
+            stream=False,
+            format_json=False,
+            tools=None,
+            kwargs={},
+            call_model_internal=_fake_call,
+            get_provider_manager=lambda: _FakeMgr(),
+            get_circuit_breaker=lambda _k: _ClosedCB(),
+        )
+    )
+    assert res["ok"] is True
+    assert used == "ollama"
+    assert called_providers == [("ollama", "qwen3.5:9b")]
+
+
+def test_2026_model_pricing_and_adapter_defaults():
+    from src.core.inference.adapters.anthropic_adapter import AnthropicAdapter
+    from src.core.inference.adapters.groq_adapter import GroqAdapter
+    from src.core.inference.provider_context import estimate_cost_usd
+
+    assert AnthropicAdapter.DEFAULT_MODEL == "claude-sonnet-4-6"
+    assert GroqAdapter.DEFAULT_MODEL == "qwen/qwen3.8-27b"
+    assert estimate_cost_usd(1000, 1000, "gemini-3.5-flash-lite") == 0.000375
+    assert estimate_cost_usd(1000, 1000, "claude-sonnet-4-6") == 0.018
+    assert estimate_cost_usd(1000, 1000, "qwen/qwen3.8-27b") == 0.0009

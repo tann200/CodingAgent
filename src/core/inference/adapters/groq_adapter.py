@@ -15,8 +15,8 @@ This adapter extends OpenAICompatibleAdapter with:
 
 Model tier mapping
 ------------------
-  SMALL  : llama-3.1-8b-instant / openai/gpt-oss-20b — ultra-fast
-  MEDIUM : llama-3.3-70b-versatile / qwen/qwen3.8-27b — strong coding + tools
+  SMALL  : openai/gpt-oss-20b — ultra-fast open-weight + native tools
+  MEDIUM : qwen/qwen3.8-27b / llama-3.3-70b-versatile — strong coding + tools
   LARGE  : openai/gpt-oss-120b — high-capability open-weight reasoning
 
 ProviderManager convention:
@@ -42,11 +42,10 @@ _MODELS_URL = "https://api.groq.com/openai/v1/models"
 # Curated model list — ordered from fastest (SMALL) to most capable (MEDIUM/LARGE).
 # Keep in sync with model_tiers.py classification patterns.
 _DEFAULT_MODELS = [
-    "llama-3.1-8b-instant",  # SMALL  — 8B, ~500 tok/s, best latency
-    "llama-3.3-70b-versatile",  # MEDIUM — 70B, strong general capability
     "qwen/qwen3.8-27b",  # MEDIUM — Qwen 3.8 27B coding + native tools
-    "openai/gpt-oss-120b",  # LARGE  — 120B open-weight reasoning + tools
     "openai/gpt-oss-20b",  # SMALL  — 20B fast open-weight + tools
+    "openai/gpt-oss-120b",  # LARGE  — 120B open-weight reasoning + tools
+    "llama-3.3-70b-versatile",  # MEDIUM — 70B, strong general capability
 ]
 
 
@@ -54,7 +53,7 @@ class GroqAdapter(OpenAICompatibleAdapter):
     """Adapter for Groq's fast-inference LPU API."""
 
     BASE_URL = "https://api.groq.com/openai/v1"
-    DEFAULT_MODEL = "llama-3.1-8b-instant"
+    DEFAULT_MODEL = "qwen/qwen3.8-27b"
 
     # Tells the TUI settings modal to show the API key entry UI.
     REQUIRES_API_KEY = True

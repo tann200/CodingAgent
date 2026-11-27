@@ -335,10 +335,16 @@ class SessionCostTracker:
 
         # Minimal built-in fallback table (USD per 1M tokens)
         _PRICING: Dict[str, tuple] = {
-            "gpt-4o": (5.0, 15.0),
+            "gpt-5": (2.5, 10.0),
+            "gpt-4o": (2.5, 10.0),
             "gpt-4o-mini": (0.15, 0.60),
+            "claude-sonnet-4": (3.0, 15.0),
+            "claude-opus-4": (15.0, 75.0),
             "claude-3-5-sonnet": (3.0, 15.0),
             "claude-3-opus": (15.0, 75.0),
+            "gemini-3.5-flash-lite": (0.075, 0.30),
+            "gemini-3": (0.30, 1.20),
+            "qwen3.8": (0.30, 0.60),
         }
         model_lower = model.lower()
         input_price, output_price = 0.5, 1.5  # safe default
