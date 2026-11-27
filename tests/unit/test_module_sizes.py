@@ -8,11 +8,9 @@ from pathlib import Path
 
 NODE_DIR = Path("src/core/orchestration/graph/nodes")
 
-# Current measured limits (tightened from actual sizes to catch regressions).
-_FILE_LIMITS = {
-    "frontier_loop_node.py": 899,
-}
-_DEFAULT_LIMIT = 600  # all other node files must stay under this
+# All node files must stay strictly within the 600-LOC target (TASK-43).
+_FILE_LIMITS: dict[str, int] = {}
+_DEFAULT_LIMIT = 600
 
 
 def test_no_new_node_file_bloat():
