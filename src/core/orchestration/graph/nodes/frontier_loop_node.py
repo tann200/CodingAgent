@@ -456,6 +456,7 @@ async def frontier_loop_node(
                     in (
                         "unverified_text_only_completion",
                         "unverified_mutation_missing",
+                        "missing_named_deliverable",
                         "empty_response",
                         "empty_inspection",
                         "mutation_failed",

@@ -29,7 +29,9 @@ class TaskType(str, Enum):
 
 _MUTATION_REGEX = re.compile(
     r"\b(?:"
-    r"create|write|edit|modify|update|patch|delete|remove|fix|refactor|implement|add|replace|rename|"
+    r"create|creating|write|writing|edit|editing|modify|modifying|update|updating|patch|patching|"
+    r"delete|deleting|remove|removing|fix|fixing|refactor|refactoring|implement|implementing|"
+    r"add|adding|replace|replacing|rename|renaming|"
     r"make|change|set|convert|revert|restore|format|upgrade|downgrade|install|move|wrap|extract|inline"
     r")\b.*?(?:"
     r"\.(?:py|ts|js|json|md|txt|ya?ml|html|css|sh|rs|go|java|c|cpp)|"
@@ -115,9 +117,9 @@ def classify_task(
 
 
 _NAMED_CREATE_PATTERNS: tuple[re.Pattern[str], ...] = (
-    # "create a file called hello.py", "create a test file test_math.py", "create main.py"
+    # "create a file called hello.py", "writing a README.md", "create a test file test_math.py"
     re.compile(
-        r"\b(?:create|write|add)\s+(?:a\s+)?(?:new\s+)?(?:test\s+|python\s+|config\s+|shared\s+)?(?:file|module)?\s*(?:called|named)?\s*`?([A-Za-z0-9_./-]+\.[A-Za-z0-9]{1,8})`?",
+        r"\b(?:create|creating|write|writing|add|adding)\s+(?:a\s+)?(?:new\s+)?(?:test\s+|python\s+|config\s+|shared\s+)?(?:file|module)?\s*(?:called|named)?\s*`?([A-Za-z0-9_./-]+\.[A-Za-z0-9]{1,8})`?",
         re.IGNORECASE,
     ),
     # "into a new file user_validator.py", "into constants.py"
@@ -128,6 +130,11 @@ _NAMED_CREATE_PATTERNS: tuple[re.Pattern[str], ...] = (
     # "split X into two files: math_utils.py (...) and string_utils.py (...)"
     re.compile(
         r"\bsplit\b[^\n]*?\binto\s+(?:two|three|multiple|\d+)\s+(?:separate\s+)?(?:files|modules)\s*[:\-]\s*(.+?)(?:\.\s+[A-Z]|\.$|\n|$)",
+        re.IGNORECASE,
+    ),
+    # "writing comprehensive unit tests in test_math_ops.py"
+    re.compile(
+        r"\b(?:write|writing|create|creating|add|adding)\b[^\n]{0,60}?\b(?:tests?|specs?|documentation|readme)\s+in\s+(?:a\s+)?(?:new\s+)?(?:file\s+)?`?([A-Za-z0-9_./-]+\.[A-Za-z0-9]{1,8})`?",
         re.IGNORECASE,
     ),
 )

@@ -649,8 +649,18 @@ class OllamaAdapter(LLMClient):
                 if norm_tcs:
                     choice["finish_reason"] = "tool_calls"
 
-            p_tokens = raw_response.get("prompt_eval_count", 0)
-            c_tokens = raw_response.get("eval_count", 0)
+            raw_meta = raw_response.get("meta") if isinstance(raw_response, dict) else None
+            meta_block: Dict[str, Any] = raw_meta if isinstance(raw_meta, dict) else {}
+            p_tokens = int(
+                (raw_response.get("prompt_eval_count") if isinstance(raw_response, dict) else None)
+                or meta_block.get("prompt_eval_count")
+                or 0
+            )
+            c_tokens = int(
+                (raw_response.get("eval_count") if isinstance(raw_response, dict) else None)
+                or meta_block.get("eval_count")
+                or 0
+            )
 
             return {
                 "ok": True,
