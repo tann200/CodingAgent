@@ -696,6 +696,44 @@ def _minimal_schema(name: str, fn: Callable, description: str) -> dict:
 # ---------------------------------------------------------------------------
 
 
+_BUILTIN_SNAPSHOT_LOCK = threading.Lock()
+_BUILTIN_SNAPSHOT: Optional[tuple[Dict[str, Dict[str, Any]], Dict[str, str]]] = None
+
+
+def clear_builtin_registry_cache() -> None:
+    """Clear the cached built-in tool snapshot (useful for tests that reload tool modules)."""
+    global _BUILTIN_SNAPSHOT
+    with _BUILTIN_SNAPSHOT_LOCK:
+        _BUILTIN_SNAPSHOT = None
+
+
+def _get_builtin_tool_snapshot() -> tuple[Dict[str, Dict[str, Any]], Dict[str, str]]:
+    """Discover built-in @tool modules and aliases once per process, returning an immutable snapshot."""
+    global _BUILTIN_SNAPSHOT
+    with _BUILTIN_SNAPSHOT_LOCK:
+        if _BUILTIN_SNAPSHOT is not None:
+            return _BUILTIN_SNAPSHOT
+        base_reg = ToolRegistry()
+        for mod_name in _builtin_module_names():
+            base_reg.discover_module_name(mod_name)
+        for _alias_tool_name in _ALIAS_ONLY_TOOL_NAMES:
+            base_reg.set_schema_visibility(_alias_tool_name, "alias_only")
+        for alias, canonical in _BUILTIN_ALIASES.items():
+            base_reg.alias(alias, canonical)
+        try:
+            from src.tools.tools_config import TOOL_ALIASES as _ta
+
+            for _alias, _canonical in _ta.items():
+                base_reg.alias(_alias, _canonical)
+        except Exception as _alias_exc:
+            logger.debug("build_registry: could not load TOOL_ALIASES: %s", _alias_exc)
+        _BUILTIN_SNAPSHOT = (
+            {k: dict(v) for k, v in base_reg._tools.items()},
+            dict(base_reg._origins),
+        )
+        return _BUILTIN_SNAPSHOT
+
+
 def build_registry(
     working_dir: Optional[str] = None,
     extra_modules: Optional[List[Any]] = None,
@@ -754,28 +792,10 @@ def build_registry(
 
     reg = ToolRegistry(working_dir=working_dir)
 
-    # Discover all built-in tool modules (auto-discovered, TW-5)
-    for mod_name in _builtin_module_names():
-        reg.discover_module_name(mod_name)
-
-    # Mark capability wrappers and deprecated duplicate tools as alias_only so
-    # they stay executable while primary schema queries remain flat primitives.
-    for _alias_tool_name in _ALIAS_ONLY_TOOL_NAMES:
-        reg.set_schema_visibility(_alias_tool_name, "alias_only")
-
-    # Register built-in aliases
-    for alias, canonical in _BUILTIN_ALIASES.items():
-        reg.alias(alias, canonical)
-
-    # TASK-16: Also register all aliases from tools_config.TOOL_ALIASES so
-    # the LLM can use short forms (read, write, edit, etc.) transparently.
-    try:
-        from src.tools.tools_config import TOOL_ALIASES as _ta
-
-        for _alias, _canonical in _ta.items():
-            reg.alias(_alias, _canonical)
-    except Exception as _alias_exc:
-        logger.debug("build_registry: could not load TOOL_ALIASES: %s", _alias_exc)
+    # Hydrate built-in tools & aliases from process-level snapshot (OPT-01)
+    cached_tools, cached_origins = _get_builtin_tool_snapshot()
+    reg._tools = {k: dict(v) for k, v in cached_tools.items()}
+    reg._origins = dict(cached_origins)
 
     if include_echo:
 

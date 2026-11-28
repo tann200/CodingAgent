@@ -98,12 +98,12 @@ def _init_services(orch: Any) -> None:
         orch.mcp_manager = None
 
     try:
-        from src.server.app import ServerEventBusAdapter, run_server
         import os
-        import threading
 
         if os.getenv("CODINGAGENT_HTTP_SERVER", os.getenv("CODING_AGENT_HTTP_SERVER", "false")).lower() == "true":
+            import threading
             import src.server.app as server_app
+            from src.server.app import ServerEventBusAdapter, run_server
 
             try:
                 server_app.register_event_bus(orch.event_bus)
