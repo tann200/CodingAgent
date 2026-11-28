@@ -142,11 +142,11 @@ def test_specific_match(tmp_path):
 
 
 # ---------------------------------------------------------------------------
-# TH-6  Pre-hook timeout → fail-open (allowed)
+# TH-6  Pre-hook timeout → fail-closed (SPEC §1.2 / REM-03)
 # ---------------------------------------------------------------------------
 
 
-def test_pre_hook_timeout_failopen(tmp_path):
+def test_pre_hook_timeout_failclosed(tmp_path):
     from src.core.orchestration import tool_hooks
 
     # Temporarily reduce timeout to 0.05s so the test is fast
@@ -166,7 +166,8 @@ def test_pre_hook_timeout_failopen(tmp_path):
         )
         r = _runner(tmp_path)
         result = r.run_pre("bash", {})
-        assert result.allowed is True  # timed out → fail open
+        assert result.allowed is False  # timed out → fail closed
+        assert "timed out" in result.reason.lower()
     finally:
         tool_hooks._PRE_HOOK_TIMEOUT = original
 

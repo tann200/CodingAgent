@@ -144,10 +144,15 @@ def _run_preflight_and_lookup(
     tool_call_id: str,
 ) -> tuple[Optional[Dict[str, Any]], Any]:
     """Run preflight check, tool registry lookup, and agent/role tool restrictions."""
-    try:
-        preflight = orch.preflight_check(tool_call)
-    except Exception:
-        preflight = {"ok": True}
+    preflight: Any = {"ok": True}
+    if hasattr(orch, "preflight_check"):
+        try:
+            preflight = orch.preflight_check(tool_call)
+        except Exception as pf_exc:
+            return {
+                "ok": False,
+                "error": f"Preflight check failed closed for '{name}': {pf_exc}",
+            }, None
     if isinstance(preflight, dict) and not preflight.get("ok", True):
         if preflight.get("error") == "tool_not_found":
             return {
@@ -189,8 +194,11 @@ def _run_preflight_and_lookup(
                     "(allowed_tools restriction). Check the agent's allowed_tools list."
                 ),
             }, None
-    except Exception:
-        pass
+    except Exception as agent_exc:
+        return {
+            "ok": False,
+            "error": f"Delegated agent tool restriction check failed closed for '{name}': {agent_exc}",
+        }, None
 
     try:
         role_manager = getattr(orch, "role_manager", None)
@@ -209,8 +217,11 @@ def _run_preflight_and_lookup(
                             "check the role's allowed_tools / denied_tools config."
                         ),
                     }, None
-    except Exception:
-        pass
+    except Exception as role_exc:
+        return {
+            "ok": False,
+            "error": f"Role tool restriction check failed closed for '{name}': {role_exc}",
+        }, None
 
     agent_override = _check_agent_permission_override(orch, name, args)
     if agent_override is not None:

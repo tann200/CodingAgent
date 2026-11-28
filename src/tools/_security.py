@@ -133,7 +133,7 @@ SAFE_COMMANDS: set[str] = {
     "tree",
     "sort",
     "uniq",
-    "awk",
+    # NOTE: 'awk' intentionally omitted from SAFE_COMMANDS — supports system() and arbitrary file I/O.
     "sed",
     "diff",
     "stat",
@@ -172,7 +172,7 @@ SAFE_COMMANDS: set[str] = {
     "dirname",
     "readlink",
     "tar",
-    "zip",
+    # NOTE: 'zip' intentionally omitted from SAFE_COMMANDS — writes archives and supports -T -TT command exec.
     "unzip",
     "type",
     "md5sum",

@@ -185,7 +185,9 @@ def _check_git_command_safety(cmd_parts: list[str]) -> tuple[bool, str]:
     # Check for dangerous git flags anywhere in the command
     for part in cmd_parts[1:]:
         p_lower = part.lower()
-        if p_lower == "-c" or p_lower.startswith("-c="):
+        if p_lower == "-c" or p_lower.startswith("-c=") or (
+            part.startswith("-c") and len(part) > 2
+        ):
             return False, "Dangerous git flag '-c' is blocked."
         for d in (
             "--config-env",
@@ -194,6 +196,8 @@ def _check_git_command_safety(cmd_parts: list[str]) -> tuple[bool, str]:
             "--work-tree",
             "--upload-pack",
             "--receive-pack",
+            "--output",
+            "--ext-diff",
         ):
             if p_lower == d or p_lower.startswith(d + "="):
                 return False, f"Dangerous git flag '{part}' is blocked."
@@ -352,19 +356,34 @@ def _check_shell_flags(cmd_parts: list, first_cmd: str) -> Optional[Dict[str, An
                     "status": "error",
                     "error": "sed -i (in-place edit) is not allowed. Use edit_file or edit_file_atomic instead.",
                 }
+            # Block GNU sed command-execution (`e`) and file-write (`w`) script commands
+            if not _part.startswith("-"):
+                if _re.search(r"(?:^|[;\s/])(?:e(?:\s|$|;)|w\s+\S)", _part) or _re.search(
+                    r"s([^\\]).*?\1.*?\1[a-zA-Z]*[ew]", _part
+                ):
+                    return {
+                        "status": "error",
+                        "error": "sed 'e' (execute) and 'w' (write file) commands are not allowed.",
+                    }
     elif first_cmd == "tar":
-        for part in cmd_parts[1:]:
+        for idx, part in enumerate(cmd_parts[1:]):
+            p_low = part.lower()
+            if p_low.startswith("--checkpoint-action") or p_low.startswith("--to-command") or p_low == "--rsh-command" or p_low.startswith("--rsh-command="):
+                return {
+                    "status": "error",
+                    "error": f"Dangerous tar flag '{part}' is not allowed.",
+                }
             stripped = part.lstrip("-")
-            if part in TAR_EXTRACT_FLAGS or (
-                part.startswith("-") and not part.startswith("--") and "x" in stripped
-            ):
+            is_short_or_oldstyle = (
+                (part.startswith("-") and not part.startswith("--"))
+                or (idx == 0 and not part.startswith("-") and part.isalpha())
+            )
+            if part in TAR_EXTRACT_FLAGS or (is_short_or_oldstyle and "x" in stripped):
                 return {
                     "status": "error",
                     "error": "tar extract is not allowed. Use tar -t / --list to inspect archives.",
                 }
-            if part in TAR_CREATE_FLAGS or (
-                part.startswith("-") and not part.startswith("--") and "c" in stripped
-            ):
+            if part in TAR_CREATE_FLAGS or (is_short_or_oldstyle and "c" in stripped):
                 return {
                     "status": "error",
                     "error": "tar archive creation is not allowed. SAFE_COMMANDS permits tar for inspection only.",
@@ -459,12 +478,17 @@ def _check_shell_flags(cmd_parts: list, first_cmd: str) -> Optional[Dict[str, An
                 return nested_err
             break
     elif first_cmd == "find":
-        # Block find -exec / -execdir / -ok with shell or code-exec interpreters.
-        _FIND_EXEC_FLAGS = {"-exec", "-execdir", "-ok"}
+        # Block find -exec / -execdir / -ok / -okdir with shells, denylisted/unsafe binaries,
+        # or inline code-exec interpreters, and recursively validate inner flags.
+        _FIND_EXEC_FLAGS = {"-exec", "-execdir", "-ok", "-okdir"}
         _SHELL_NAMES = {"sh", "bash", "zsh", "ksh", "fish", "dash", "csh", "tcsh"}
         for _i, _part in enumerate(cmd_parts[1:], 1):
+            if _part == "-delete":
+                return {
+                    "status": "error",
+                    "error": "find -delete is not allowed. Use delete_file instead.",
+                }
             if _part in _FIND_EXEC_FLAGS:
-                # Collect the exec'd command (tokens until \; or +)
                 _exec_args = []
                 for _follow in cmd_parts[_i + 1 :]:
                     if _follow in (";", "+", r"\;", "\\;"):
@@ -481,16 +505,6 @@ def _check_shell_flags(cmd_parts: list, first_cmd: str) -> Optional[Dict[str, An
                             "find -exec sh/bash/etc can execute arbitrary commands."
                         ),
                     }
-                if _exec_binary in CODE_EXEC_INTERPRETERS:
-                    _exec_flags = _exec_args[1:]
-                    if any(_f in CODE_EXEC_FLAGS for _f in _exec_flags):
-                        return {
-                            "status": "error",
-                            "error": (
-                                f"find {_part} with '{_exec_binary}' and inline execution flags "
-                                "is not allowed: find -exec can bypass the inline-code guard."
-                            ),
-                        }
                 if _exec_binary in _COMMAND_DENYLIST:
                     return {
                         "status": "error",
@@ -499,6 +513,26 @@ def _check_shell_flags(cmd_parts: list, first_cmd: str) -> Optional[Dict[str, An
                             f"'{_exec_binary}' is in the command denylist."
                         ),
                     }
+                for _f in _exec_args[1:]:
+                    if _is_code_exec_flag(_exec_args[0], _f):
+                        return {
+                            "status": "error",
+                            "error": (
+                                f"find {_part} with '{_exec_binary}' and inline execution flag '{_f}' "
+                                "is not allowed: find -exec cannot bypass the inline-code guard."
+                            ),
+                        }
+                if _exec_binary not in SAFE_COMMANDS and _exec_binary not in TEST_COMPILE_COMMANDS:
+                    return {
+                        "status": "error",
+                        "error": (
+                            f"find {_part} with '{_exec_binary}' is not allowed: "
+                            "only allowlisted safe or test/compile commands may be invoked via find -exec."
+                        ),
+                    }
+                nested_err = _check_shell_flags(_exec_args, _exec_binary)
+                if nested_err is not None:
+                    return nested_err
     return None
 
 

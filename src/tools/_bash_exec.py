@@ -7,6 +7,7 @@ re-exported here for backward compatibility with callers and tests.
 from __future__ import annotations
 
 import logging
+import os
 import re as _re
 import shlex
 import shutil
@@ -174,12 +175,16 @@ def bash(
 
         if not operators:
             cmd_parts = segments[0]
-        elif Path("/bin/bash").is_file():
-            from src.core.orchestration.graph.validation_authority import wrap_with_pipefail
-
-            cmd_parts = ["/bin/bash", "-c", wrap_with_pipefail(command, "bash")]
         else:
-            cmd_parts = ["/bin/sh", "-c", command]
+            from src.tools.bash_security import reconstruct_shell_command
+
+            reconstructed_cmd = reconstruct_shell_command(segments, operators)
+            if Path("/bin/bash").is_file():
+                from src.core.orchestration.graph.validation_authority import wrap_with_pipefail
+
+                cmd_parts = ["/bin/bash", "-c", wrap_with_pipefail(reconstructed_cmd, "bash")]
+            else:
+                cmd_parts = ["/bin/sh", "-c", reconstructed_cmd]
     else:
         try:
             cmd_parts = shlex.split(command)
@@ -200,12 +205,18 @@ def bash(
     # wrap the spawn when a backend is available, refuse when the sandbox is
     # required but cannot be applied, and warn (interactive) when unsandboxed.
     if run_in_background:
-        _bg_sandbox_prefix = _build_background_sandbox(cmd_parts, Path(workdir))
-        _bg_cmd = _bg_sandbox_prefix + cmd_parts if _bg_sandbox_prefix else cmd_parts
+        _bg_wrapped = _build_background_sandbox(cmd_parts, Path(workdir))
+        if _bg_wrapped:
+            if len(_bg_wrapped) >= len(cmd_parts) and _bg_wrapped[-len(cmd_parts) :] == cmd_parts:
+                _bg_cmd = _bg_wrapped
+            else:
+                _bg_cmd = _bg_wrapped + cmd_parts
+        else:
+            _bg_cmd = cmd_parts
         _sb_profile_path: Optional[str] = None
-        if _bg_sandbox_prefix and len(_bg_sandbox_prefix) >= 3 and _bg_sandbox_prefix[-2] == "-f":
-            _sb_profile_path = str(_bg_sandbox_prefix[-1])
-        if _bg_sandbox_prefix is None:
+        if _bg_wrapped and len(_bg_wrapped) >= 3 and _bg_wrapped[1] == "-f":
+            _sb_profile_path = str(_bg_wrapped[2])
+        if _bg_wrapped is None:
             try:
                 _enforce = bool(_sandbox._enforcement_required())
             except Exception:
@@ -234,12 +245,15 @@ def bash(
             except Exception:
                 pass
         try:
+            _bg_env = _sandbox._scrub_sandbox_env(os.environ)
             proc = subprocess.Popen(
                 _bg_cmd,
                 cwd=str(Path(workdir)),
+                env=_bg_env,
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
                 stdin=subprocess.DEVNULL,
+                start_new_session=True,
             )
             _SPAWNED_BG_PIDS.add(proc.pid)
             _SPAWNED_BG_PROCS[proc.pid] = (proc, _sb_profile_path)
@@ -423,7 +437,7 @@ def bash_readonly(
                 ),
             }
 
-    # Gate 3c: Block sed in-place edit flags (-i / --in-place) in read-only mode.
+    # Gate 3c: Block sed in-place edit flags and find -exec/-delete in read-only mode.
     if first_cmd == "sed":
         for token in cmd_parts[1:]:
             if token in SED_WRITE_FLAGS or token.startswith("-i"):
@@ -432,6 +446,15 @@ def bash_readonly(
                     "error": (
                         f"sed flag '{token}' performs in-place file modification "
                         "and is not allowed in read-only mode."
+                    ),
+                }
+    elif first_cmd == "find":
+        for token in cmd_parts[1:]:
+            if token in ("-exec", "-execdir", "-ok", "-okdir", "-delete"):
+                return {
+                    "status": "error",
+                    "error": (
+                        f"find flag '{token}' is not allowed in read-only mode."
                     ),
                 }
 

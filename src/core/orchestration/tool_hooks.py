@@ -347,10 +347,18 @@ class ToolHookRunner:
                     return HookResult(allowed=False, reason=reason.strip())
             except subprocess.TimeoutExpired:
                 logger.warning(
-                    "tool_hooks: pre-hook timed out for %r, allowing", tool_name
+                    "tool_hooks: pre-hook timed out for %r — failing closed", tool_name
+                )
+                return HookResult(
+                    allowed=False,
+                    reason=f"Pre-tool hook timed out after {_PRE_HOOK_TIMEOUT}s (fail-closed)",
                 )
             except Exception as exc:
-                logger.debug("tool_hooks: pre-hook error for %r: %s", tool_name, exc)
+                logger.warning("tool_hooks: pre-hook error for %r — failing closed: %s", tool_name, exc)
+                return HookResult(
+                    allowed=False,
+                    reason=f"Pre-tool hook execution error (fail-closed): {exc}",
+                )
 
         return HookResult()
 

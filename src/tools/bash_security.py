@@ -229,21 +229,22 @@ def _analyze_bash_command_cached(cmd: str) -> _CacheResult:
 # individually passes AST, allowlist, flag, secret-path, and network checks.
 SAFE_SANDBOX_OPERATORS: frozenset[str] = frozenset({"|", "&&", "||", ";"})
 SHELL_OPERATORS: frozenset[str] = frozenset(
-    {"|", "&&", "||", ";", ">", ">>", "<", "<<", "&"}
+    {"|", "&&", "||", ";", ">", ">>", "<", "<<", "&", "\n", "\r"}
 )
 
 
 def split_shell_segments(cmd: str) -> Tuple[List[List[str]], List[str]]:
     """Parse *cmd* using a POSIX quote-aware lexer into ``(segments, operators)``.
 
-    Quoted metacharacters (e.g. ``;`` inside ``python3 -c "import math; ..."``)
+    Quoted metacharacters (e.g. ``;`` or ``\\n`` inside ``python3 -c "import math; ..."``)
     stay inside their token and do **not** appear in *operators*.
     Unquoted shell operators (``|``, ``&&``, ``||``, ``;``, ``>``, ``>>``,
-    ``<``, ``<<``, ``&``) split the command into individual argv segments.
+    ``<``, ``<<``, ``&``, ``\\n``, ``\\r``) split the command into individual argv segments.
 
     Raises ``ValueError`` on malformed quoting (unclosed quotes).
     """
-    lexer = shlex.shlex(cmd, posix=True, punctuation_chars=";&|<>")
+    lexer = shlex.shlex(cmd, posix=True, punctuation_chars=";&|<>\n\r")
+    lexer.whitespace = " \t"
     lexer.whitespace_split = True
     raw_tokens = list(lexer)
 
@@ -252,17 +253,18 @@ def split_shell_segments(cmd: str) -> Tuple[List[List[str]], List[str]]:
     current: List[str] = []
 
     for tok in raw_tokens:
-        if tok in SHELL_OPERATORS:
+        if tok in SHELL_OPERATORS or any(ch in ("\n", "\r") for ch in tok) and set(tok) <= {"\n", "\r"}:
+            norm_tok = "\n" if any(ch in ("\n", "\r") for ch in tok) else tok
             # Preserve escaped/terminating `;` belonging to `find ... -exec ... \;`
             if (
-                tok == ";"
+                norm_tok == ";"
                 and current
                 and Path(current[0]).name.lower() == "find"
-                and any(f in current for f in ("-exec", "-execdir", "-ok"))
+                and any(f in current for f in ("-exec", "-execdir", "-ok", "-okdir"))
             ):
-                current.append(tok)
+                current.append(norm_tok)
                 continue
-            operators.append(tok)
+            operators.append(norm_tok)
             if current:
                 segments.append(current)
                 current = []
@@ -272,6 +274,18 @@ def split_shell_segments(cmd: str) -> Tuple[List[List[str]], List[str]]:
     if current:
         segments.append(current)
     return segments, operators
+
+
+def reconstruct_shell_command(segments: List[List[str]], operators: List[str]) -> str:
+    """Reconstruct a shell command strictly from validated, ``shlex.quote()``d segments."""
+    if not segments:
+        return ""
+    parts: List[str] = [" ".join(shlex.quote(tok) for tok in segments[0])]
+    for idx, op in enumerate(operators):
+        if idx + 1 < len(segments):
+            parts.append(op)
+            parts.append(" ".join(shlex.quote(tok) for tok in segments[idx + 1]))
+    return " ".join(parts)
 
 
 def analyze_bash_command(

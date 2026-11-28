@@ -260,8 +260,12 @@ def _run_permission_gate(
         )
 
         matched_rule = get_permission_policy().matching_rule(name)
-    except Exception:
-        matched_rule = None
+    except Exception as pol_exc:
+        guilogger.error(f"PermissionPolicy evaluation failed closed for '{name}': {pol_exc}")
+        return {
+            "ok": False,
+            "error": f"Permission policy check failed closed for '{name}'.",
+        }
 
     if matched_rule is not None and matched_rule.behavior == Behavior.DENY:
         return {
@@ -337,18 +341,21 @@ def _run_permission_gate(
         guilogger.error(f"Permission gate error for '{name}' (fail-closed): {perm_exc}")
         return {"ok": False, "error": f"Permission gate unavailable for '{name}'."}
 
-    granted = True
+    granted = False
     try:
         if gate_event is not None and hasattr(gate_event, "wait"):
-            granted = gate_event.wait(timeout=_timeout)
+            granted = bool(gate_event.wait(timeout=_timeout))
+        else:
+            guilogger.error(f"Permission gate event unavailable for '{name}' (fail-closed)")
+            granted = False
     except Exception:
         granted = False
 
-    denied = False
+    denied = True
     try:
-        denied = _is_denied(tool_call_id)
+        denied = bool(_is_denied(tool_call_id))
     except Exception:
-        denied = False
+        denied = True
 
     try:
         _discard_denied(tool_call_id)

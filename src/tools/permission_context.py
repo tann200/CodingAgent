@@ -75,8 +75,10 @@ class ToolPermissionContext:
             all_names: list[str] = registry.list()  # type: ignore[attr-defined]
             allowed = [n for n in all_names if not self.blocks(n)]
             return registry.filter_by_names(allowed)  # type: ignore[attr-defined]
-        except Exception:
-            return registry
+        except Exception as exc:
+            raise RuntimeError(
+                f"ToolPermissionContext.filter_registry failed closed: {exc}"
+            ) from exc
 
 
 # Module-level active permission context.  Set by ``src/main.py`` before

@@ -105,8 +105,11 @@ def execute_tool_impl(orch: Any, tool_call: Dict[str, Any]) -> Dict[str, Any]:
         from src.tools.tools_config import resolve_tool_alias
 
         name = resolve_tool_alias(name)
-    except Exception:
-        pass
+    except Exception as alias_exc:
+        return {
+            "ok": False,
+            "error": f"Tool alias normalization failed closed for '{name}': {alias_exc}",
+        }
 
     if getattr(orch, "_dry_run", False) and name in DRY_RUN_BLOCKED_TOOLS:
         args = dict(args)
@@ -130,17 +133,29 @@ def execute_tool_impl(orch: Any, tool_call: Dict[str, Any]) -> Dict[str, Any]:
         if _guard is not None:
             return _guard
 
+    normalized_call = {**tool_call, "name": name} if isinstance(tool_call, dict) else tool_call
     preflight_err, tool = _run_preflight_and_lookup(
-        orch, name, args, tool_call, tool_call_id
+        orch, name, args, normalized_call, tool_call_id
     )
     if preflight_err is not None:
         return preflight_err
 
     resolved_name = (
-        tool_call.pop("_resolved_name", None) if isinstance(tool_call, dict) else None
+        normalized_call.pop("_resolved_name", None)
+        if isinstance(normalized_call, dict)
+        else None
     )
     if isinstance(resolved_name, str) and resolved_name and resolved_name != name:
         name = resolved_name
+        if getattr(orch, "_dry_run", False) and name in DRY_RUN_BLOCKED_TOOLS:
+            dry_args = dict(args)
+            dry_args.pop("user_approved", None)
+            entry = {"tool": name, "args": redact_data(dry_args)}
+            try:
+                orch._dry_run_log.append(entry)
+            except Exception:
+                pass
+            return {"status": "dry_run", "would_call": name, "args": redact_data(dry_args)}
         for _guard in (
             _check_read_before_write(orch, name, args, WRITE_TOOLS_REQUIRING_READ),
             _check_workspace_scope_guard(orch, name, args, WRITE_TOOLS_REQUIRING_READ),
@@ -169,10 +184,11 @@ def execute_tool_impl(orch: Any, tool_call: Dict[str, Any]) -> Dict[str, Any]:
         return permission_gate
 
     try:
+        safe_event_args = redact_data({k: str(v)[:200] for k, v in args.items() if k != "content"})
         orch.event_bus.publish_typed(
             ToolExecuteStart(
                 tool=name,
-                args={k: str(v)[:200] for k, v in args.items() if k != "content"},
+                args=safe_event_args if isinstance(safe_event_args, dict) else {},
                 tool_call_id=tool_call_id,
             )
         )
@@ -241,8 +257,12 @@ def execute_tool_impl(orch: Any, tool_call: Dict[str, Any]) -> Dict[str, Any]:
                 "ok": False,
                 "error": f"Pre-tool hook denied '{name}': {hook_result.reason}",
             }
-    except Exception:
-        pass
+    except Exception as hook_exc:
+        guilogger.error(f"Pre-tool hook check failed closed for '{name}': {hook_exc}")
+        return {
+            "ok": False,
+            "error": f"Pre-tool hook check failed closed for '{name}': {hook_exc}",
+        }
 
     timeout_seconds = orch._get_tool_timeout(name)
 
