@@ -260,11 +260,24 @@ def evaluate_completion_contract(
                 error_code="mutation_failed",
             )
 
+        missing_hint = ""
+        if working_dir is not None and not has_modified_files:
+            _missing_initial = _find_missing_deliverables(cleaned_task, set(), working_dir)
+            if _missing_initial:
+                missing_hint = (
+                    " Missing requested file(s): "
+                    + ", ".join(_missing_initial)
+                    + " — call write_file to create them."
+                )
+
         if tool_calls_count == 0:
             return CompletionContractVerdict(
                 is_complete=False,
                 task_type=TaskType.MUTATING,
-                failure_reason="Task requested code or file modifications, but no mutating tools were executed (text-only response).",
+                failure_reason=(
+                    "Task requested code or file modifications, but no mutating tools were executed (text-only response)."
+                    + missing_hint
+                ),
                 error_code="unverified_text_only_completion",
             )
 
@@ -283,7 +296,10 @@ def evaluate_completion_contract(
             return CompletionContractVerdict(
                 is_complete=False,
                 task_type=TaskType.MUTATING,
-                failure_reason="Task requested code or file modifications, but no files were modified.",
+                failure_reason=(
+                    "Task requested code or file modifications, but no files were modified."
+                    + missing_hint
+                ),
                 error_code="unverified_mutation_missing",
             )
 

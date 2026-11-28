@@ -69,3 +69,37 @@ def test_frontier_loop_nudges_on_missing_named_deliverable():
         / "frontier_loop_node.py"
     ).read_text(encoding="utf-8")
     assert '"missing_named_deliverable"' in fln_src
+
+
+def test_completion_contract_names_missing_deliverable_when_no_files_modified(tmp_path):
+    """When a mutating task exits with zero writes, the failure reason names missing target files."""
+    from src.core.orchestration.graph.completion_contract import evaluate_completion_contract
+
+    task = (
+        "We have a module math_ops.py. Delegate to a subagent the task of writing "
+        "comprehensive unit tests in test_math_ops.py."
+    )
+    verdict = evaluate_completion_contract(
+        task=task,
+        content_text="Here are the tests you can add...",
+        tool_calls_count=1,
+        modified_files=[],
+        working_dir=str(tmp_path),
+    )
+    assert verdict.is_complete is False
+    assert verdict.error_code == "unverified_mutation_missing"
+    assert "test_math_ops.py" in (verdict.failure_reason or "")
+    assert "write_file" in (verdict.failure_reason or "")
+
+
+def test_github_copilot_default_model_is_live_not_nonexistent_gpt6():
+    """GitHub Copilot default fallback model must be a live supported model, not 'gpt-6'."""
+    from src.core.inference.adapters.github_copilot_adapter import (
+        GithubCopilotAdapter,
+        _DEFAULT_MODELS,
+    )
+
+    assert "gpt-6" not in _DEFAULT_MODELS
+    assert _DEFAULT_MODELS[0] == "gpt-4o"
+    adapter = GithubCopilotAdapter()
+    assert adapter.models[0] == "gpt-4o"
