@@ -342,10 +342,12 @@ class McpServerManager:
                     or os.environ.get("CODINGAGENT_TRUST_WORKSPACE_MCP") == "1"
                 )
             if source == "workspace":
-                if not is_trusted_workspace and not (cfg.get("trusted", False) and self._trusted is not False):
+                # REM-04 (SEC-04): Never allow untrusted workspace entries to
+                # self-certify via cfg["trusted"]=True — require explicit trust.
+                if not is_trusted_workspace:
                     logger.warning(
                         "mcp manager: refusing to auto-start untrusted workspace %s MCP server %r. "
-                        "Set CODINGAGENT_TRUST_WORKSPACE_MCP=1 or mark workspace/server as trusted to allow.",
+                        "Set CODINGAGENT_TRUST_WORKSPACE_MCP=1 or mark workspace as trusted to allow.",
                         transport,
                         name,
                     )
@@ -358,20 +360,24 @@ class McpServerManager:
 
             url = cfg.get("url") or cfg.get("endpoint")
             cmd = self._normalize_server_cmd(cfg)
-            # Allow servers to provide an `env` mapping to be passed to subprocess
-            # environments (stdio transport) or used to build Authorization
-            # headers for HTTP transports. This avoids committing secrets to
-            # repository-scoped files.
             cfg_env = cfg.get("env") if isinstance(cfg.get("env"), dict) else None
-
-            # If a CONTEXT7_API_KEY exists in the process environment, only
-            # inject it when this MCP server appears to be a Context7 server
-            # (name or url contains "context7"). Injecting into every server
-            # would expose the key to unrelated/untrusted subprocesses.
             if cfg_env is None:
                 cfg_env = {}
-            _is_context7 = "context7" in name.lower() or "context7" in str(url or "").lower()
-            if _is_context7 and "CONTEXT7_API_KEY" not in cfg_env and os.environ.get("CONTEXT7_API_KEY"):
+
+            # REM-04 (SEC-10): Only auto-inject host CONTEXT7_API_KEY for the exact
+            # official mcp.context7.com host (or a user-global context7 stdio config),
+            # never substring-matching arbitrary workspace names/URLs.
+            from urllib.parse import urlparse as _urlparse
+
+            _url_host = (_urlparse(str(url or "")).hostname or "").lower()
+            _is_official_context7 = _url_host in ("mcp.context7.com", "context7.com") or (
+                source == "global" and transport == "stdio" and "context7" in name.lower()
+            )
+            if (
+                _is_official_context7
+                and "CONTEXT7_API_KEY" not in cfg_env
+                and os.environ.get("CONTEXT7_API_KEY")
+            ):
                 cfg_env["CONTEXT7_API_KEY"] = os.environ.get("CONTEXT7_API_KEY")
 
             # Ensure we have a server state object for reporting/status updates

@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import json
 import platform
+import re
 import shlex
 import shutil
 import subprocess
@@ -78,12 +79,15 @@ def format_launch_script(
         else:
             grouped.append(shlex.quote(tok))
             i += 1
+    def _safe_comment(text: Any) -> str:
+        return re.sub(r"[\r\n\x00-\x1f\x7f]+", " ", str(text or "")).strip()
+
     quoted = " \\\n  ".join(grouped)
     lines = [
         "#!/usr/bin/env bash",
         "set -euo pipefail",
-        f"# Model: {info.model_name} (arch={info.architecture}, weights={fit.weight_gb:.2f} GiB)",
-        f"# Fit: {fit.reason}",
+        f"# Model: {_safe_comment(info.model_name)} (arch={_safe_comment(info.architecture)}, weights={fit.weight_gb:.2f} GiB)",
+        f"# Fit: {_safe_comment(fit.reason)}",
         f"exec {quoted}",
     ]
     return "\n".join(lines) + "\n"

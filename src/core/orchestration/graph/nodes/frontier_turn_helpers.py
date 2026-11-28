@@ -147,8 +147,8 @@ async def call_llm_for_turn_impl(
         from src.core.orchestration.project_settings import get_active_settings as _gas_fl
 
         _ps_fl = _gas_fl()
-        if _ps_fl is not None and _ps_fl.max_llm_wait_seconds:
-            _llm_timeout = _ps_fl.max_llm_wait_seconds
+        if _ps_fl is not None and _ps_fl.max_llm_wait_seconds is not None:
+            _llm_timeout = None if _ps_fl.max_llm_wait_seconds <= 0 else _ps_fl.max_llm_wait_seconds
     except Exception:
         pass
 

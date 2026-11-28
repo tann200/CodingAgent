@@ -135,10 +135,10 @@ class ProjectSettings:
     Defaults to ``True``.  Set to ``False`` (``enableSemanticEvaluation: false``
     in settings.json) to skip the extra LLM call on cost-sensitive deployments."""
 
-    max_llm_wait_seconds: int = 120
-    """WF-5: Hard timeout (seconds) for a single LLM call in planning_node.
-    When the call exceeds this duration it is cancelled and the node routes to
-    ``wait_for_user`` with an error message.  Set to ``0`` to disable the timeout."""
+    max_llm_wait_seconds: Optional[int] = None
+    """WF-5: Optional hard timeout (seconds) for a single LLM call.
+    ``None`` means use runtime/provider defaults (e.g. 600s for local models,
+    120s for cloud). Set to ``0`` to disable the timeout explicitly."""
 
     raw: dict[str, Any] = field(default_factory=dict)
     """The final deep-merged raw settings dict (for forward compatibility)."""
@@ -149,35 +149,56 @@ class ProjectSettings:
 # ---------------------------------------------------------------------------
 
 
-def load_project_settings(workdir: str | Path | None = None) -> ProjectSettings:
+_UNTRUSTED_SETTINGS_KEYS: frozenset[str] = frozenset(
+    {
+        "permissionMode",
+        "permission_mode",
+        "hooks",
+        "mcpServers",
+        "mcp_servers",
+        "model",
+        "budgetCeiling",
+        "budget_ceiling_usd",
+        "maxLlmWaitSeconds",
+        "max_llm_wait_seconds",
+    }
+)
+
+
+def load_project_settings(
+    workdir: str | Path | None = None,
+    *,
+    trusted: Optional[bool] = None,
+) -> ProjectSettings:
     """Load and merge project settings from ``{workdir}/.codingAgent/settings*.json``.
 
-    Parameters
-    ----------
-    workdir:
-        Project working directory.  Defaults to ``Path.cwd()``.
-
-    Returns
-    -------
-    ProjectSettings
-        Always returns a valid object — never raises.
+    When ``trusted is False``, privileged keys (``permissionMode``, ``hooks``,
+    ``mcpServers``, ``model``, ``budgetCeiling``, ``maxLlmWaitSeconds``) are
+    stripped so untrusted repositories cannot alter execution policy or DoS timeouts.
     """
     global _ACTIVE_SETTINGS
     base = Path(workdir) if workdir else Path.cwd()
     merged: dict[str, Any] = {}
 
     resolved: list[Path] = []
-    for rel in _candidate_settings_files_for_workdir(base):
-        candidate_path = base / rel
-        resolved.append(candidate_path)
+    seen_paths: set[str] = set()
 
-    # Add context directories for settings
+    def _add_path(p: Path) -> None:
+        key = str(p.resolve()) if p.exists() else str(p)
+        if key not in seen_paths:
+            seen_paths.add(key)
+            resolved.append(p)
+
+    for rel in _candidate_settings_files_for_workdir(base):
+        _add_path(base / rel)
+
     from src.tools.tools_config import get_context_dir_name
 
-    for context_name in (get_context_dir_name(), ".codingAgent"):
+    ctx_dir = get_context_dir_name()
+    for context_name in (ctx_dir, ".codingAgent"):
         context_base = base / context_name
-        resolved.append(context_base / "settings.json")
-        resolved.append(context_base / "settings.local.json")
+        _add_path(context_base / "settings.json")
+        _add_path(context_base / "settings.local.json")
 
     for path in resolved:
         if not path.exists():
@@ -190,6 +211,10 @@ def load_project_settings(workdir: str | Path | None = None) -> ProjectSettings:
                     "project_settings: %s is not a JSON object, skipping", path
                 )
                 continue
+            if trusted is False:
+                data = {
+                    k: v for k, v in data.items() if k not in _UNTRUSTED_SETTINGS_KEYS
+                }
             _deep_merge(merged, data)
             logger.debug("project_settings: loaded %s", path)
         except Exception as exc:
@@ -292,8 +317,8 @@ def _parse(raw: dict[str, Any]) -> ProjectSettings:
         else:
             enable_semantic_evaluation = bool(raw_ese)
 
-    # maxLlmWaitSeconds (WF-5)
-    max_llm_wait_seconds: int = 120
+    # maxLlmWaitSeconds (WF-5) — None means keep provider/local default; 0 means disabled
+    max_llm_wait_seconds: Optional[int] = None
     raw_mlw = raw.get("maxLlmWaitSeconds")
     if raw_mlw is None:
         raw_mlw = raw.get("max_llm_wait_seconds")

@@ -91,6 +91,7 @@ PERMISSION_REQUIRED_TOOLS: frozenset[str] = frozenset(
     {
         "delete_file",
         "run_bash",
+        "plan_exit",
         # Canonical capability tools (Track 1)
         "files_delete",
         "shell",

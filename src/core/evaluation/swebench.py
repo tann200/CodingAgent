@@ -173,6 +173,17 @@ def _is_local_repo_spec(repo: str) -> bool:
     return False
 
 
+_GIT_TIMEOUT_S = 120
+
+
+def _validate_git_arg(value: str, label: str) -> str:
+    """Reject leading-dash options and control characters in git CLI arguments."""
+    text = str(value or "").strip()
+    if not text or text.startswith("-") or any(ch in text for ch in ("\r", "\n", "\x00")):
+        raise ValueError(f"Unsafe {label} for git command: {value!r}")
+    return text
+
+
 def checkout_repo(instance: SWEBenchInstance, dest: Path) -> Path:
     """Clone/checkout the instance repo at ``base_commit`` into ``dest``.
 
@@ -181,26 +192,31 @@ def checkout_repo(instance: SWEBenchInstance, dest: Path) -> Path:
     clone is attempted (network required).
     """
     dest.mkdir(parents=True, exist_ok=True)
-    if _is_local_repo_spec(instance.repo):
-        clone_url = instance.repo
-        if instance.repo.startswith("file://"):
-            clone_url = instance.repo[len("file://"):]
+    raw_repo = _validate_git_arg(instance.repo, "repo")
+    base_commit = _validate_git_arg(instance.base_commit, "base_commit")
+    if _is_local_repo_spec(raw_repo):
+        clone_url = raw_repo
+        if raw_repo.startswith("file://"):
+            clone_url = raw_repo[len("file://"):]
+        clone_url = _validate_git_arg(clone_url, "clone_url")
     else:
-        clone_url = f"https://github.com/{instance.repo}"
+        clone_url = f"https://github.com/{raw_repo}"
     repo_dir = dest / "repo"
     subprocess.run(
-        ["git", "clone", "--quiet", str(clone_url), str(repo_dir)],
+        ["git", "clone", "--quiet", "--", str(clone_url), str(repo_dir)],
         check=True,
         capture_output=True,
         text=True,
         cwd=str(dest),
+        timeout=_GIT_TIMEOUT_S,
     )
     subprocess.run(
-        ["git", "checkout", "--quiet", instance.base_commit],
+        ["git", "checkout", "--quiet", base_commit],
         check=True,
         capture_output=True,
         text=True,
         cwd=str(repo_dir),
+        timeout=_GIT_TIMEOUT_S,
     )
     return repo_dir
 
@@ -231,6 +247,7 @@ def _extract_patch(repo_dir: Path) -> Tuple[str, Optional[str]]:
         capture_output=True,
         text=True,
         cwd=str(repo_dir),
+        timeout=_GIT_TIMEOUT_S,
     )
     if staged.returncode != 0:
         return "", staged.stderr
@@ -239,6 +256,7 @@ def _extract_patch(repo_dir: Path) -> Tuple[str, Optional[str]]:
         capture_output=True,
         text=True,
         cwd=str(repo_dir),
+        timeout=_GIT_TIMEOUT_S,
     )
     if diff.returncode != 0:
         return "", diff.stderr
@@ -253,14 +271,17 @@ def _apply_test_patch(repo_dir: Path, test_patch: Optional[str]) -> Optional[str
     patch_file.write_text(test_patch, encoding="utf-8")
     try:
         subprocess.run(
-            ["git", "apply", "--whitespace=nowarn", str(patch_file.name)],
+            ["git", "apply", "--whitespace=nowarn", "--", str(patch_file.name)],
             capture_output=True,
             text=True,
             cwd=str(repo_dir),
             check=True,
+            timeout=_GIT_TIMEOUT_S,
         )
     except subprocess.CalledProcessError as exc:
         return exc.stderr or str(exc)
+    except subprocess.TimeoutExpired:
+        return "git apply timed out"
     finally:
         patch_file.unlink(missing_ok=True)
     return None
@@ -360,8 +381,20 @@ class SWEBenchRunner:
     compatible with the shared evaluation CLI / regression baselines."""
 
     def __init__(self, workdir: Optional[str] = None):
-        self.workdir = Path(workdir) if workdir else Path(tempfile.mkdtemp())
+        self._owns_workdir = workdir is None
+        self.workdir = Path(workdir) if workdir else Path(tempfile.mkdtemp(prefix="swebench_"))
         self.workdir.mkdir(parents=True, exist_ok=True)
+
+    def cleanup(self) -> None:
+        """Remove runner-owned temporary workspace if created by this runner."""
+        if self._owns_workdir and self.workdir.exists():
+            shutil.rmtree(self.workdir, ignore_errors=True)
+
+    def __enter__(self) -> "SWEBenchRunner":
+        return self
+
+    def __exit__(self, *args: Any) -> None:
+        self.cleanup()
 
     def run_instance(
         self,
@@ -384,6 +417,7 @@ class SWEBenchRunner:
                 instance, start, status="error", error=f"repo checkout failed: {exc}"
             )
 
+        agent: Any = None
         try:
             agent = agent_factory()
             _ensure_working_dir(agent, repo_dir)
@@ -392,6 +426,17 @@ class SWEBenchRunner:
             logger.warning(
                 "SWEBenchRunner: agent raised for %s: %s", instance.instance_id, exc
             )
+            return self._result(
+                instance, start, status="error", error=f"agent failed: {exc}"
+            )
+        finally:
+            if agent is not None:
+                close_fn = getattr(agent, "close", None)
+                if callable(close_fn):
+                    try:
+                        close_fn()
+                    except Exception:
+                        pass
 
         grade = grade_runnable(repo_dir, instance)
         result = self._result(

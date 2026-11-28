@@ -277,17 +277,16 @@ def main(argv: Optional[list] = None) -> int:
     # CP-13 / CP-8: Load per-project settings and apply them (project settings
     # are applied *before* CLI flags so that CLI always wins).
     try:
+        from src.core.orchestration.deferred_init import is_trusted as _is_ws_trusted
         from src.core.orchestration.project_settings import load_project_settings
 
         _workdir_for_ps = getattr(args, "workdir", None)
-        _ps = load_project_settings(_workdir_for_ps)
+        _explicit_trust = getattr(args, "trusted", None)
+        _ws_trusted = _explicit_trust if _explicit_trust is not None else _is_ws_trusted()
+        _ps = load_project_settings(_workdir_for_ps, trusted=_ws_trusted)
 
         # CP-8: apply permissionMode from project settings ONLY in trusted workspaces
         # (CLI flag overrides below; untrusted repos must never escalate permissions).
-        from src.core.orchestration.deferred_init import is_trusted as _is_ws_trusted
-
-        _explicit_trust = getattr(args, "trusted", None)
-        _ws_trusted = _explicit_trust if _explicit_trust is not None else _is_ws_trusted()
         if _ps.permission_mode and not getattr(args, "permission_mode", None):
             if not _ws_trusted:
                 _dbg(

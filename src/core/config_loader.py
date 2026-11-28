@@ -93,8 +93,12 @@ def _get_workspace_config_paths() -> List[Path]:
 _UNTRUSTED_WORKSPACE_PRIVILEGED_KEYS: frozenset[str] = frozenset(
     {
         "providers",
+        "provider",
+        "default_provider",
         "active_provider",
+        "model",
         "default_model",
+        "small_model",
         "planning_model",
         "execution_model",
         "provider_overrides",
@@ -104,14 +108,25 @@ _UNTRUSTED_WORKSPACE_PRIVILEGED_KEYS: frozenset[str] = frozenset(
         "allowed_tools",
         "permission_mode",
         "permissionMode",
+        "autonomous",
+        "sandbox_level",
         "hooks",
+        "hooks_enabled",
         "plugins",
         "plugin_dirs",
+        "mcp",
+        "mcpServers",
+        "scheduler_jobs",
         "remote_skills",
         "custom_tools",
         "api_base",
         "base_url",
         "api_key",
+        "web",
+        "maxLlmWaitSeconds",
+        "max_llm_wait_seconds",
+        "budgetCeiling",
+        "budget_ceiling_usd",
     }
 )
 
@@ -327,44 +342,67 @@ def get_mcp_config(working_dir: Optional[Path] = None) -> Dict[str, Any]:
     return _deep_merge(defaults, mcp_cfg)
 
 
-def get_mcp_servers(working_dir: Optional[Path] = None) -> List[Dict[str, Any]]:
-    """Return the list of configured MCP servers (may be empty)."""
-    cfg = get_mcp_config(working_dir=working_dir)
-    servers = cfg.get("servers") if isinstance(cfg, dict) else None
-    if not isinstance(servers, list):
-        return []
+def _normalize_mcp_server_entry(s: Dict[str, Any], *, source: str) -> Dict[str, Any]:
+    entry = dict(s)
+    if "cmd" in entry and isinstance(entry["cmd"], list) and entry["cmd"]:
+        if "command" not in entry:
+            entry["command"] = entry["cmd"][0]
+        if "args" not in entry:
+            entry["args"] = entry["cmd"][1:]
+    # REM-04 (SEC-04): Assign source strictly by originating config layer — never
+    # let a workspace config self-tag "source": "global" or "trusted": true.
+    entry["source"] = source
+    if source == "workspace":
+        entry.pop("trusted", None)
+    return entry
 
-    # Identify user-global servers to distinguish them from workspace-local servers
-    global_server_names = set()
+
+def get_mcp_servers(working_dir: Optional[Path] = None) -> List[Dict[str, Any]]:
+    """Return configured MCP servers tagged strictly by originating layer (global vs workspace)."""
+    global_entries: List[Dict[str, Any]] = []
     if _USER_CONFIG.exists():
         try:
             raw = _load_config_file(_USER_CONFIG)
-            if isinstance(raw, dict) and isinstance(raw.get("mcp", {}).get("servers"), list):
-                for s in raw["mcp"]["servers"]:
-                    if isinstance(s, dict) and s.get("name"):
-                        global_server_names.add(s["name"])
+            raw_servers = raw.get("mcp", {}).get("servers") if isinstance(raw, dict) else None
+            if isinstance(raw_servers, list):
+                for s in raw_servers:
+                    if isinstance(s, dict):
+                        global_entries.append(_normalize_mcp_server_entry(s, source="global"))
         except Exception:
             pass
 
-    normalized: List[Dict[str, Any]] = []
-    for s in servers:
-        if not isinstance(s, dict):
-            continue
-        entry = dict(s)
-        # Normalize cmd -> command + args if cmd is a list
-        if "cmd" in entry and isinstance(entry["cmd"], list) and entry["cmd"]:
-            if "command" not in entry:
-                entry["command"] = entry["cmd"][0]
-            if "args" not in entry:
-                entry["args"] = entry["cmd"][1:]
-        name = entry.get("name", "")
-        if name in global_server_names or working_dir is None:
-            entry.setdefault("source", "global")
-        else:
-            entry.setdefault("source", "workspace")
-        normalized.append(entry)
+    ws_entries: List[Dict[str, Any]] = []
+    if working_dir is None:
+        ws_paths = _get_workspace_config_paths()
+    else:
+        try:
+            from src.tools.tools_config import agent_context_path
 
-    return normalized
+            _ad = agent_context_path(Path(working_dir))
+        except Exception:
+            _ad = Path(working_dir) / ".codingAgent"
+        ws_paths = [_ad / "config.json", _ad / "config.local.json"]
+    ws_cfg: Dict[str, Any] = {}
+    for cfg_path in ws_paths:
+        if cfg_path.exists():
+            ws_cfg = _deep_merge(ws_cfg, _load_config_file(cfg_path))
+    ws_servers = ws_cfg.get("mcp", {}).get("servers") if isinstance(ws_cfg, dict) else None
+    if isinstance(ws_servers, list):
+        for s in ws_servers:
+            if isinstance(s, dict):
+                ws_entries.append(_normalize_mcp_server_entry(s, source="workspace"))
+
+    # Workspace entries override global entries with the same name, while retaining
+    # source="workspace" so a repo cannot spoof a global server name to bypass trust.
+    by_name: Dict[str, Dict[str, Any]] = {}
+    unnamed: List[Dict[str, Any]] = []
+    for entry in global_entries + ws_entries:
+        name = str(entry.get("name") or "").strip()
+        if name:
+            by_name[name] = entry
+        else:
+            unnamed.append(entry)
+    return list(by_name.values()) + unnamed
 
 
 # Keys for per-role model overrides in providers.json / config
@@ -459,8 +497,8 @@ def get_small_model(working_dir: Optional[Path] = None) -> Optional[str]:
       2. active provider small_model entry in providers.json
       3. None
     """
-    # 1. workspace override — check canonical .codingAgent config
-    if working_dir is not None:
+    # 1. workspace override — check canonical .codingAgent config ONLY when workspace is trusted
+    if working_dir is not None and _workspace_config_is_trusted():
         try:
             from src.tools.tools_config import agent_context_path
             agent_dir = agent_context_path(Path(working_dir))

@@ -260,13 +260,24 @@ async def _verification_node_impl(state: StateLike, config: RunnerConfig) -> Dic
                 unverified_paths
                 and all(
                     Path(p).suffix.lower() in non_code_exts
-                    and ".codingagent" not in Path(p).parts
-                    and Path(p).name != "verify.yaml"
+                    and not any(part.lower() == ".codingagent" for part in Path(p).parts)
+                    and Path(p).name.lower() != "verify.yaml"
                     for p in unverified_paths
                 )
             )
 
-            if (custom_results := run_custom_verify_yaml(wd, session_modified, _is_cancelled)) is not None:
+            try:
+                from src.core.orchestration.deferred_init import is_trusted as _is_ws_trusted
+
+                _ws_trusted = _is_ws_trusted(orch)
+            except Exception:
+                _ws_trusted = False
+
+            if (
+                custom_results := run_custom_verify_yaml(
+                    wd, session_modified, _is_cancelled, trusted=_ws_trusted
+                )
+            ) is not None:
                 results.update(custom_results)
             elif is_purely_non_code:
                 logger.info(

@@ -106,6 +106,7 @@ TOOL_PERMISSIONS: Dict[str, PermissionLevel] = {
     "format_file": PermissionLevel.WORKSPACE_WRITE,
     # --- always prompt ---
     "submit_plan_for_review": PermissionLevel.PROMPT,
+    "plan_exit": PermissionLevel.PROMPT,
     "ask_user": PermissionLevel.PROMPT,
     # CP-15: send_user_message is read_only — it never touches the filesystem
     "send_user_message": PermissionLevel.READ_ONLY,

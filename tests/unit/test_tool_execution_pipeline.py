@@ -318,6 +318,8 @@ class TestPlanExitHandoff:
         orch._append_execution_trace = MagicMock()
         orch._sync_session_state = MagicMock()
 
+        from src.tools.tools_config import PermissionLevel
+
         with (
             patch(
                 "src.core.orchestration.tool_execution_pipeline.get_tool_contract",
@@ -330,6 +332,10 @@ class TestPlanExitHandoff:
             patch(
                 "src.core.orchestration.tool_execution_pipeline.WRITE_TOOLS_REQUIRING_READ",
                 set(),
+            ),
+            patch.dict(
+                "src.tools.tools_config.TOOL_PERMISSIONS",
+                {"plan_exit": PermissionLevel.ALLOW},
             ),
         ):
             execute_tool_impl(orch, {"name": "plan_exit", "arguments": {}})

@@ -349,9 +349,9 @@ class TestEnableSemanticEvaluation:
 
 
 class TestMaxLlmWaitSeconds:
-    def test_default_is_120(self) -> None:
+    def test_default_is_none(self) -> None:
         s = _parse({})
-        assert s.max_llm_wait_seconds == 120
+        assert s.max_llm_wait_seconds is None
 
     def test_explicit_int(self) -> None:
         s = _parse({"maxLlmWaitSeconds": 60})
@@ -367,7 +367,7 @@ class TestMaxLlmWaitSeconds:
 
     def test_invalid_ignored_keeps_default(self) -> None:
         s = _parse({"maxLlmWaitSeconds": "not-a-number"})
-        assert s.max_llm_wait_seconds == 120
+        assert s.max_llm_wait_seconds is None
 
     def test_snake_case_key(self) -> None:
         s = _parse({"max_llm_wait_seconds": 45})

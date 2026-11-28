@@ -15,6 +15,7 @@ Security invariants:
 from __future__ import annotations
 
 import os
+import re
 import stat
 import struct
 from dataclasses import dataclass, field
@@ -485,8 +486,12 @@ def _parse_gguf(path: str | Path, *, collect_tensors: bool) -> Tuple[GgufHeaderI
             else known_weight_bytes
         )
 
-        arch = str(metadata.get("general.architecture") or "llama").strip() or "llama"
-        model_name = str(metadata.get("general.name") or Path(path).stem)
+        def _sanitize_meta_str(raw_val: Any, fallback: str) -> str:
+            cleaned = re.sub(r"[\r\n\x00-\x1f\x7f]+", " ", str(raw_val or "")).strip()
+            return cleaned or fallback
+
+        arch = _sanitize_meta_str(metadata.get("general.architecture"), "llama")
+        model_name = _sanitize_meta_str(metadata.get("general.name"), Path(path).stem)
         context_length = _as_int(metadata.get(f"{arch}.context_length"), 32768)
         block_count = _as_int(metadata.get(f"{arch}.block_count"), 0)
         head_count = _as_int(metadata.get(f"{arch}.attention.head_count"), 0)

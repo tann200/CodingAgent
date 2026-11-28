@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import os
 import py_compile
 import re
 import shlex
@@ -275,8 +276,15 @@ def run_custom_verify_yaml(
     workdir: Path,
     session_modified: Iterable[str],
     is_cancelled: Callable[[], bool],
+    *,
+    trusted: bool = True,
 ) -> Dict[str, Any] | None:
-    """Execute validated commands from .codingagent/verify.yaml if present and untampered."""
+    """Execute validated commands from .codingagent/verify.yaml if present and untampered.
+
+    REM-04: Untrusted workspaces must never execute repo-supplied verification
+    commands automatically. Tampering with ``verify.yaml`` during the active
+    session is still rejected fail-closed regardless of trust status.
+    """
     cfg_path: Path | None = None
     for candidate in (
         workdir / ".codingagent" / "verify.yaml",
@@ -289,8 +297,20 @@ def run_custom_verify_yaml(
         return None
 
     resolved_cfg = str(resolve_modified_path(str(cfg_path), workdir))
-    resolved_mods = {str(resolve_modified_path(str(m), workdir)) for m in session_modified if m}
-    if resolved_cfg in resolved_mods:
+    resolved_cfg_norm = os.path.normcase(resolved_cfg)
+    mod_paths = [resolve_modified_path(str(m), workdir) for m in session_modified if m]
+    tampered = False
+    for m_path in mod_paths:
+        if str(m_path) == resolved_cfg or os.path.normcase(str(m_path)) == resolved_cfg_norm:
+            tampered = True
+            break
+        try:
+            if m_path.exists() and os.path.samefile(cfg_path, m_path):
+                tampered = True
+                break
+        except OSError:
+            pass
+    if tampered:
         logger.warning("verification_helpers: rejecting verify.yaml modified during active session")
         return {
             "custom_verify": {
@@ -298,6 +318,13 @@ def run_custom_verify_yaml(
                 "error": "Refusing to execute verify.yaml modified during the same agent session.",
             }
         }
+
+    if not trusted:
+        logger.warning(
+            "verification_helpers: skipping %s because workspace is untrusted",
+            cfg_path,
+        )
+        return None
 
     try:
         loaded = yaml.safe_load(cfg_path.read_text(encoding="utf-8")) or {}
