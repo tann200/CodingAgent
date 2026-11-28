@@ -15,6 +15,7 @@ from src.core.orchestration.loop_guards import format_unknown_tool_error
 from src.core.orchestration.pipeline.permissions import (
     _ACTIVE_AGENT_CTX,
     _check_agent_permission_override,
+    get_effective_workdir,
 )
 from src.core.orchestration.tool_constants import _write_permission_audit
 
@@ -51,7 +52,8 @@ def _check_read_before_write(
         return None
 
     try:
-        target = Path(orch.working_dir or ".") / path_arg
+        eff_wd = get_effective_workdir(orch) or Path(".")
+        target = Path(eff_wd) / path_arg
         resolved_path = str(target.resolve())
         from src.tools.guardrails import _get_ctx_read_files, _global_lock, _global_read_files
 
@@ -95,7 +97,7 @@ def _check_workspace_scope_guard(
         if not affected_files:
             return None
 
-        workdir = str(orch.working_dir or ".").rstrip("/\\")
+        workdir = str(get_effective_workdir(orch) or ".").rstrip("/\\")
 
         def _norm(p: str) -> str:
             p = str(p).replace("\\", "/")

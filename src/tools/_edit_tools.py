@@ -15,6 +15,7 @@ import logging
 import os
 import re
 import shutil
+import stat
 import tempfile
 from pathlib import Path
 from typing import Dict, Any, Optional
@@ -49,6 +50,13 @@ def _atomic_write(path: Path, content: str, encoding: str = "utf-8") -> None:
     except ImportError:
         pass
 
+    orig_mode: Optional[int] = None
+    try:
+        if _target.exists():
+            orig_mode = stat.S_IMODE(_target.stat().st_mode)
+    except OSError:
+        orig_mode = None
+
     fd, tmp = tempfile.mkstemp(
         dir=str(_target.parent),
         prefix=f".{_target.stem}.write.",
@@ -57,6 +65,16 @@ def _atomic_write(path: Path, content: str, encoding: str = "utf-8") -> None:
     try:
         with os.fdopen(fd, "w", encoding=encoding) as fh:
             fh.write(content)
+            try:
+                fh.flush()
+                os.fsync(fh.fileno())
+            except OSError:
+                pass
+        if orig_mode is not None:
+            try:
+                os.chmod(tmp, orig_mode)
+            except OSError:
+                pass
         try:
             from src.core.orchestration.tool_execution_pipeline import is_current_tool_cancelled
 
@@ -553,13 +571,16 @@ def edit_file_atomic(
     if ver_err:
         return ver_err
 
-    # PREV-1: Blocking diff preview gate.
-    # When require_preview_confirmation is True AND a TUI is subscribed to
-    # file.diff.preview, publish the diff and block until the user accepts
-    # or rejects it.  When confirmation is not required (default), publish
-    # for informational display and proceed immediately.
+    # PREV-1: Blocking diff preview gate (fail-closed on timeout or error).
+    _require_preview = False
     try:
         from src.tools.tools_config import requires_preview_confirmation
+
+        _require_preview = bool(requires_preview_confirmation())
+    except Exception:
+        _require_preview = False
+
+    try:
         from src.tools.patch_tools import generate_unified_diff as _preview_diff
 
         _preview_text = _preview_diff(
@@ -571,27 +592,35 @@ def edit_file_atomic(
 
         _has_preview_sub = _get_bus().has_subscribers("file.diff.preview")
 
-        if requires_preview_confirmation() and _has_preview_sub:
+        if _require_preview and _has_preview_sub:
             _gate_ev = register_preview_gate(_path_key)
             _publish_diff_preview(_path_key, _preview_text, is_new_file=False)
-            # Block for up to 5 minutes waiting for user decision
-            _gate_ev.wait(timeout=300.0)
-            # Use helper to check/clear rejection state atomically
+            _signaled = bool(_gate_ev.wait(timeout=300.0))
             from src.tools._diff_gate import pop_preview_rejection
 
             _was_rejected = pop_preview_rejection(_path_key)
-            if _was_rejected:
+            if not _signaled or _was_rejected:
                 return {
                     "path": str(p),
                     "status": "rejected",
-                    "message": "Edit rejected by user.",
+                    "message": (
+                        "Edit rejected by user."
+                        if _was_rejected
+                        else "Edit preview confirmation timed out (fail-closed)."
+                    ),
                 }
         else:
-            # No gate — publish for informational display and proceed immediately
             _publish_diff_preview(_path_key, _preview_text, is_new_file=False)
     except Exception as _gate_exc:
+        if _require_preview:
+            _logger.error("PREV-1 preview gate failed closed: %s", _gate_exc)
+            return {
+                "path": str(p),
+                "status": "rejected",
+                "error": f"Preview confirmation gate error (fail-closed): {_gate_exc}",
+            }
         _logger.debug(
-            "PREV-1 preview gate error (non-fatal, proceeding): %s", _gate_exc
+            "PREV-1 preview publish error (non-fatal): %s", _gate_exc
         )
 
     _atomic_write(p, new_content)

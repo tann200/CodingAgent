@@ -16,6 +16,7 @@ import fnmatch
 import logging
 import os
 import shutil
+import stat
 import subprocess
 import tempfile
 from pathlib import Path
@@ -246,11 +247,15 @@ def write_file(
     if pre_err is not None or p is None:
         return pre_err or {"path": path, "status": "error", "error": "Pre-write check failed"}
 
-    p.parent.mkdir(parents=True, exist_ok=True)
-
     # Read original content BEFORE modification for diff generation
+    existed = p.exists() and p.is_file()
+    orig_mode: int | None = None
     original_content = ""
-    if p.exists() and p.is_file():
+    if existed:
+        try:
+            orig_mode = stat.S_IMODE(p.stat().st_mode)
+        except OSError:
+            orig_mode = None
         try:
             original_content = p.read_text(encoding="utf-8")
         except UnicodeDecodeError:
@@ -261,8 +266,9 @@ def write_file(
         except Exception:
             original_content = ""
 
-    # D-04: Idempotency guard — skip write when content is identical
-    if original_content == content:
+    # D-04: Idempotency guard — skip write ONLY when an existing file already
+    # has identical content (never skip creating a brand-new empty file like __init__.py).
+    if existed and original_content == content:
         return {
             "path": str(p),
             "status": "no_change",
@@ -293,42 +299,52 @@ def write_file(
         return ver_err
 
     # PREV-1: If preview confirmation is required, block until the user
-    # accepts or rejects the diff in the TUI (same gate as edit_file_atomic).
-    # If confirmation is not required (default), publish for display only and
-    # proceed immediately.
+    # accepts or rejects the diff in the TUI (fail closed on timeout/error).
+    _require_preview = False
     try:
         from src.tools.tools_config import requires_preview_confirmation
 
+        _require_preview = bool(requires_preview_confirmation())
+    except Exception:
+        _require_preview = False
+
+    try:
         _path_key = str(p)
-        _is_new = not bool(original_content)
+        _is_new = not existed
 
-        if requires_preview_confirmation():
-            # Blocking gate — wait for TUI accept/reject
-
+        if _require_preview:
             _has_sub = _get_bus().has_subscribers("file.diff.preview")
             if _has_sub:
                 _gate_ev = _register_preview_gate(_path_key)
                 _publish_diff_preview(_path_key, diff, is_new_file=_is_new)
-                _gate_ev.wait(timeout=300.0)
-                # Use helpers to check/clear rejection state atomically
+                _signaled = bool(_gate_ev.wait(timeout=300.0))
                 _was_rejected = _pop_preview_rejection(_path_key)
-                if _was_rejected:
+                if not _signaled or _was_rejected:
                     return {
                         "path": str(p),
                         "status": "rejected",
-                        "message": "Write rejected by user.",
+                        "message": (
+                            "Write rejected by user."
+                            if _was_rejected
+                            else "Write preview confirmation timed out (fail-closed)."
+                        ),
                     }
             else:
-                # No TUI subscriber — publish for telemetry and proceed
                 _publish_diff_preview(_path_key, diff, is_new_file=_is_new)
         else:
-            # F14: Publish diff preview BEFORE writing so the TUI can show
-            # the proposed change as informational output — no gate.
             _publish_diff_preview(_path_key, diff, is_new_file=_is_new)
     except Exception as _prev_exc:
-        _logger.debug("write_file preview gate error (non-fatal): %s", _prev_exc)
-        # Fallback: publish without gate
-        _publish_diff_preview(str(p), diff, is_new_file=not bool(original_content))
+        if _require_preview:
+            _logger.error("write_file preview gate failed closed: %s", _prev_exc)
+            return {
+                "path": str(p),
+                "status": "rejected",
+                "error": f"Preview confirmation gate error (fail-closed): {_prev_exc}",
+            }
+        _logger.debug("write_file preview publish error (non-fatal): %s", _prev_exc)
+
+    # Create parent directories only AFTER all pre-write checks & approval gates pass.
+    p.parent.mkdir(parents=True, exist_ok=True)
 
     # Cooperative cancellation check: abort if tool execution timed out or was cancelled
     try:
@@ -377,6 +393,11 @@ def write_file(
                     }
             except Exception:
                 pass
+            if orig_mode is not None:
+                try:
+                    os.chmod(_tmp_path, orig_mode)
+                except OSError:
+                    pass
             try:
                 os.replace(_tmp_path, str(p))
             except Exception:

@@ -117,11 +117,14 @@ def _timeout_result(name: str, timeout_seconds: float) -> Dict[str, Any]:
 
 def _inject_confined_workdir(orch: Any, fn: Any, args: dict) -> tuple[Optional[Dict[str, Any]], dict]:
     """Inject and confine ``workdir`` / ``working_dir`` arguments when accepted by *fn*."""
-    if not getattr(orch, "working_dir", None):
+    from src.core.orchestration.pipeline.permissions import get_effective_workdir
+
+    effective_wd = get_effective_workdir(orch)
+    if not effective_wd:
         return None, args
     try:
         sig = inspect.signature(fn)
-        target_workdir = Path(orch.working_dir).resolve()
+        target_workdir = Path(effective_wd).resolve()
 
         def _is_confined(p: Any) -> bool:
             try:

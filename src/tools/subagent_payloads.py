@@ -11,6 +11,7 @@ DELEGATION_DENYLIST = {
     "delegate_task",
     "delegate_task_async",
     "delegate_tasks_parallel",
+    "batch",
 }
 
 SCOUT_READONLY_TOOLS: frozenset[str] = frozenset(

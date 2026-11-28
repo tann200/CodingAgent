@@ -32,6 +32,9 @@ from typing import Any, Callable, List, Optional
 # Attribute name stored on decorated functions
 TOOL_ATTR = "__tool_meta__"
 
+# Registry of @tool-decorated definitions keyed by tool name (populated at import time).
+DECORATED_TOOL_DEFINITIONS: dict[str, Any] = {}
+
 
 # ---------------------------------------------------------------------------
 # PermissionKind — TASK-3
@@ -369,6 +372,7 @@ def tool(
             schema_visibility=schema_visibility,
         )
         setattr(fn, TOOL_ATTR, defn)
+        DECORATED_TOOL_DEFINITIONS[_name] = defn
         return fn
 
     # Support both @tool and @tool(...) usage

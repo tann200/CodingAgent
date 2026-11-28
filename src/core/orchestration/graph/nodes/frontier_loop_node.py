@@ -419,6 +419,8 @@ async def frontier_loop_node(
                             tool_name=tool_name, tool_args=tool_args, history=history,
                             tool_call_count=tool_call_count, last_result=last_result,
                             last_tool_name=last_tool_name, errors=errors, turns_taken=turns_taken, state=state,
+                            pending_tool_calls=tool_calls,
+                            assistant_content=content_text,
                         )
 
             history = list(history)
@@ -487,6 +489,21 @@ async def frontier_loop_node(
 
         if _loop_cancelled():
             logger.info("frontier_loop_node: cancellation requested before tool dispatch")
+            if use_native_tools and normalized_calls:
+                import json as _json
+
+                history = list(history)
+                for _cid, _tn, _ta, _otc in normalized_calls:
+                    history.append(
+                        {
+                            "role": "tool",
+                            "tool_call_id": _cid,
+                            "name": _tn,
+                            "content": _json.dumps(
+                                {"ok": False, "error": "Tool call cancelled before execution."}
+                            ),
+                        }
+                    )
             cancelled = True
             break
 

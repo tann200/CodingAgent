@@ -263,6 +263,15 @@ class RollbackManager:
 
         self.snapshots[snapshot_id] = snapshots
 
+        # REM-06: Never write snapshot artifacts to disk in --private mode.
+        if getattr(self, "private", False):
+            logger.info(
+                "Created in-memory private snapshot %s with %d files",
+                snapshot_id,
+                len(snapshots),
+            )
+            return snapshot_id
+
         # Save to disk
         snapshot_file = self.snapshot_dir / f"{snapshot_id}.json"
         snapshot_data = {
@@ -393,9 +402,15 @@ class RollbackManager:
                     norm_targets.add(self._normalize_rel_path(safe_resolve(p, self.workdir)))
                 except Exception:
                     norm_targets.add(str(p))
+            def _path_matches_targets(snap_path: str, targets: set[str]) -> bool:
+                if snap_path in targets:
+                    return True
+                return any(
+                    snap_path.endswith("/" + t.lstrip("/")) for t in targets if t
+                )
+
             snapshots = [
-                s for s in all_snapshots
-                if s.path in norm_targets or any(s.path.endswith(t) for t in norm_targets)
+                s for s in all_snapshots if _path_matches_targets(s.path, norm_targets)
             ]
         else:
             snapshots = all_snapshots
@@ -441,9 +456,11 @@ class RollbackManager:
                     continue
 
                 # Case 3: Regular file with content -> restore content atomically
-                if file_path.exists():
-                    backup_path = file_path.with_suffix(file_path.suffix + ".backup")
+                if file_path.exists() and not getattr(self, "private", False):
+                    backup_root = self.snapshot_dir / "backups" / str(snapshot_id)
+                    backup_path = backup_root / Path(snap.path).as_posix().lstrip("/")
                     try:
+                        backup_path.parent.mkdir(parents=True, exist_ok=True)
                         shutil.copy2(file_path, backup_path)
                     except Exception as _backup_exc:
                         logger.warning(
@@ -574,7 +591,9 @@ class RollbackManager:
         committed: List[str] = []
         remaining: List[FileSnapshot] = []
         for s in all_snaps:
-            if s.path in norm_targets or any(s.path.endswith(t) for t in norm_targets):
+            if s.path in norm_targets or any(
+                s.path.endswith("/" + t.lstrip("/")) for t in norm_targets if t
+            ):
                 committed.append(s.path)
             else:
                 remaining.append(s)
@@ -593,23 +612,14 @@ class RollbackManager:
         return committed
 
     def _persist_snapshot_disk(self, snapshot_id: str, snapshots: List[FileSnapshot]) -> bool:
+        """Helper to write snapshot data to disk atomically (preserving binary encoding)."""
         if getattr(self, "private", False):
             return True
-        """Helper to write snapshot data to disk atomically."""
         snapshot_file = self.snapshot_dir / f"{snapshot_id}.json"
         snapshot_data = {
             "snapshot_id": snapshot_id,
             "timestamp": datetime.now().isoformat(),
-            "files": [
-                {
-                    "path": s.path,
-                    "content": s.content,
-                    "timestamp": s.timestamp,
-                    "checksum": s.checksum,
-                    "exists": s.exists,
-                }
-                for s in snapshots
-            ],
+            "files": [_snapshot_to_dict(s) for s in snapshots],
         }
         try:
             from src.core.io_utils import atomic_write_json
@@ -709,6 +719,10 @@ class RollbackManager:
             except Exception as e:
                 logger.warning(f"append_to_snapshot: failed to read {file_path}: {e}")
                 return False
+
+        # REM-06: Skip disk persistence in --private mode.
+        if getattr(self, "private", False):
+            return True
 
         # Persist updated snapshot to disk
         try:

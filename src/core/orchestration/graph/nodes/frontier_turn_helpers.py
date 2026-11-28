@@ -160,7 +160,10 @@ async def call_llm_for_turn_impl(
     )
     if thinking_mode == "off":
         _call_kwargs["disable_thinking"] = True
-    _pol_tier = getattr(runtime_policy, "policy_tier", None) if runtime_policy is not None else None
+    if isinstance(runtime_policy, dict):
+        _pol_tier = runtime_policy.get("policy_tier")
+    else:
+        _pol_tier = getattr(runtime_policy, "policy_tier", None) if runtime_policy is not None else None
     if _pol_tier:
         _call_kwargs["policy_tier"] = str(_pol_tier)
     _ver_retries = int(getattr(orchestrator, "_last_verification_retries", 0) or 0)
@@ -256,7 +259,27 @@ async def dispatch_tool_calls_impl(
     )
     waves = partition_tool_call_waves(norm_calls, orchestrator, max_parallel_reads=max_parallel_reads)
 
+    cancel_event = state.get("cancel_event") or (
+        getattr(orchestrator, "cancel_event", None) if orchestrator else None
+    )
+
+    def _is_dispatch_cancelled() -> bool:
+        try:
+            return bool(
+                cancel_event is not None
+                and hasattr(cancel_event, "is_set")
+                and cancel_event.is_set() is True
+            )
+        except Exception:
+            return False
+
+    executed_call_ids: set[str] = set()
+    skip_reason = "Tool call skipped (tool budget exhausted)."
+
     for is_parallel, wave_items in waves:
+        if _is_dispatch_cancelled():
+            skip_reason = "Tool call cancelled before execution."
+            break
         remaining = max_tool_calls - tool_call_count
         if remaining <= 0:
             break
@@ -313,6 +336,7 @@ async def dispatch_tool_calls_impl(
             paired_outcomes = [(item, raw_res, iv_baseline)]
 
         for (call_id, tool_name, tool_args, _), raw_res, iv_baseline in paired_outcomes:
+            executed_call_ids.add(str(call_id))
             if not isinstance(raw_res, dict):
                 raw_res = {} if raw_res is None else {"ok": False, "error": str(raw_res)}
             tool_result = cast(Dict[str, Any], raw_res)
@@ -365,6 +389,22 @@ async def dispatch_tool_calls_impl(
 
         if tool_call_count >= max_tool_calls:
             break
+
+    # REM-06: Guarantee every native tool_call_id already committed on the assistant
+    # message receives a paired role="tool" stub if a wave was cancelled or truncated.
+    if use_native_tools and norm_calls:
+        import json as _json
+
+        for cid, t_name, _t_args, _otc in norm_calls:
+            if str(cid) not in executed_call_ids:
+                history.append(
+                    {
+                        "role": "tool",
+                        "tool_call_id": cid,
+                        "name": t_name,
+                        "content": _json.dumps({"ok": False, "error": skip_reason}),
+                    }
+                )
 
     return history, tool_call_count, last_result, last_tool, inline_verifications
 
@@ -493,7 +533,7 @@ def resume_pending_action(
     turns_taken: int,
     use_native_tools: bool,
 ) -> tuple[list, list, list]:
-    """Resume an approved ``pending_action`` into ``(tool_calls, normalized_calls, history)``."""
+    """Resume an approved ``pending_action`` (single or multi-tool batch) into ``(tool_calls, normalized_calls, history)``."""
     from src.core.orchestration.graph.nodes.frontier_dispatch import (
         build_native_assistant_message,
         normalize_tool_calls_with_ids,
@@ -502,20 +542,30 @@ def resume_pending_action(
         _append_tool_call_history,
     )
 
-    tool_calls = [pending_action]
+    batch = pending_action.get("pending_tool_calls")
+    if isinstance(batch, list) and batch:
+        tool_calls = list(batch)
+    else:
+        tool_calls = [pending_action]
+    assistant_content = str(pending_action.get("assistant_content") or "")
     normalized_calls = normalize_tool_calls_with_ids(tool_calls, turns_taken)
     if use_native_tools:
         if history and history[-1].get("role") == "assistant" and history[-1].get("tool_calls"):
             existing_tcs = history[-1]["tool_calls"]
-            if existing_tcs and isinstance(existing_tcs[0], dict) and existing_tcs[0].get("id"):
-                cid = str(existing_tcs[0]["id"])
-                _, tn, ta, otc = normalized_calls[0]
-                otc = {**otc, "id": cid}
-                normalized_calls = [(cid, tn, ta, otc)]
+            reconciled = []
+            for idx, (cid, tn, ta, otc) in enumerate(normalized_calls):
+                if idx < len(existing_tcs) and isinstance(existing_tcs[idx], dict) and existing_tcs[idx].get("id"):
+                    ecid = str(existing_tcs[idx]["id"])
+                    reconciled.append((ecid, tn, ta, {**otc, "id": ecid}))
+                else:
+                    reconciled.append((cid, tn, ta, otc))
+            normalized_calls = reconciled
         else:
             history = list(history)
             history.append(
-                build_native_assistant_message("", [item[3] for item in normalized_calls])
+                build_native_assistant_message(
+                    assistant_content, [item[3] for item in normalized_calls]
+                )
             )
     else:
         history = _append_tool_call_history(history, tool_calls)

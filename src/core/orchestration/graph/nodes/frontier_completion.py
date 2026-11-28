@@ -341,16 +341,25 @@ def build_plan_mode_blocked_exit(
     errors: list,
     turns_taken: int,
     state: Mapping[str, Any],
+    pending_tool_calls: Optional[list] = None,
+    assistant_content: str = "",
 ) -> dict[str, Any]:
     """Assemble state update when a modifying tool is blocked awaiting approval."""
     from src.core.orchestration.graph.policy import compute_action_digest
 
-    pending_action = {
+    pending_action: Dict[str, Any] = {
         "name": tool_name,
         "arguments": tool_args,
         "summary": f"Execute {tool_name}",
         "digest": compute_action_digest(tool_name, tool_args),
     }
+    next_action: Dict[str, Any] = {"name": tool_name, "arguments": tool_args}
+    if pending_tool_calls and len(pending_tool_calls) > 1:
+        pending_action["pending_tool_calls"] = list(pending_tool_calls)
+        next_action["pending_tool_calls"] = list(pending_tool_calls)
+    if assistant_content:
+        pending_action["assistant_content"] = assistant_content
+        next_action["assistant_content"] = assistant_content
     run_state = dict(state.get("run") or {})
     run_state.update({
         "status": "awaiting_approval",
@@ -367,7 +376,7 @@ def build_plan_mode_blocked_exit(
         "_frontier_loop_turns": turns_taken,
         "awaiting_plan_approval": True,
         "plan_mode_blocked_tool": tool_name,
-        "next_action": {"name": tool_name, "arguments": tool_args},
+        "next_action": next_action,
         "pending_action": pending_action,
         "run": run_state,
     }
