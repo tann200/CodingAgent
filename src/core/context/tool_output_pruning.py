@@ -1,9 +1,118 @@
-"""Helpers for pruning stale tool outputs from prompt conversations."""
+"""Helpers for pruning and early-condensing stale tool outputs from prompt conversations."""
 
 from __future__ import annotations
 
 import json
 from typing import Dict, List, Optional
+
+
+_EARLY_CONDENSE_TOOLS: frozenset[str] = frozenset(
+    {
+        "read_file",
+        "web_fetch",
+        "web_search",
+        "fetch_url",
+        "grep",
+        "search_code",
+        "read_tool_output",
+    }
+)
+
+
+def condense_stale_large_tool_outputs(
+    messages: List[Dict],
+    *,
+    token_budget: Optional[int] = None,
+    utilization_threshold: float = 0.50,
+    stale_after_turns: int = 4,
+    target_tools: frozenset[str] = _EARLY_CONDENSE_TOOLS,
+    min_chars: int = 1_200,
+) -> List[Dict]:
+    """Condense stale bulky read/web/search outputs once history hits >=50% budget (OPT-05).
+
+    Unlike hard 80% summary compaction, this lightweight pass only shrinks old
+    (> *stale_after_turns* tool turns ago) large (>= *min_chars*) outputs from
+    re-readable tools (``read_file``, ``web_fetch``, ``web_search``, ``grep``),
+    keeping recent results, mutations, and ``metadata.preserve=True`` entries intact.
+    """
+    if not messages:
+        return messages
+
+    if token_budget is not None and token_budget > 0:
+        est_tokens = sum(len(str(m.get("content") or "")) // 4 + 1 for m in messages)
+        if est_tokens < int(token_budget * utilization_threshold):
+            return messages
+
+    tool_indices: List[int] = []
+    for i, msg in enumerate(messages):
+        if msg.get("role") == "tool" or (
+            msg.get("role") == "user"
+            and "tool_execution_result" in str(msg.get("content") or "")
+        ):
+            tool_indices.append(i)
+
+    recent_tools: set[int] = (
+        set(tool_indices[-stale_after_turns:]) if stale_after_turns > 0 else set()
+    )
+    condensed: List[Dict] = []
+
+    for i, msg in enumerate(messages):
+        if i not in tool_indices or i in recent_tools:
+            condensed.append(msg)
+            continue
+        meta = msg.get("metadata")
+        if isinstance(meta, dict) and meta.get("preserve"):
+            condensed.append(msg)
+            continue
+
+        content_str = str(msg.get("content") or "")
+        if len(content_str) < min_chars or '"_condensed": true' in content_str or '"_pruned": true' in content_str:
+            condensed.append(msg)
+            continue
+
+        tool_name = str(msg.get("name") or "").strip().lower()
+        is_legacy = msg.get("role") == "user" and "tool_execution_result" in content_str
+        if is_legacy and not tool_name:
+            try:
+                parsed = json.loads(content_str)
+                res = parsed.get("tool_execution_result") or {}
+                tool_name = str(res.get("tool_name") or res.get("name") or "").strip().lower()
+            except Exception:
+                tool_name = ""
+
+        if tool_name not in target_tools:
+            condensed.append(msg)
+            continue
+
+        note = (
+            f"Condensed stale {tool_name} output ({len(content_str):,} chars, "
+            f">{stale_after_turns} tool turns ago) at >={int(utilization_threshold * 100)}% "
+            "context utilization; re-read if needed."
+        )
+        if is_legacy:
+            stub = json.dumps(
+                {
+                    "tool_execution_result": {
+                        "tool_name": tool_name,
+                        "_condensed": True,
+                        "original_chars": len(content_str),
+                        "_note": note,
+                    }
+                }
+            )
+            condensed.append({**msg, "content": stub})
+        else:
+            stub = json.dumps(
+                {
+                    "tool_name": tool_name,
+                    "_condensed": True,
+                    "original_chars": len(content_str),
+                    "_note": note,
+                }
+            )
+            condensed.append({**msg, "content": stub})
+
+    return condensed
 
 
 def prune_stale_tool_outputs(

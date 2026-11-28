@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import py_compile
+import re
 import shlex
 import shutil
 from pathlib import Path
@@ -404,3 +405,168 @@ def build_deferred_rollback_feedback(
     )
     lines.append("</verification_failure>")
     return "\n".join(lines)
+
+
+# ---------------------------------------------------------------------------
+# OPT-05: Normalized validation command keys (modeled on haze workState.ts)
+# ---------------------------------------------------------------------------
+
+_ENV_ASSIGN_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=.*$")
+_TRAILING_REDIR_RE = re.compile(
+    r"(?:\s+(?:[12]?>>?|&>)\s*(?:/dev/null|&[12]))+\s*$"
+)
+_PYTHON_BIN_RE = re.compile(r"^python3(?:\.\d+)*$")
+
+
+def split_validation_stages(command: str) -> List[str]:
+    """Split a shell validation command into top-level ``&&`` / ``;`` stages.
+
+    Respects single quotes, double quotes, and backslash escapes so quoted
+    arguments containing ``&&`` or ``;`` are never split prematurely.
+    """
+    text = (command or "").strip()
+    if not text:
+        return []
+
+    stages: List[str] = []
+    buf: List[str] = []
+    in_single = False
+    in_double = False
+    escaped = False
+    i = 0
+    n = len(text)
+    while i < n:
+        ch = text[i]
+        if escaped:
+            buf.append(ch)
+            escaped = False
+            i += 1
+            continue
+        if ch == "\\" and not in_single:
+            buf.append(ch)
+            escaped = True
+            i += 1
+            continue
+        if ch == "'" and not in_double:
+            in_single = not in_single
+            buf.append(ch)
+            i += 1
+            continue
+        if ch == '"' and not in_single:
+            in_double = not in_double
+            buf.append(ch)
+            i += 1
+            continue
+        if not in_single and not in_double:
+            if ch == ";":
+                stage = "".join(buf).strip()
+                if stage:
+                    stages.append(stage)
+                buf = []
+                i += 1
+                continue
+            if ch == "&" and i + 1 < n and text[i + 1] == "&":
+                stage = "".join(buf).strip()
+                if stage:
+                    stages.append(stage)
+                buf = []
+                i += 2
+                continue
+        buf.append(ch)
+        i += 1
+
+    tail = "".join(buf).strip()
+    if tail:
+        stages.append(tail)
+    return stages
+
+
+def normalize_validation_command_key(command: str) -> str:
+    """Normalize a single validation command stage into a canonical comparison key.
+
+    Strips shell wrappers (``env``, ``time``, ``nice``, ``command``, ``timeout``),
+    leading ``KEY=VALUE`` env assignments, trailing ``2>&1`` / ``2>/dev/null``
+    redirections, and virtualenv/absolute binary paths (e.g. ``.venv/bin/python``
+    -> ``python``) so semantically identical verification runs share one key.
+    """
+    raw = (command or "").strip()
+    if not raw:
+        return ""
+
+    # Strip trailing stderr/stdout redirections to /dev/null or &1/&2
+    cleaned = _TRAILING_REDIR_RE.sub("", raw).strip()
+    if not cleaned:
+        return ""
+
+    try:
+        tokens = shlex.split(cleaned)
+    except ValueError:
+        tokens = cleaned.split()
+
+    # Strip wrappers and env assignments from the front
+    idx = 0
+    while idx < len(tokens):
+        tok = tokens[idx]
+        if _ENV_ASSIGN_RE.match(tok):
+            idx += 1
+            continue
+        if tok in ("env", "command", "time"):
+            idx += 1
+            while idx < len(tokens) and tokens[idx].startswith("-"):
+                idx += 1
+            continue
+        if tok == "nice":
+            idx += 1
+            if idx < len(tokens) and tokens[idx] == "-n":
+                idx += 2
+            elif idx < len(tokens) and tokens[idx].startswith("-n"):
+                idx += 1
+            continue
+        if tok == "timeout":
+            idx += 1
+            while idx < len(tokens) and tokens[idx].startswith("-"):
+                idx += 1
+            if idx < len(tokens):
+                idx += 1  # skip duration argument
+            continue
+        break
+
+    tokens = tokens[idx:]
+    if not tokens:
+        return ""
+
+    # Drop any standalone redirection tokens that survived shlex splitting
+    while tokens and tokens[-1] in ("2>&1", "1>&2", "2>/dev/null", ">/dev/null", "1>/dev/null"):
+        tokens.pop()
+    if not tokens:
+        return ""
+
+    # Normalize binary path (e.g. .venv/bin/python3 -> python, /usr/bin/pytest -> pytest)
+    head = Path(tokens[0]).name
+    if _PYTHON_BIN_RE.match(head):
+        head = "python"
+    tokens[0] = head
+
+    return " ".join(tokens)
+
+
+def extract_validation_command_keys(command: str) -> List[str]:
+    """Return normalized command keys for every stage in a (possibly compound) command."""
+    keys: List[str] = []
+    for stage in split_validation_stages(command):
+        key = normalize_validation_command_key(stage)
+        if key:
+            keys.append(key)
+    return keys
+
+
+def command_satisfies_validation_key(
+    executed_command: str,
+    target_command: str,
+) -> bool:
+    """Return True if *executed_command* covers all normalized stages in *target_command*."""
+    target_keys = extract_validation_command_keys(target_command)
+    if not target_keys:
+        return False
+    executed_keys = set(extract_validation_command_keys(executed_command))
+    return all(k in executed_keys for k in target_keys)

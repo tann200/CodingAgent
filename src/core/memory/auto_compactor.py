@@ -170,14 +170,26 @@ def estimate_messages_tokens(messages: list[dict]) -> int:
 # ---------------------------------------------------------------------------
 
 
+def _strip_compaction_envelope(text: str) -> str:
+    """Strip an outer ``<compaction_summary ...>...</compaction_summary ...>`` fence if present."""
+    stripped = text.strip()
+    open_m = re.match(r"^<compaction_summary\b[^>]*>\s*", stripped, re.IGNORECASE)
+    if not open_m:
+        return stripped
+    inner = stripped[open_m.end() :]
+    close_m = re.search(r"\s*</compaction_summary\b[^>]*>$", inner, re.IGNORECASE)
+    if close_m:
+        inner = inner[: close_m.start()]
+    return inner.strip()
+
+
 def _extract_existing_compacted_summary(message: dict) -> Optional[str]:
     """Return the raw summary text if *message* is an existing compact prefix.
 
     Mirrors ``extract_existing_compacted_summary`` in compact.rs.
     A compact prefix is a ``system`` role message whose content starts with
-    ``COMPACT_CONTINUATION_PREAMBLE``.  The preamble, note, and resume
-    instruction are stripped — only the bare ``<summary>…</summary>`` block
-    (or plain text for older formats) is returned.
+    ``COMPACT_CONTINUATION_PREAMBLE``.  The preamble, note, resume
+    instruction, and any ``<compaction_summary>`` envelope are stripped.
     """
     if message.get("role") != "system":
         return None
@@ -201,7 +213,7 @@ def _extract_existing_compacted_summary(message: dict) -> Optional[str]:
     instr_sep = f"\n{COMPACT_DIRECT_RESUME_INSTRUCTION}"
     if instr_sep in summary:
         summary = summary.split(instr_sep, 1)[0]
-    return summary.strip()
+    return _strip_compaction_envelope(summary)
 
 
 def _compacted_prefix_len(messages: list[dict]) -> int:
@@ -238,11 +250,36 @@ def should_compact(messages: list[dict], config: AutoCompactConfig) -> bool:
 # ---------------------------------------------------------------------------
 
 
+def _escape_compaction_text(text: str) -> str:
+    """Escape forged closing tags inside compacted summary excerpts (OPT-05)."""
+    from src.core.security.untrusted_envelopes import escape_envelope_closers
+
+    return escape_envelope_closers(
+        text, extra_tags=("summary", "analysis", "compaction_summary")
+    )
+
+
+def _format_timeline_origin(msg: dict) -> str:
+    """Return an explicit origin label for a message in the compacted timeline.
+
+    Tool outputs are tagged as untrusted data so compacted history cannot
+    silently launder indirect prompt injections into assistant/system intent.
+    """
+    role = str(msg.get("role") or "unknown")
+    if role == "tool":
+        tool_name = str(msg.get("name") or "").strip()
+        if tool_name:
+            return f"tool-result ({tool_name}, untrusted data)"
+        return "tool-result (untrusted data)"
+    return role
+
+
 def _truncate_summary(text: str, max_chars: int = 160) -> str:
-    """Truncate *text* to *max_chars*, appending '…' if truncated."""
-    if len(text) <= max_chars:
-        return text
-    return text[:max_chars] + "…"
+    """Truncate *text* to *max_chars*, escaping forged tags and appending '…' if truncated."""
+    safe = _escape_compaction_text(text)
+    if len(safe) <= max_chars:
+        return safe
+    return safe[:max_chars] + "…"
 
 
 def _first_text_content(message: dict) -> Optional[str]:
@@ -406,10 +443,10 @@ def _summarize_messages(messages: list[dict]) -> str:
     if current_work:
         lines.append(f"- Current work: {current_work}")
 
-    # Key timeline: every message, content truncated to 160 chars
+    # Key timeline: every message, origin-labeled and truncated to 160 chars
     lines.append("- Key timeline:")
     for msg in messages:
-        role = msg.get("role", "unknown")
+        origin = _format_timeline_origin(msg)
         content = msg.get("content") or ""
         if isinstance(content, list):
             content = " | ".join(
@@ -418,7 +455,7 @@ def _summarize_messages(messages: list[dict]) -> str:
                 else str(b)
                 for b in content
             )
-        lines.append(f"  - {role}: {_truncate_summary(str(content))}")
+        lines.append(f"  - {origin}: {_truncate_summary(str(content))}")
 
     lines.append("</summary>")
     return "\n".join(lines)
@@ -600,9 +637,19 @@ def get_compact_continuation_message(
 ) -> str:
     """Build the full system-message text for the compact prefix.
 
-    Mirrors ``get_compact_continuation_message`` in compact.rs.
+    Mirrors ``get_compact_continuation_message`` in compact.rs and wraps the
+    compacted summary body in a nonce-fenced ``<compaction_summary source="data">``
+    envelope (OPT-05) so compacted tool data cannot impersonate system instructions.
     """
-    base = COMPACT_CONTINUATION_PREAMBLE + format_compact_summary(summary)
+    from src.core.security.untrusted_envelopes import wrap_untrusted
+
+    formatted_body = format_compact_summary(summary)
+    fenced_summary = wrap_untrusted(
+        "compaction_summary",
+        formatted_body,
+        attrs={"source": "data"},
+    )
+    base = COMPACT_CONTINUATION_PREAMBLE + fenced_summary
     if recent_messages_preserved:
         base += f"\n\n{COMPACT_RECENT_MESSAGES_NOTE}"
     if suppress_follow_up_questions:

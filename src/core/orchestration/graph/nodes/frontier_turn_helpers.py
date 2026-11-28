@@ -65,6 +65,7 @@ async def prepare_turn_messages_impl(
     """Build the messages list for one LLM turn while preserving the KV-cache prefix."""
     try:
         from src.core.context.context_builder import ContextBuilder
+        from src.core.context.tool_output_pruning import condense_stale_large_tool_outputs
         from src.core.inference.provider_context import get_context_budget
         from src.core.orchestration.event_bus import run_with_correlation
         from src.core.orchestration.provider_capabilities import (
@@ -72,8 +73,9 @@ async def prepare_turn_messages_impl(
         )
 
         cb = ContextBuilder(working_dir=getattr(orchestrator, "working_dir", None))
-        history = prune_tool_outputs(history)
         token_budget = get_context_budget(model_tier=model_tier)
+        history = condense_stale_large_tool_outputs(history, token_budget=token_budget)
+        history = prune_tool_outputs(history)
         if tools_schema is None:
             tools_schema = resolve_effective_tool_schemas(
                 orchestrator, runtime_policy, active_role=role
