@@ -223,18 +223,6 @@ class ProviderFallbackChain:
             if attempts >= max_attempts:
                 break
 
-            # Skip candidates whose circuit breaker is already open
-            try:
-                cb = get_circuit_breaker(candidate_key)
-                if cb.is_open():
-                    logger.debug(
-                        "ProviderFallbackChain: skipping %r — circuit breaker open",
-                        candidate_key,
-                    )
-                    continue
-            except Exception:
-                pass
-
             # Skip cloud fallback candidates that lack required credentials
             if not self._is_candidate_authenticated(candidate_key, mgr):
                 logger.debug(
@@ -242,6 +230,24 @@ class ProviderFallbackChain:
                     candidate_key,
                 )
                 continue
+
+            # Atomically check & claim HALF_OPEN probe slot via allow_request()
+            try:
+                cb = get_circuit_breaker(candidate_key)
+                allow_fn = getattr(cb, "allow_request", None)
+                if callable(allow_fn):
+                    _admitted = allow_fn()
+                    admitted = _admitted if isinstance(_admitted, bool) else (not cb.is_open())
+                else:
+                    admitted = not cb.is_open()
+                if not admitted:
+                    logger.debug(
+                        "ProviderFallbackChain: skipping %r — circuit breaker open",
+                        candidate_key,
+                    )
+                    continue
+            except Exception:
+                pass
 
             attempts += 1
             logger.info(
@@ -262,7 +268,13 @@ class ProviderFallbackChain:
                     tools,
                     **kwargs,
                 )
-            except Exception as exc:
+            except BaseException as exc:
+                if not isinstance(exc, Exception):
+                    try:
+                        get_circuit_breaker(candidate_key).release_probe()
+                    except Exception:
+                        pass
+                    raise
                 logger.warning(
                     "ProviderFallbackChain: provider %r raised %s: %s",
                     candidate_key,

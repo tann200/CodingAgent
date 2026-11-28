@@ -533,22 +533,12 @@ class OllamaAdapter(LLMClient):
                 messages, model=model, stream=stream, timeout=timeout, **kwargs
             )
 
-            if stream:
-                return {
-                    "ok": True,
-                    "provider": "ollama",
-                    "model": model or "unknown",
-                    "latency": 0.0,
-                    "prompt_tokens": 0,
-                    "completion_tokens": 0,
-                    "total_tokens": 0,
-                    "choices": [],
-                    "raw": raw_response,
-                }
-
+            # Check structured error dicts BEFORE stream wrapping so streaming
+            # HTTP/connection failures never masquerade as {"ok": True, "raw": {"meta": ...}}.
             if (
                 isinstance(raw_response, dict)
                 and "meta" in raw_response
+                and isinstance(raw_response["meta"], dict)
                 and raw_response["meta"].get("error")
             ):
                 return {
@@ -565,6 +555,19 @@ class OllamaAdapter(LLMClient):
                     "provider": "ollama",
                     "model": model or "unknown",
                     "error": str(raw_response["error"]),
+                    "raw": raw_response,
+                }
+
+            if stream:
+                return {
+                    "ok": True,
+                    "provider": "ollama",
+                    "model": model or "unknown",
+                    "latency": 0.0,
+                    "prompt_tokens": 0,
+                    "completion_tokens": 0,
+                    "total_tokens": 0,
+                    "choices": [],
                     "raw": raw_response,
                 }
 

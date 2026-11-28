@@ -666,10 +666,14 @@ class OpenAICompatibleAdapter(LLMClient):
             messages = self._preprocess_messages(list(messages))
 
         kwargs = self._sanitize_kwargs(kwargs)
+        if stream:
+            kwargs = {**kwargs, "stream": True}
 
         payload, ep = self._build_payload(messages, model_name, kwargs)
         if not ep:
             return {"message": {"role": "assistant", "content": "", "parsed": None}}
+        if stream and "stream" not in payload:
+            payload["stream"] = True
 
         try:
             if os.getenv("AGENT_DEBUG") in ("1", "true", "True"):
@@ -815,10 +819,10 @@ class OpenAICompatibleAdapter(LLMClient):
 
             if raw_response and "usage" in raw_response:
                 usage = raw_response["usage"]
-                # BUG-FIX: check usage is dict before calling .get()
+                # BUG-FIX: check usage is dict and coerce None values to 0
                 if isinstance(usage, dict):
-                    prompt_tokens = usage.get("prompt_tokens", 0)
-                    completion_tokens = usage.get("completion_tokens", 0)
+                    prompt_tokens = int(usage.get("prompt_tokens") or 0)
+                    completion_tokens = int(usage.get("completion_tokens") or 0)
 
             # CP-9: Extract Anthropic prompt-cache token counts when present.
             # Anthropic returns these in the usage block of both streaming and

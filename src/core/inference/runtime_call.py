@@ -223,7 +223,11 @@ async def call_adapter_with_fallbacks(
                         text,
                         always_populate_choices=False,
                     )
-                elif isinstance(result, dict) and result.get("raw") is not None:
+                elif (
+                    isinstance(result, dict)
+                    and result.get("ok", True) is not False
+                    and result.get("raw") is not None
+                ):
                     raw = result["raw"]
                     if hasattr(raw, "iter_lines"):
                         text = await run_with_correlation(
@@ -238,7 +242,9 @@ async def call_adapter_with_fallbacks(
                             text,
                             always_populate_choices=True,
                         )
-                    elif hasattr(raw, "__iter__"):
+                    elif hasattr(raw, "__iter__") and not isinstance(
+                        raw, (dict, list, str, bytes)
+                    ):
                         from src.core.inference.streaming import consume_generator_stream
 
                         _prov_name = str(getattr(adapter, "name", None) or result.get("provider") or "ollama")
@@ -291,7 +297,11 @@ async def call_adapter_with_fallbacks(
                         text,
                         always_populate_choices=False,
                     )
-                elif isinstance(result, dict) and result.get("raw") is not None:
+                elif (
+                    isinstance(result, dict)
+                    and result.get("ok", True) is not False
+                    and result.get("raw") is not None
+                ):
                     raw = result["raw"]
                     if hasattr(raw, "iter_lines"):
                         text = await run_with_correlation(
@@ -306,7 +316,9 @@ async def call_adapter_with_fallbacks(
                             text,
                             always_populate_choices=True,
                         )
-                    elif hasattr(raw, "__iter__"):
+                    elif hasattr(raw, "__iter__") and not isinstance(
+                        raw, (dict, list, str, bytes)
+                    ):
                         from src.core.inference.streaming import consume_generator_stream
 
                         _prov_name = str(getattr(adapter, "name", None) or result.get("provider") or "ollama")

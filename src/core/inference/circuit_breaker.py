@@ -41,7 +41,14 @@ class CircuitBreaker:
         self._failure_count = 0
         self._opened_at: float = 0.0
         self._probe_in_flight: bool = False
+        self._probe_started_at: float = 0.0
         self._lock = threading.RLock()
+
+    def _is_probe_stale_locked(self) -> bool:
+        if not self._probe_in_flight or self._probe_started_at <= 0.0:
+            return False
+        stale_after = max(self.recovery_timeout, 120.0)
+        return (time.time() - self._probe_started_at) >= stale_after
 
     @property
     def state(self) -> str:
@@ -51,6 +58,9 @@ class CircuitBreaker:
     def allow_request(self) -> bool:
         """Atomically test and admit a request. In HALF_OPEN, allows exactly one probe."""
         with self._lock:
+            if self._is_probe_stale_locked():
+                self._probe_in_flight = False
+                self._probe_started_at = 0.0
             if self._state == self.CLOSED:
                 return True
             if self._state == self.OPEN:
@@ -58,30 +68,41 @@ class CircuitBreaker:
                     if not self._probe_in_flight:
                         self._state = self.HALF_OPEN
                         self._probe_in_flight = True
+                        self._probe_started_at = time.time()
                         return True
                 return False
             if self._state == self.HALF_OPEN:
                 if not self._probe_in_flight:
                     self._probe_in_flight = True
+                    self._probe_started_at = time.time()
                     return True
                 return False
             return False
 
+    def release_probe(self) -> None:
+        """Release an in-flight HALF_OPEN probe without recording a failure (e.g. cancellation)."""
+        with self._lock:
+            self._probe_in_flight = False
+            self._probe_started_at = 0.0
+
     def is_open(self) -> bool:
         """Return True when the breaker will reject the next call (read-only)."""
         with self._lock:
-            return self._current_state() == self.OPEN or self._probe_in_flight
+            probe_active = self._probe_in_flight and not self._is_probe_stale_locked()
+            return self._current_state() == self.OPEN or probe_active
 
     def record_success(self) -> None:
         with self._lock:
             self._failure_count = 0
             self._probe_in_flight = False
+            self._probe_started_at = 0.0
             self._state = self.CLOSED
 
     def record_failure(self) -> None:
         with self._lock:
             self._failure_count += 1
             self._probe_in_flight = False
+            self._probe_started_at = 0.0
             if self._failure_count >= self.failure_threshold:
                 self._state = self.OPEN
                 self._opened_at = time.time()

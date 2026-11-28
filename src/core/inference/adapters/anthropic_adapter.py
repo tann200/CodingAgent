@@ -266,8 +266,9 @@ class AnthropicAdapter(OpenAICompatibleAdapter):
 
         # 2. Convert conversation messages into Anthropic alternating turns
         out_messages: List[Dict[str, Any]] = []
+        pending_tool_ids: List[str] = []
 
-        for msg in conversation_messages:
+        for msg_idx, msg in enumerate(conversation_messages):
             role = msg.get("role", "user")
             raw_content = msg.get("content")
             tool_calls = msg.get("tool_calls") or []
@@ -309,10 +310,12 @@ class AnthropicAdapter(OpenAICompatibleAdapter):
                         elif isinstance(b, str) and b.strip():
                             blocks.append({"type": "text", "text": b})
 
-                for tc in tool_calls:
+                pending_tool_ids = []
+                for tc_idx, tc in enumerate(tool_calls):
                     if not isinstance(tc, dict):
                         continue
-                    tc_id = tc.get("id") or ""
+                    tc_id = str(tc.get("id") or "").strip() or f"toolu_{msg_idx}_{tc_idx}"
+                    pending_tool_ids.append(tc_id)
                     fn = tc.get("function") or {}
                     fn_name = fn.get("name") or tc.get("name") or ""
                     raw_args = fn.get("arguments") or tc.get("parameters") or tc.get("input") or {}
@@ -337,7 +340,13 @@ class AnthropicAdapter(OpenAICompatibleAdapter):
 
             elif role == "tool":
                 # Tool execution result -> Anthropic maps to user role with tool_result block
-                tool_use_id = msg.get("tool_call_id") or msg.get("id") or ""
+                tool_use_id = str(msg.get("tool_call_id") or msg.get("id") or "").strip()
+                if not tool_use_id and pending_tool_ids:
+                    tool_use_id = pending_tool_ids.pop(0)
+                elif not tool_use_id:
+                    tool_use_id = f"toolu_{msg_idx}_0"
+                elif tool_use_id in pending_tool_ids:
+                    pending_tool_ids.remove(tool_use_id)
                 if isinstance(raw_content, (dict, list)):
                     content_str = json.dumps(raw_content)
                 else:
@@ -597,8 +606,12 @@ class AnthropicAdapter(OpenAICompatibleAdapter):
     # Model listing
     # ------------------------------------------------------------------
 
+    def _models_url(self) -> str:
+        base = (self.base_url or _ANTHROPIC_BASE_URL).rstrip("/")
+        return f"{base}/models"
+
     def _models_endpoints(self) -> List[str]:
-        return [_ANTHROPIC_MODELS_URL]
+        return [self._models_url()]
 
     def get_models_from_api(self) -> Dict[str, Any]:
         """List available Anthropic models."""
@@ -616,7 +629,7 @@ class AnthropicAdapter(OpenAICompatibleAdapter):
             }
         try:
             r = requests.get(
-                _ANTHROPIC_MODELS_URL,
+                self._models_url(),
                 headers=self._headers(),
                 timeout=15,
             )
@@ -679,7 +692,7 @@ class AnthropicAdapter(OpenAICompatibleAdapter):
             return False
         try:
             r = requests.get(
-                _ANTHROPIC_MODELS_URL,
+                self._models_url(),
                 headers=self._headers(),
                 timeout=10,
             )

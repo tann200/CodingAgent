@@ -741,9 +741,17 @@ async def call_model(
             _cb_open = True
 
     if not _cb_open:
-        res = await _call_model_internal(
-            messages, provider, model, stream, format_json, tools, **kwargs
-        )
+        try:
+            res = await _call_model_internal(
+                messages, provider, model, stream, format_json, tools, **kwargs
+            )
+        except BaseException:
+            if _cb_key:
+                try:
+                    get_circuit_breaker(_cb_key).release_probe()
+                except Exception:
+                    pass
+            raise
 
         res, _cb_handled = await _attempt_model_fallback(
             enabled=os.getenv("LLM_MANAGER_ENABLE_MODEL_FALLBACK", "1") == "1",

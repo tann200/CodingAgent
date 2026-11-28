@@ -283,15 +283,11 @@ def decode_sse_line(
                 carry.clear()
                 carry.extend(buf)
                 return None
-            # Malformed byte inside line: salvage valid prefix if any and advance
-            tail = buf[exc.start :]
+            # Malformed byte inside line: decode with replacement and clear carry
+            # so a bad byte never wedges all subsequent SSE lines in the stream.
             if carry is not None:
                 carry.clear()
-                carry.extend(tail)
-            try:
-                line = buf[: exc.start].decode("utf-8")
-            except UnicodeDecodeError:
-                return None
+            line = buf.decode("utf-8", errors="replace")
             if not line:
                 return None
     if not line.startswith("data:"):
@@ -349,7 +345,7 @@ def extract_stream_deltas(chunk: dict) -> Optional[Tuple[dict, str, str]]:
         reasoning_delta = delta.get("reasoning_content") or delta.get("thinking") or ""
         content = delta.get("content") or ""
         if not reasoning_delta and delta.get("is_reasoning"):
-            return delta, reasoning_delta, content
+            return delta, content, ""
         return delta, reasoning_delta, content
     except (KeyError, IndexError, AttributeError):
         return None
