@@ -319,27 +319,48 @@ def get(key: str, default: Any = None, working_dir: Optional[Path] = None) -> An
 
 
 def get_mcp_config(working_dir: Optional[Path] = None) -> Dict[str, Any]:
-    """Return the resolved MCP configuration dict.
+    """Return the resolved MCP configuration dict with layer-tagged server provenance.
 
     The function returns a dict containing at least the keys:
-      - servers: list
+      - servers: list (each entry tagged ``source="global"`` or ``"workspace"``)
       - timeout_seconds: int
       - auto_register_tools: bool
 
-    When "working_dir" is provided, workspace overrides are loaded from
-    ``<working_dir>/.codingAgent/config.json`` and ``config.local.json``. When
-    omitted, the normal merged config is used.
+    Workspace MCP servers remain gated by ``McpServerManager`` trust checks at
+    startup; ``load_merged_config(..., trusted=False)`` still strips ``mcp``.
     """
-    defaults = {"servers": [], "timeout_seconds": 30, "auto_register_tools": True}
+    defaults: Dict[str, Any] = {
+        "servers": [],
+        "timeout_seconds": 30,
+        "auto_register_tools": True,
+    }
 
-    # Use the central merged config loader which already implements the
-    # configured context-dir name and legacy fallbacks. Forward the
-    # working_dir so callers (tests) get workspace-local overrides.
-    merged = load_merged_config(working_dir=working_dir)
-    mcp_cfg = merged.get("mcp", {}) if isinstance(merged, dict) else {}
+    mcp_cfg: Dict[str, Any] = {}
+    if _USER_CONFIG.exists():
+        raw_user = _load_config_file(_USER_CONFIG)
+        if isinstance(raw_user, dict) and isinstance(raw_user.get("mcp"), dict):
+            mcp_cfg = _deep_merge(mcp_cfg, raw_user["mcp"])
 
-    # Deep-merge mcp_cfg onto defaults so callers get consistent keys.
-    return _deep_merge(defaults, mcp_cfg)
+    if working_dir is None:
+        ws_paths = _get_workspace_config_paths()
+    else:
+        try:
+            from src.tools.tools_config import agent_context_path
+
+            _ad = agent_context_path(Path(working_dir))
+        except Exception:
+            _ad = Path(working_dir) / ".codingAgent"
+        ws_paths = [_ad / "config.json", _ad / "config.local.json"]
+
+    for cfg_path in ws_paths:
+        if cfg_path.exists():
+            raw_ws = _load_config_file(cfg_path)
+            if isinstance(raw_ws, dict) and isinstance(raw_ws.get("mcp"), dict):
+                mcp_cfg = _deep_merge(mcp_cfg, raw_ws["mcp"])
+
+    result = _deep_merge(defaults, mcp_cfg)
+    result["servers"] = get_mcp_servers(working_dir=working_dir)
+    return result
 
 
 def _normalize_mcp_server_entry(s: Dict[str, Any], *, source: str) -> Dict[str, Any]:

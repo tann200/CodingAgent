@@ -18,8 +18,9 @@ from __future__ import annotations
 import datetime
 import json
 import logging
+from contextvars import ContextVar
 from pathlib import Path
-from typing import Any
+from typing import Any, Collection, Optional
 
 from src.tools.constants import (  # noqa: F401
     DRY_RUN_BLOCKED_TOOLS,
@@ -98,3 +99,109 @@ def _rotate_audit_log(path: Path) -> None:
             _f.writelines(lines[-_MAX_AUDIT_KEEP_LINES:])
     except Exception:
         pass  # rotation failures must never block tool execution
+
+
+_ACTIVE_WORKDIR_CTX: ContextVar[Optional[Path]] = ContextVar(
+    "_ACTIVE_WORKDIR_CTX", default=None
+)
+
+
+def get_effective_workdir(orch: Any) -> Optional[Path]:
+    """Return the active ContextVar workdir override (e.g. subagent worktree) or orch.working_dir."""
+    override = _ACTIVE_WORKDIR_CTX.get()
+    if override is not None:
+        try:
+            return Path(override).resolve()
+        except Exception:
+            return Path(override)
+    raw = getattr(orch, "working_dir", None) if orch is not None else None
+    if not raw:
+        return None
+    try:
+        return Path(raw).resolve()
+    except Exception:
+        return Path(raw)
+
+
+_LETHAL_TRIFECTA_MUTATING_TOOLS: frozenset[str] = frozenset(
+    {
+        "write_file",
+        "edit_file",
+        "edit_file_atomic",
+        "edit_by_line_range",
+        "multiedit",
+        "apply_patch",
+        "delete_file",
+        "rename_file",
+        "create_directory",
+        "bash",
+        "run_tests",
+        "git_commit",
+        "delegate_task",
+    }
+)
+_READONLY_WEB_TOOLS: frozenset[str] = frozenset(
+    {"read_web_page", "web_search", "web_read"}
+)
+_READONLY_INGESTION_ROLES: frozenset[str] = frozenset(
+    {"scout", "analyst", "explore", "researcher", "planner", "strategic"}
+)
+
+
+def assert_lethal_trifecta_isolated(
+    tool_names: Collection[str],
+    *,
+    role: str = "",
+    explore_mode: bool = False,
+) -> None:
+    """Fail closed if a read-only / untrusted-ingestion role admits any mutating tool (TASK-31)."""
+    norm_role = (role or "").strip().lower()
+    if not explore_mode and norm_role not in _READONLY_INGESTION_ROLES:
+        return
+    admitted: set[str] = set(tool_names) & _LETHAL_TRIFECTA_MUTATING_TOOLS
+    try:
+        from src.tools.tools_config import (
+            PermissionLevel,
+            TOOL_PERMISSIONS,
+            resolve_tool_alias,
+        )
+
+        _MUTATING_LEVELS = (
+            PermissionLevel.WORKSPACE_WRITE,
+            PermissionLevel.DANGER,
+            PermissionLevel.PROMPT,
+        )
+        for tn in tool_names:
+            canon = resolve_tool_alias(str(tn))
+            if canon in _READONLY_WEB_TOOLS:
+                continue
+            if canon in _LETHAL_TRIFECTA_MUTATING_TOOLS or canon == "batch":
+                admitted.add(str(tn))
+                continue
+            if TOOL_PERMISSIONS.get(canon) in _MUTATING_LEVELS:
+                admitted.add(str(tn))
+    except Exception:
+        pass
+    try:
+        from src.tools._tool import DECORATED_TOOL_DEFINITIONS, PermissionKind
+
+        _UNSAFE_KINDS = {
+            PermissionKind.WRITE_FILE,
+            PermissionKind.EXECUTE_BASH,
+            PermissionKind.GIT_WRITE,
+            PermissionKind.DELEGATE,
+            PermissionKind.LSP_WRITE,
+            PermissionKind.MEMORY,
+        }
+        for tn in tool_names:
+            meta = DECORATED_TOOL_DEFINITIONS.get(str(tn))
+            if meta is not None and getattr(meta, "permission_kind", None) in _UNSAFE_KINDS:
+                admitted.add(str(tn))
+    except Exception:
+        pass
+    admitted_mutating = sorted(admitted)
+    if admitted_mutating:
+        raise PermissionError(
+            f"Lethal-trifecta isolation violation: read-only role '{norm_role or 'explore'}' "
+            f"cannot admit mutating tools {admitted_mutating}."
+        )

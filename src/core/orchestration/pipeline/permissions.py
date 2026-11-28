@@ -17,9 +17,14 @@ from src.core.messaging.event_types import (
     ToolPermissionRequired,
 )
 from src.core.orchestration.tool_constants import (
+    _ACTIVE_WORKDIR_CTX,  # noqa: F401
+    _LETHAL_TRIFECTA_MUTATING_TOOLS,  # noqa: F401
+    _READONLY_INGESTION_ROLES,  # noqa: F401
     PERM_ORDER as _PERM_ORDER,
     PERMISSION_REQUIRED_TOOLS,
     _write_permission_audit,
+    assert_lethal_trifecta_isolated,  # noqa: F401
+    get_effective_workdir,
 )
 
 logger = logging.getLogger("src.core.orchestration.tool_execution_pipeline")
@@ -52,26 +57,6 @@ APPROVAL_TIMEOUT_SECONDS: float = 120.0
 _ACTIVE_AGENT_CTX: ContextVar[Optional[Any]] = ContextVar(
     "_ACTIVE_AGENT_CTX", default=None
 )
-_ACTIVE_WORKDIR_CTX: ContextVar[Optional[Path]] = ContextVar(
-    "_ACTIVE_WORKDIR_CTX", default=None
-)
-
-
-def get_effective_workdir(orch: Any) -> Optional[Path]:
-    """Return the active ContextVar workdir override (e.g. subagent worktree) or orch.working_dir."""
-    override = _ACTIVE_WORKDIR_CTX.get()
-    if override is not None:
-        try:
-            return Path(override).resolve()
-        except Exception:
-            return Path(override)
-    raw = getattr(orch, "working_dir", None) if orch is not None else None
-    if not raw:
-        return None
-    try:
-        return Path(raw).resolve()
-    except Exception:
-        return Path(raw)
 
 
 def _check_plan_mode_guard(orch: Any, name: str) -> Optional[Dict[str, Any]]:
@@ -385,87 +370,3 @@ def _run_permission_gate(
     if not granted or denied:
         return {"ok": False, "error": f"Tool '{name}' was denied by the user."}
     return None
-
-
-_LETHAL_TRIFECTA_MUTATING_TOOLS: frozenset[str] = frozenset(
-    {
-        "write_file",
-        "edit_file",
-        "edit_file_atomic",
-        "edit_by_line_range",
-        "multiedit",
-        "apply_patch",
-        "delete_file",
-        "rename_file",
-        "create_directory",
-        "bash",
-        "run_tests",
-        "git_commit",
-        "delegate_task",
-    }
-)
-_READONLY_INGESTION_ROLES: frozenset[str] = frozenset(
-    {"scout", "analyst", "explore", "researcher", "planner", "strategic"}
-)
-
-
-def assert_lethal_trifecta_isolated(
-    tool_names: Collection[str],
-    *,
-    role: str = "",
-    explore_mode: bool = False,
-) -> None:
-    """Fail closed if a read-only / untrusted-ingestion role admits any mutating tool (TASK-31)."""
-    norm_role = (role or "").strip().lower()
-    if not explore_mode and norm_role not in _READONLY_INGESTION_ROLES:
-        return
-    admitted: set[str] = set(tool_names) & _LETHAL_TRIFECTA_MUTATING_TOOLS
-    # REM-06: Also inspect live PermissionLevel / PermissionKind metadata so
-    # new mutating/exec/delegate tools (e.g. git_push, ast_rename, lsp_rename,
-    # batch) cannot bypass the static set above.
-    try:
-        from src.tools.tools_config import (
-            PermissionLevel,
-            TOOL_PERMISSIONS,
-            resolve_tool_alias,
-        )
-
-        _MUTATING_LEVELS = (
-            PermissionLevel.WORKSPACE_WRITE,
-            PermissionLevel.DANGER,
-            PermissionLevel.PROMPT,
-        )
-        for tn in tool_names:
-            canon = resolve_tool_alias(str(tn))
-            if canon in _LETHAL_TRIFECTA_MUTATING_TOOLS or canon == "batch":
-                admitted.add(str(tn))
-                continue
-            lvl = TOOL_PERMISSIONS.get(canon)
-            if lvl in _MUTATING_LEVELS:
-                admitted.add(str(tn))
-    except Exception:
-        pass
-    try:
-        from src.tools._tool import DECORATED_TOOL_DEFINITIONS, PermissionKind
-
-        _UNSAFE_KINDS = {
-            PermissionKind.WRITE_FILE,
-            PermissionKind.EXECUTE_BASH,
-            PermissionKind.GIT_WRITE,
-            PermissionKind.DELEGATE,
-            PermissionKind.NETWORK,
-            PermissionKind.LSP_WRITE,
-            PermissionKind.MEMORY,
-        }
-        for tn in tool_names:
-            meta = DECORATED_TOOL_DEFINITIONS.get(str(tn))
-            if meta is not None and getattr(meta, "permission_kind", None) in _UNSAFE_KINDS:
-                admitted.add(str(tn))
-    except Exception:
-        pass
-    admitted_mutating = sorted(admitted)
-    if admitted_mutating:
-        raise PermissionError(
-            f"Lethal-trifecta isolation violation: read-only role '{norm_role or 'explore'}' "
-            f"cannot admit mutating tools {admitted_mutating}."
-        )

@@ -8,7 +8,7 @@ CodingAgent follows a single-agent + progressive-disclosure skills architecture.
 
 from __future__ import annotations
 
-import asyncio, concurrent.futures, contextvars as _cv, logging, os, re as _re, subprocess as _subprocess, time as _time, uuid as _uuid  # noqa: E401
+import asyncio, concurrent.futures, contextvars as _cv, logging, os, time as _time, uuid as _uuid  # noqa: E401
 from contextvars import ContextVar
 from pathlib import Path
 from typing import Any, Dict, List, Optional, cast
@@ -18,7 +18,8 @@ from src.tools._tool import PermissionKind, tool
 from src.tools.subagent_payloads import (
     SCOUT_READONLY_TOOLS, build_delegate_result_text, build_subagent_budget_capsule,
     build_subagent_initial_state, build_subagent_manifest, build_subagent_roles_payload,
-    canonicalize_subagent_role, compute_effective_tool_policy, persist_child_session_file,
+    canonicalize_subagent_role, capture_worktree_diff_summary, compute_effective_tool_policy,
+    is_git_repo, is_valid_task_id, persist_child_session_file,
     publish_delegation_event, validate_parallel_subtasks,
 )
 
@@ -30,51 +31,7 @@ _MAX_DELEGATION_DEPTH: int = 3
 _PARALLEL_MAX_SUBTASKS: int = 6
 _DELEGATION_TIMEOUT_SECONDS: float = 300.0
 _VALID_MODES: frozenset[str] = frozenset({"scout", "worktree"})
-_SCOUT_ROLES: frozenset[str] = frozenset(
-    {"scout", "analyst", "explore", "researcher", "planner", "strategic"}
-)
-_SAFE_TASK_ID_RE = _re.compile(r"^[A-Za-z0-9._-]{1,64}$")
-
-
-def _is_git_repo(workdir_path: Path) -> bool:
-    try:
-        res = _subprocess.run(
-            ["git", "rev-parse", "--is-inside-work-tree"],
-            cwd=str(workdir_path),
-            capture_output=True,
-            text=True,
-            timeout=5,
-        )
-        return res.returncode == 0 and res.stdout.strip().lower() == "true"
-    except Exception:
-        return False
-
-
-def _capture_worktree_diff_summary(exec_workdir: Path) -> str:
-    """Capture changed files and bounded unified diff from *exec_workdir* before cleanup."""
-    try:
-        status = _subprocess.run(
-            ["git", "status", "--short"],
-            cwd=str(exec_workdir),
-            capture_output=True,
-            text=True,
-            timeout=10,
-        )
-        diff = _subprocess.run(
-            ["git", "diff", "--stat"],
-            cwd=str(exec_workdir),
-            capture_output=True,
-            text=True,
-            timeout=10,
-        )
-        parts: List[str] = []
-        if status.returncode == 0 and status.stdout.strip():
-            parts.append(f"**Worktree Status:**\n```\n{status.stdout.strip()[:1500]}\n```")
-        if diff.returncode == 0 and diff.stdout.strip():
-            parts.append(f"**Worktree Diff Stat:**\n```\n{diff.stdout.strip()[:1500]}\n```")
-        return "\n".join(parts)
-    except Exception:
-        return ""
+_SCOUT_ROLES: frozenset[str] = frozenset({"scout", "analyst", "explore", "researcher", "planner", "strategic"})
 
 DispatchEvent: Any = None
 DispatchResultEvent: Any = None
@@ -227,13 +184,9 @@ def _resolve_tool_policy(
 
 @tool(side_effects=["execute"], tags=["planning"], permission_kind=PermissionKind.DELEGATE)
 def delegate_task(
-    role: str = "scout",
-    subtask_description: str = "",
-    working_dir: Optional[str] = None,
-    allowed_tools: Optional[list] = None,
-    model: Optional[str] = None,
-    task_id: Optional[str] = None,
-    mode: Optional[str] = None,
+    role: str = "scout", subtask_description: str = "", working_dir: Optional[str] = None,
+    allowed_tools: Optional[list] = None, model: Optional[str] = None,
+    task_id: Optional[str] = None, mode: Optional[str] = None,
 ) -> str:
     """Spawn an opt-in isolated subagent in ``scout`` (read-only) or ``worktree`` (isolated git branch) mode."""
     if mode is not None and mode not in _VALID_MODES:
@@ -257,12 +210,8 @@ def delegate_task(
     depth = _DELEGATION_DEPTH_VAR.get()
     if depth >= _MAX_DELEGATION_DEPTH:
         return f"Error: Maximum delegation depth ({_MAX_DELEGATION_DEPTH}) exceeded."
-
-    if task_id is not None and not _SAFE_TASK_ID_RE.match(str(task_id)):
-        return (
-            f"Error: Invalid task_id '{task_id}'. "
-            "Must match ^[A-Za-z0-9._-]{1,64}$ without path separators."
-        )
+    if task_id is not None and not is_valid_task_id(str(task_id)):
+        return f"Error: Invalid task_id '{task_id}'. Must match ^[A-Za-z0-9._-]{{1,64}}$ without path separators."
 
     canonical_role = canonicalize_subagent_role(role)
     effective_mode = mode or ("scout" if canonical_role in _SCOUT_ROLES else "worktree")
@@ -276,29 +225,22 @@ def delegate_task(
 
     wt_mgr: Any = None
     wt_task_id: Optional[str] = None
-    exec_workdir = workdir_path
-    agent_token = None
-    workdir_token = None
+    exec_workdir, agent_token, workdir_token = workdir_path, None, None
     manifest: dict[str, Any] = {}
     manifest_path: Optional[Path] = None
 
     try:
-        if effective_mode == "worktree" and (mode == "worktree" or _is_git_repo(workdir_path)):
+        if effective_mode == "worktree" and (mode == "worktree" or is_git_repo(workdir_path)):
             from src.core.orchestration.git_worktree_manager import GitWorktreeManager
-
-            wt_mgr = GitWorktreeManager(workspace=workdir_path)
-            wt_task_id = f"wt_{child_session_id}"
-            exec_workdir = asyncio.run(wt_mgr.create(task_id=wt_task_id))
             from src.core.orchestration.pipeline.permissions import _ACTIVE_WORKDIR_CTX
-
+            wt_mgr, wt_task_id = GitWorktreeManager(workspace=workdir_path), f"wt_{child_session_id}"
+            exec_workdir = asyncio.run(wt_mgr.create(task_id=wt_task_id))
             workdir_token = _ACTIVE_WORKDIR_CTX.set(exec_workdir)
 
-        base_system_prompt = get_agent_brain_manager().compile_system_prompt("scout" if effective_mode == "scout" else canonical_role)
+        prompt_role = "scout" if effective_mode == "scout" else canonical_role
+        base_system_prompt = get_agent_brain_manager().compile_system_prompt(prompt_role)
         budget_capsule = build_subagent_budget_capsule(
-            role="scout" if effective_mode == "scout" else canonical_role,
-            mode=effective_mode,
-            max_steps=20,
-            tools_required=(effective_mode == "scout"),
+            role=prompt_role, mode=effective_mode, max_steps=20, tools_required=(effective_mode == "scout"),
         )
         system_prompt = f"{base_system_prompt}\n\n{budget_capsule}" if base_system_prompt else budget_capsule
         override_model = model if model is not None else get_default_model_for_role(canonical_role)
@@ -310,7 +252,6 @@ def delegate_task(
         if task_id:
             try:
                 from src.core.memory.session_store import SessionStore as _SS
-
                 resumed_state = _SS(workdir=str(workdir_path)).load_session_state(task_id)
             except Exception:
                 resumed_state = None
@@ -382,7 +323,7 @@ def delegate_task(
         _publish_event(parent_orch, "finish", cid=child_session_id, pid=parent_session_id, role=canonical_role, final_state=final_state, ok=True)
         result_text = build_delegate_result_text(role=role, child_session_id=child_session_id, final_state=final_state)
         if wt_mgr is not None and wt_task_id is not None:
-            wt_summary = _capture_worktree_diff_summary(exec_workdir)
+            wt_summary = capture_worktree_diff_summary(exec_workdir)
             if wt_summary:
                 result_text = f"{result_text}\n\n{wt_summary}"
         return result_text
@@ -395,20 +336,13 @@ def delegate_task(
         logger.error("delegate_task: subagent failed: %s", exc)
         return f"Subagent [{role}] failed during execution: {exc}"
     finally:
-        if workdir_token is not None:
-            try:
-                from src.core.orchestration.pipeline.permissions import _ACTIVE_WORKDIR_CTX
-
-                _ACTIVE_WORKDIR_CTX.reset(workdir_token)
-            except Exception:
-                pass
-        if agent_token is not None:
-            try:
-                from src.core.orchestration.tool_execution_pipeline import _ACTIVE_AGENT_CTX
-
-                _ACTIVE_AGENT_CTX.reset(agent_token)
-            except Exception:
-                pass
+        for _tok, _ctx_name in ((workdir_token, "_ACTIVE_WORKDIR_CTX"), (agent_token, "_ACTIVE_AGENT_CTX")):
+            if _tok is not None:
+                try:
+                    import src.core.orchestration.pipeline.permissions as _perms
+                    getattr(_perms, _ctx_name).reset(_tok)
+                except Exception:
+                    pass
         if wt_mgr is not None and wt_task_id is not None:
             try:
                 asyncio.run(wt_mgr.remove(wt_task_id))

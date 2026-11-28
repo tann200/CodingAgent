@@ -4,7 +4,47 @@ from __future__ import annotations
 
 from copy import deepcopy
 from pathlib import Path
+import re as _re
+import subprocess as _subprocess
 from typing import Any, Dict, Iterable, List, Optional, Tuple
+
+_SAFE_TASK_ID_RE = _re.compile(r"^[A-Za-z0-9._-]{1,64}$")
+
+
+def is_valid_task_id(task_id: str) -> bool:
+    return bool(_SAFE_TASK_ID_RE.match(str(task_id)))
+
+
+def is_git_repo(workdir_path: Path) -> bool:
+    try:
+        res = _subprocess.run(
+            ["git", "rev-parse", "--is-inside-work-tree"],
+            cwd=str(workdir_path), capture_output=True, text=True, timeout=5,
+        )
+        return res.returncode == 0 and res.stdout.strip().lower() == "true"
+    except Exception:
+        return False
+
+
+def capture_worktree_diff_summary(exec_workdir: Path) -> str:
+    """Capture changed files and bounded diff stat from *exec_workdir* before cleanup."""
+    try:
+        status = _subprocess.run(
+            ["git", "status", "--short"],
+            cwd=str(exec_workdir), capture_output=True, text=True, timeout=10,
+        )
+        diff = _subprocess.run(
+            ["git", "diff", "--stat"],
+            cwd=str(exec_workdir), capture_output=True, text=True, timeout=10,
+        )
+        parts: List[str] = []
+        if status.returncode == 0 and status.stdout.strip():
+            parts.append(f"**Worktree Status:**\n```\n{status.stdout.strip()[:1500]}\n```")
+        if diff.returncode == 0 and diff.stdout.strip():
+            parts.append(f"**Worktree Diff Stat:**\n```\n{diff.stdout.strip()[:1500]}\n```")
+        return "\n".join(parts)
+    except Exception:
+        return ""
 
 DELEGATION_DENYLIST = {
     "delegate",

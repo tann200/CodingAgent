@@ -287,22 +287,16 @@ def _validate_candidate_syntax(orch: Any, path_arg: str, new_content: str) -> Op
 
     if p_str.endswith((".js", ".mjs", ".cjs")):
         from src.tools.sandbox import run_sandboxed
-
         tmp_path = None
         try:
             wd = Path(getattr(orch, "working_dir", None) or ".")
-            node = run_sandboxed(["node", "--version"], cwd=wd, capture_output=True, timeout=3, network=False)
-            if node.returncode == 0:
+            if run_sandboxed(["node", "--version"], cwd=wd, capture_output=True, timeout=3, network=False).returncode == 0:
                 with tempfile.NamedTemporaryFile(suffix=".js", mode="w", delete=False, encoding="utf-8") as tmp:
                     tmp.write(new_content)
                     tmp_path = tmp.name
-                check = run_sandboxed(
-                    ["node", "--check", tmp_path], cwd=Path(tmp_path).parent,
-                    capture_output=True, text=True, timeout=10, network=False,
-                )
+                check = run_sandboxed(["node", "--check", tmp_path], cwd=Path(tmp_path).parent, capture_output=True, text=True, timeout=10, network=False)
                 if check.returncode != 0:
-                    err = (check.stderr or check.stdout or "syntax error").strip()
-                    return {"ok": False, "error": f"Sandbox validation error: JS syntax error: {err[:300]}"}
+                    return {"ok": False, "error": f"Sandbox validation error: JS syntax error: {(check.stderr or check.stdout or 'syntax error').strip()[:300]}"}
         except (FileNotFoundError, subprocess.TimeoutExpired):
             pass
         finally:
@@ -345,11 +339,7 @@ def _validate_candidate_syntax(orch: Any, path_arg: str, new_content: str) -> Op
 
 
 def _run_sandbox_and_snapshot(
-    orch: Any,
-    name: str,
-    args: dict,
-    tool: Any,
-    path_arg: Optional[str],
+    orch: Any, name: str, args: dict, tool: Any, path_arg: Optional[str],
 ) -> Optional[Dict[str, Any]]:
     """Validate candidate content (sandbox) and take a rollback snapshot for write tools."""
     try:
@@ -370,10 +360,7 @@ def _run_sandbox_and_snapshot(
                     pass
     except Exception as exc:
         guilogger.error(f"Sandbox validation failed (fail-closed): {exc}")
-        return {
-            "ok": False,
-            "error": f"Sandbox validation aborted: {exc}. Write operation blocked for safety.",
-        }
+        return {"ok": False, "error": f"Sandbox validation aborted: {exc}. Write operation blocked for safety."}
 
     from src.tools.rollback_tools import WRITE_TOOL_NAMES
 
@@ -397,17 +384,13 @@ def _run_sandbox_and_snapshot(
                     orch.rollback_manager.append_to_snapshot(orch._step_snapshot_id, p_snap)
                 orch._current_snapshot_id = orch._step_snapshot_id
             else:
-                orch._current_snapshot_id = orch.rollback_manager.snapshot_files(
-                    paths_to_snap, snapshot_id=None
-                )
+                orch._current_snapshot_id = orch.rollback_manager.snapshot_files(paths_to_snap, snapshot_id=None)
         except Exception as snap_err:
             guilogger.warning(f"Snapshot failed (non-blocking): {snap_err}")
 
     try:
         from src.core.orchestration.change_log import begin_change
-
         begin_change(orch, name, args, orch.working_dir)
     except Exception as exc:
         guilogger.debug(f"change_log: begin_change skipped (non-blocking): {exc}")
-
     return None

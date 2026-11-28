@@ -256,23 +256,29 @@ class ValidationDebtTracker:
             # Match wrapper-normalized keys (e.g. `env CI=1 .venv/bin/pytest a.py` == `pytest a.py`)
             # and allow a broad/untargeted pytest/unittest run (no specific .py target) to clear
             # narrower Python test debt, without letting an unrelated single-file test clear it.
-            def _is_broad_python_test(cmd_key: str) -> bool:
+            def _is_py_test(cmd_key: str) -> bool:
                 low = cmd_key.lower()
-                if not any(tok in low for tok in ("pytest", "unittest")):
-                    return False
-                # Targeted single-file / nodeid / -k filter is narrow, not a full suite run
-                if ".py" in low or "::" in low or " -k " in low or " -k=" in low:
-                    return False
-                return True
+                return any(tok in low for tok in ("pytest", "unittest"))
 
-            has_broad_py = any(_is_broad_python_test(k) for k in passed_keys)
+            def _has_specific_target(cmd_key: str) -> bool:
+                low = cmd_key.lower()
+                return ".py" in low or "::" in low or " -k " in low or " -k=" in low
+
+            has_any_py = any(_is_py_test(k) for k in passed_keys)
+            has_broad_py = any(_is_py_test(k) and not _has_specific_target(k) for k in passed_keys)
             for existing in list(self.red_debt):
                 ex_key = normalize_validation_command_key(existing)
                 if ex_key and ex_key in passed_keys:
                     self.red_debt.discard(existing)
                     continue
-                if has_broad_py and any(tok in existing.lower() for tok in ("pytest", "unittest")):
-                    self.red_debt.discard(existing)
+                if _is_py_test(existing):
+                    if has_broad_py:
+                        self.red_debt.discard(existing)
+                    elif has_any_py and not _has_specific_target(ex_key or existing):
+                        # Generic untargeted "pytest" debt can be paid by a confirmed
+                        # Python test runner pass, while targeted "pytest test_a.py"
+                        # debt requires matching test_a.py or a broad suite run.
+                        self.red_debt.discard(existing)
 
         return {
             **info,

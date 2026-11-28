@@ -27,10 +27,9 @@ class TestUndoDeadlockAndSync:
     def test_undo_last_user_message_does_not_deadlock_and_syncs_msg_mgr(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        monkeypatch.setattr(
-            "tui.tui_src.ui._bridge_session.HISTORY_PATH",
-            tmp_path / "history.json",
-        )
+        import tui.tui_src.ui._bridge_session as _bs
+
+        monkeypatch.setattr(_bs, "HISTORY_PATH", tmp_path / "history.json")
 
         class _DummyBridge(BridgeSessionMixin):
             def __init__(self) -> None:
