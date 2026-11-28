@@ -82,7 +82,7 @@ codingagent --task "Refactor parser" --private
 codingagent --task "Add feature" --parallel
 ```
 
-Project instructions are loaded from ancestor `AGENTS.md` / `CLAUDE.md` files plus root `ARCHITECTURE.md` (capped at 3,000 chars), and nested subtree `AGENTS.md` / `CLAUDE.md` files are loaded lazily (deduplicated by SHA-256 and wrapped in nonce-fenced `<project_instructions>` envelopes) when reading or editing files beneath the workspace root.
+Project instructions are loaded from ancestor `AGENTS.md` / `CLAUDE.md` files with tier-scaled prompt budgets (`nano`: 1,600 chars, `compact`/`small`: 3,200 chars omitting `ARCHITECTURE.md`, `standard`/`medium`: 8,000 chars, `frontier`/`large`: 12,000 chars including root `ARCHITECTURE.md` capped at 3,000 chars), and nested subtree `AGENTS.md` / `CLAUDE.md` files are loaded lazily (deduplicated by SHA-256 and wrapped in nonce-fenced `<project_instructions>` envelopes) when reading or editing files beneath the workspace root.
 
 ## Safety Model
 

@@ -144,13 +144,19 @@ class TestGrep:
     def test_grep_cmd_include_before_exclude(self, tmp_path, monkeypatch):
         """Regression test for GNU grep: --include must precede --exclude so GNU grep defaults to exclude."""
         captured_cmd = []
-        from src.tools import sandbox
+        import shutil
         import subprocess
+        from src.tools import sandbox
 
         def mock_run_sandboxed(cmd, **kwargs):
             captured_cmd.extend(cmd)
             return subprocess.CompletedProcess(cmd, 1, "", "")
 
+        # Force the GNU grep fallback path even when ripgrep is installed locally.
+        orig_which = shutil.which
+        monkeypatch.setattr(
+            shutil, "which", lambda name: None if name == "rg" else orig_which(name)
+        )
         monkeypatch.setattr(sandbox, "run_sandboxed", mock_run_sandboxed)
         grep("foo", workdir=tmp_path, include="*.py")
         assert "--include=*.py" in captured_cmd
