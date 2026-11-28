@@ -965,6 +965,45 @@ def read_file_chunk(
 
 
 _GLOB_RESULT_LIMIT = 500
+_GLOB_PRUNED_DIRS: frozenset[str] = frozenset(
+    {
+        ".git",
+        ".venv",
+        "venv",
+        "node_modules",
+        "__pycache__",
+        ".codingAgent",
+        ".codingagent",
+        ".pytest_cache",
+        ".mypy_cache",
+        ".ruff_cache",
+        "dist",
+        "build",
+        "target",
+    }
+)
+
+
+def _glob_pattern_matches(rel_posix: str, filename: str, pattern: str) -> bool:
+    """Match *rel_posix* against a glob pattern supporting ``**`` and simple patterns."""
+    import fnmatch
+    from pathlib import PurePosixPath
+
+    pat = pattern.replace("\\", "/").lstrip("./")
+    if not pat:
+        return False
+    if "/" not in pat and "**" not in pat:
+        return fnmatch.fnmatch(filename, pat)
+    if PurePosixPath(rel_posix).match(pat):
+        return True
+    # Handle leading "**/" matching root-level files (e.g. "**/*.py" matching "app.py")
+    if pat.startswith("**/"):
+        tail = pat[3:]
+        if PurePosixPath(rel_posix).match(tail) or (
+            "/" not in tail and fnmatch.fnmatch(filename, tail)
+        ):
+            return True
+    return fnmatch.fnmatch(rel_posix, pat)
 
 
 @tool(tags=["coding"], permission_kind=PermissionKind.READ_FILE)
@@ -973,6 +1012,8 @@ def glob(pattern: str, workdir: Path | None = None) -> Dict[str, Any]:
     if workdir is None:
         workdir = Path.cwd()
     try:
+        from src.core.security.redaction import is_git_internals_path, is_secret_path
+
         base = Path(workdir).resolve()
         # F13 fix: reject patterns that escape the working directory via ".."
         if ".." in pattern:
@@ -980,33 +1021,48 @@ def glob(pattern: str, workdir: Path | None = None) -> Dict[str, Any]:
                 "status": "error",
                 "error": "Glob pattern must not contain '..'. Path traversal outside the working directory is not allowed.",
             }
-        if "**" in pattern:
-            # Pattern already expresses recursion; use Path.glob() verbatim so ** is honoured
-            raw = base.glob(pattern)
-        else:
-            # Simple pattern — search the whole tree recursively
-            raw = base.rglob(pattern)
-        matches = []
-        for p in raw:
-            if not p.is_file():
-                continue
+
+        pat_parts = set(pattern.replace("\\", "/").split("/"))
+        pruned_dirs = _GLOB_PRUNED_DIRS - pat_parts
+
+        matched_with_mtime: list[tuple[float, str]] = []
+        for dirpath, dirnames, filenames in os.walk(base, followlinks=False):
+            # Prune noise & secret directories in-place before descending (OPT-02)
+            dirnames[:] = [
+                d
+                for d in dirnames
+                if d not in pruned_dirs and d != ".git"
+            ]
+            dp = Path(dirpath)
             try:
-                rel = str(p.resolve().relative_to(base))
-                matches.append(rel)
+                rel_dir = dp.relative_to(base)
             except ValueError:
-                # Path resolved to outside base — skip silently (prevents path traversal exfiltration)
                 continue
-        total_found = len(matches)
+            rel_dir_posix = "" if rel_dir == Path(".") else rel_dir.as_posix()
+            for fname in filenames:
+                rel_posix = f"{rel_dir_posix}/{fname}" if rel_dir_posix else fname
+                if not _glob_pattern_matches(rel_posix, fname, pattern):
+                    continue
+                candidate = dp / fname
+                try:
+                    resolved = candidate.resolve()
+                    rel = str(resolved.relative_to(base))
+                except (ValueError, OSError):
+                    continue
+                if not resolved.is_file():
+                    continue
+                if is_secret_path(resolved) or is_git_internals_path(resolved, for_write=False):
+                    continue
+                try:
+                    mtime = resolved.stat().st_mtime
+                except OSError:
+                    mtime = 0.0
+                matched_with_mtime.append((mtime, rel))
+
+        total_found = len(matched_with_mtime)
         truncated = total_found > _GLOB_RESULT_LIMIT
-        # Sort by modification time descending (most recently modified first),
-        # matching claw-code-main Rust glob_search behaviour.
-        matches.sort(
-            key=lambda rel_path: (
-                (base / rel_path).stat().st_mtime if (base / rel_path).exists() else 0.0
-            ),
-            reverse=True,
-        )
-        matches = matches[:_GLOB_RESULT_LIMIT]
+        matched_with_mtime.sort(key=lambda item: item[0], reverse=True)
+        matches = [rel for _, rel in matched_with_mtime[:_GLOB_RESULT_LIMIT]]
         result: Dict[str, Any] = {
             "status": "ok",
             "pattern": pattern,

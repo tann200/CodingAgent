@@ -99,41 +99,92 @@ def grep(
         "node_modules",
     )
 
-    try:
-        cmd = [
-            "grep",
-            "-r",
-            "-n",
-            "-H",
-            "-I",
-        ]
-        if include:
-            cmd += [f"--include={include}"]
-        # Always append negated secret globs AFTER model-provided --include globs (TASK-31)
-        for pat in SECRET_SEARCH_EXCLUDE_GLOBS:
-            cmd.append(f"--exclude={pat}")
-        for d in SECRET_SEARCH_EXCLUDE_DIRS:
-            cmd.append(f"--exclude-dir={d}")
-        search_parts = set(search_path.parts)
-        for d in _NOISE_EXCLUDE_DIRS:
-            if d not in search_parts:
-                cmd.append(f"--exclude-dir={d}")
-        if context > 0:
-            cmd += ["-C", str(context)]
-        cmd += ["-e", pattern, "--", str(search_path)]
+    _GREP_MAX_MATCHES = 200
 
+    try:
+        import shutil as _shutil
+
+        rg_bin = _shutil.which("rg")
+        search_parts = set(search_path.parts)
         from src.tools.sandbox import run_sandboxed
 
-        process = run_sandboxed(
-            cmd,
-            cwd=workdir if isinstance(workdir, Path) else Path(workdir),
-            capture_output=True,
-            text=True,
-            check=False,
-            timeout=30,
-            network=False,
-        )
+        process = None
+        if rg_bin:
+            rg_cmd = [
+                rg_bin,
+                "--no-heading",
+                "--line-number",
+                "--with-filename",
+                "--color=never",
+                "--max-filesize=1M",
+                "--max-count=50",
+                "--no-ignore",
+                "--hidden",
+            ]
+            if include:
+                rg_cmd += ["--glob", include]
+            # Always append negated secret & noise globs AFTER model-provided --glob (TASK-31 / OPT-02)
+            for pat in SECRET_SEARCH_EXCLUDE_GLOBS:
+                rg_cmd += ["--glob", f"!{pat}"]
+            for d in SECRET_SEARCH_EXCLUDE_DIRS:
+                rg_cmd += ["--glob", f"!{d}/**", "--glob", f"!**/{d}/**"]
+            for d in _NOISE_EXCLUDE_DIRS:
+                if d not in search_parts:
+                    rg_cmd += ["--glob", f"!{d}/**", "--glob", f"!**/{d}/**"]
+            if context > 0:
+                rg_cmd += ["-C", str(context)]
+            rg_cmd += ["-e", pattern, "--", str(search_path)]
+            try:
+                rg_proc = run_sandboxed(
+                    rg_cmd,
+                    cwd=workdir if isinstance(workdir, Path) else Path(workdir),
+                    capture_output=True,
+                    text=True,
+                    check=False,
+                    timeout=30,
+                    network=False,
+                )
+                if rg_proc.returncode in (0, 1):
+                    process = rg_proc
+            except subprocess.TimeoutExpired:
+                raise
+            except Exception:
+                process = None
+
+        if process is None:
+            cmd = [
+                "grep",
+                "-r",
+                "-n",
+                "-H",
+                "-I",
+            ]
+            if include:
+                cmd += [f"--include={include}"]
+            # Always append negated secret globs AFTER model-provided --include globs (TASK-31)
+            for pat in SECRET_SEARCH_EXCLUDE_GLOBS:
+                cmd.append(f"--exclude={pat}")
+            for d in SECRET_SEARCH_EXCLUDE_DIRS:
+                cmd.append(f"--exclude-dir={d}")
+            for d in _NOISE_EXCLUDE_DIRS:
+                if d not in search_parts:
+                    cmd.append(f"--exclude-dir={d}")
+            if context > 0:
+                cmd += ["-C", str(context)]
+            cmd += ["-e", pattern, "--", str(search_path)]
+
+            process = run_sandboxed(
+                cmd,
+                cwd=workdir if isinstance(workdir, Path) else Path(workdir),
+                capture_output=True,
+                text=True,
+                check=False,
+                timeout=30,
+                network=False,
+            )
+
         if process.returncode == 0:
+            # Redact once over raw stdout (avoiding redundant per-match regex passes; OPT-02)
             raw = redact_secrets(process.stdout)
             matches = _parse_grep_output(raw)
             filtered_matches = []
@@ -147,9 +198,9 @@ def grep(
                         or (include.startswith("*.") and f_path.name.endswith(include[1:]))
                     ):
                         continue
-                    if "content" in m:
-                        m["content"] = redact_secrets(m["content"])
                     filtered_matches.append(m)
+                    if len(filtered_matches) >= _GREP_MAX_MATCHES:
+                        break
             raw_lines = []
             for raw_line in raw.splitlines():
                 line_p = Path(raw_line.split(":", 1)[0])
@@ -161,6 +212,8 @@ def grep(
                 ):
                     continue
                 raw_lines.append(raw_line)
+                if len(raw_lines) >= _GREP_MAX_MATCHES * (1 + max(0, context) * 2):
+                    break
             raw = "\n".join(raw_lines)
             return ToolResult.success(
                 {"output": raw, "matches": filtered_matches}
@@ -190,7 +243,21 @@ def grep(
         out_lines: list[str] = []
         matches = []
 
-        candidates = [search_path] if search_path.is_file() else search_path.rglob("*")
+        import os as _os
+
+        def _iter_candidates():
+            if search_path.is_file():
+                yield search_path
+                return
+            pruned = set(_NOISE_EXCLUDE_DIRS) | set(SECRET_SEARCH_EXCLUDE_DIRS) | {".git"}
+            pruned -= set(search_path.parts)
+            for dirpath, dirnames, filenames in _os.walk(search_path, followlinks=False):
+                dirnames[:] = [d for d in dirnames if d not in pruned]
+                dp = Path(dirpath)
+                for fn in filenames:
+                    yield dp / fn
+
+        candidates = _iter_candidates()
         for p in candidates:
             if not p.is_file():
                 continue
