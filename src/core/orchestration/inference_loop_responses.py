@@ -248,12 +248,64 @@ def _build_success_response(orch: Any, final_state: Dict[str, Any]) -> Dict[str,
         except Exception:
             pass
 
-    return {
+    response: Dict[str, Any] = {
         "assistant_message": assistant_message.strip(),
         "work_summary": work_summary,
         "delegation_results": delegation_results or {},
         "dry_run_intercepted": list(getattr(orch, "_dry_run_log", [])),
     }
+
+    # REM-02 (CRIT-02): Propagate authoritative failure / cancellation status
+    # from final_state so headless CLI and HTTP /task never misreport failed or
+    # rolled-back pipeline runs as complete (exit code 0 / COMPLETED).
+    if isinstance(final_state, dict):
+        _run = final_state.get("run")
+        _run_status = str(_run.get("status") or "").strip().lower() if isinstance(_run, dict) else ""
+        _run_outcome = str(_run.get("outcome") or "").strip().lower() if isinstance(_run, dict) else ""
+        _ver_passed = final_state.get("verification_passed")
+        _errors = [str(e) for e in (final_state.get("errors") or []) if e]
+        _last_res = final_state.get("last_result")
+        _last_err = (
+            str(_last_res.get("error") or "")
+            if isinstance(_last_res, dict) and _last_res.get("error")
+            else ""
+        )
+
+        is_cancelled = _run_status in ("cancelled", "canceled") or _run_outcome in (
+            "cancelled",
+            "canceled",
+        )
+        is_failed = (
+            not is_cancelled
+            and (
+                _run_status in ("failed", "error")
+                or _run_outcome in ("failed", "error")
+                or _ver_passed is False
+            )
+        )
+        if is_cancelled:
+            response["ok"] = False
+            response["status"] = "cancelled"
+            response["canceled"] = True
+            response["cancelled"] = True
+        elif is_failed:
+            raw_err = _errors[-1] if _errors else (_last_err or f"Run ended with status={_run_status or _run_outcome or 'failed'}")
+            try:
+                from src.core.security.redaction import redact_secrets
+
+                raw_err = redact_secrets(raw_err)
+            except Exception:
+                pass
+            response["ok"] = False
+            response["status"] = "failed"
+            response["error"] = raw_err
+            if _errors:
+                response["errors"] = _errors
+        else:
+            response["ok"] = True
+            response["status"] = "completed"
+
+    return response
 
 
 def _call_model_fallback_sync(

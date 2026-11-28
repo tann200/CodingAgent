@@ -109,6 +109,12 @@ def _scan_unquoted_operators(command: str) -> Tuple[List[str], List[str]]:
             i += 1
             continue
 
+        if ch in ("\n", "\r"):
+            ops.append("\n")
+            segments.append("".join(buf).strip())
+            buf = []
+            i += 1
+            continue
         if ch == ";":
             ops.append(";")
             segments.append("".join(buf).strip())
@@ -161,7 +167,10 @@ def classify_shell_validation(command: str) -> Dict[str, Any]:
     """
     stripped = re.sub(r"^set\s+-o\s+pipefail\s*;\s*", "", (command or "").strip())
     ops, segments = _scan_unquoted_operators(stripped)
-    demoting_ops = [op for op in ops if op in (";", "||", "&")]
+    demoting_ops = [op for op in ops if op in (";", "||", "&", "\n")]
+    # Unquoted leading shell negation (`! pytest ...`) inverts non-zero exit codes to 0.
+    if any(seg == "!" or re.match(r"^!\s+", seg) for seg in segments):
+        demoting_ops.append("!")
     stages = [normalize_validation_command(seg) for seg in segments if seg]
     if demoting_ops:
         return {
@@ -222,23 +231,48 @@ class ValidationDebtTracker:
                 self.red_debt.add(st)
         elif passed and is_after and info["authority"] == "confirmed":
             # Confirmed green run after last mutation -> pay down matching debt
+            try:
+                from src.core.orchestration.graph.nodes.verification_helpers import (
+                    normalize_validation_command_key,
+                )
+            except Exception:
+                normalize_validation_command_key = normalize_validation_command  # type: ignore[assignment]
+
+            passed_keys: Set[str] = set()
             for st in val_stages:
                 self.passed_after_mutation.add(st)
                 self.red_debt.discard(st)
-            # Also pay down full normalized signature if tracked
+                k = normalize_validation_command_key(st)
+                if k:
+                    passed_keys.add(k)
             norm_full = normalize_validation_command(command)
             if norm_full:
                 self.passed_after_mutation.add(norm_full)
                 self.red_debt.discard(norm_full)
-            # A confirmed green Python test run (e.g. `pytest test_x.py`,
-            # `python3 -m pytest`, `python3 -m unittest`) pays down bare
-            # Python test-runner debt (`pytest` / `python -m pytest` / `unittest`).
-            _lower_stages = " ".join(val_stages).lower()
-            if any(tok in _lower_stages for tok in ("pytest", "unittest")):
-                for existing in list(self.red_debt):
-                    ex_low = existing.lower()
-                    if any(tok in ex_low for tok in ("pytest", "unittest")):
-                        self.red_debt.discard(existing)
+                k_full = normalize_validation_command_key(norm_full)
+                if k_full:
+                    passed_keys.add(k_full)
+
+            # Match wrapper-normalized keys (e.g. `env CI=1 .venv/bin/pytest a.py` == `pytest a.py`)
+            # and allow a broad/untargeted pytest/unittest run (no specific .py target) to clear
+            # narrower Python test debt, without letting an unrelated single-file test clear it.
+            def _is_broad_python_test(cmd_key: str) -> bool:
+                low = cmd_key.lower()
+                if not any(tok in low for tok in ("pytest", "unittest")):
+                    return False
+                # Targeted single-file / nodeid / -k filter is narrow, not a full suite run
+                if ".py" in low or "::" in low or " -k " in low or " -k=" in low:
+                    return False
+                return True
+
+            has_broad_py = any(_is_broad_python_test(k) for k in passed_keys)
+            for existing in list(self.red_debt):
+                ex_key = normalize_validation_command_key(existing)
+                if ex_key and ex_key in passed_keys:
+                    self.red_debt.discard(existing)
+                    continue
+                if has_broad_py and any(tok in existing.lower() for tok in ("pytest", "unittest")):
+                    self.red_debt.discard(existing)
 
         return {
             **info,

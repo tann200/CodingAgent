@@ -218,8 +218,11 @@ def _build_loop_exit_response(
     if cancel_event and hasattr(cancel_event, "is_set") and cancel_event.is_set():
         guilogger.info("Orchestrator: Task was canceled, returning cancel response")
         return {
+            "ok": False,
+            "status": "cancelled",
             "assistant_message": "[yellow]⚠ Task canceled by user.[/yellow]",
             "canceled": True,
+            "cancelled": True,
         }
 
     if final_state:
@@ -254,6 +257,9 @@ def _build_loop_exit_response(
                 )
 
             return {
+                "ok": False,
+                "status": "failed",
+                "error": error_type,
                 "assistant_message": msg,
                 "loop_detected": True,
                 "error_type": error_type,

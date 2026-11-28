@@ -55,6 +55,15 @@ _READ_ONLY_OVERRIDE_REGEX = re.compile(
     re.IGNORECASE,
 )
 
+_COMPOUND_IMPERATIVE_MUTATION_REGEX = re.compile(
+    r"\b(?:and|then)\s+(?:please\s+)?(?:fix|update|edit|create|write|add|remove|delete|modify|implement|refactor|patch|rename)\b",
+    re.IGNORECASE,
+)
+
+_SHELL_TOOL_NAMES = frozenset(
+    {"bash", "run_bash", "execute_bash", "run_command", "execute_command"}
+)
+
 _MODIFYING_TOOL_NAMES = frozenset(
     MODIFYING_TOOLS
     | {
@@ -72,6 +81,8 @@ _MODIFYING_TOOL_NAMES = frozenset(
         "execute_command",
     }
 )
+
+_FILE_MUTATING_TOOL_NAMES = _MODIFYING_TOOL_NAMES - _SHELL_TOOL_NAMES
 
 
 @dataclass
@@ -103,6 +114,11 @@ def classify_task(
 
     cleaned_task = (task or "").strip()
     if _READ_ONLY_OVERRIDE_REGEX.search(cleaned_task):
+        # Compound prompts like "Explain why auth.py fails and fix the bug" still request mutations.
+        if _COMPOUND_IMPERATIVE_MUTATION_REGEX.search(cleaned_task) and _MUTATION_REGEX.search(
+            cleaned_task
+        ):
+            return TaskType.MUTATING
         if _READ_ONLY_REGEX.search(cleaned_task):
             return TaskType.READ_ONLY
         return TaskType.INFORMATIONAL
@@ -282,29 +298,28 @@ def evaluate_completion_contract(
             )
 
         if not has_modified_files:
-            # Check if a mutating tool or mutating command was executed and succeeded
-            is_mutating_tool = (
+            # Bare shell commands (e.g. bash("ls")) with zero observed file mutations
+            # must NOT satisfy a MUTATING task; require a file-mutating tool or
+            # explicit mutating_tool_calls_count from non-shell file operations.
+            is_file_mutating_tool = (
+                last_tool_name is not None and last_tool_name in _FILE_MUTATING_TOOL_NAMES
+            ) or (
                 mutating_tool_calls_count > 0
-                or (last_tool_name is not None and last_tool_name in _MODIFYING_TOOL_NAMES)
+                and (last_tool_name is None or last_tool_name not in _SHELL_TOOL_NAMES)
             )
-            if is_mutating_tool and (last_ok is True or last_status == "ok"):
+            if not (is_file_mutating_tool and (last_ok is True or last_status == "ok")):
                 return CompletionContractVerdict(
-                    is_complete=True,
+                    is_complete=False,
                     task_type=TaskType.MUTATING,
-                    evidence={"last_result": last_result, "last_tool_name": last_tool_name},
+                    failure_reason=(
+                        "Task requested code or file modifications, but no files were modified."
+                        + missing_hint
+                    ),
+                    error_code="unverified_mutation_missing",
                 )
-            return CompletionContractVerdict(
-                is_complete=False,
-                task_type=TaskType.MUTATING,
-                failure_reason=(
-                    "Task requested code or file modifications, but no files were modified."
-                    + missing_hint
-                ),
-                error_code="unverified_mutation_missing",
-            )
 
-        # TASK-39: Named-deliverable check — prevent premature exit on multi-file tasks
-        # when an explicitly requested new file has not been created yet.
+        # REM-02 (CRIT-03): Always enforce named deliverables and red->green debt
+        # before accepting completion — no tool shortcut may bypass these checks.
         if working_dir is not None:
             missing_files = _find_missing_deliverables(cleaned_task, mod_set, working_dir)
             if missing_files:
@@ -334,7 +349,11 @@ def evaluate_completion_contract(
         return CompletionContractVerdict(
             is_complete=True,
             task_type=TaskType.MUTATING,
-            evidence={"modified_files": list(mod_set)},
+            evidence=(
+                {"modified_files": list(mod_set)}
+                if has_modified_files
+                else {"last_result": last_result, "last_tool_name": last_tool_name}
+            ),
         )
 
     # 3. Read-only tasks

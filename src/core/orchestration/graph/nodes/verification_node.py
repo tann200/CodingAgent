@@ -429,7 +429,16 @@ async def _verification_node_impl(state: StateLike, config: RunnerConfig) -> Dic
             from src.core.orchestration.graph.validation_authority import get_or_create_debt_tracker
 
             _debt = get_or_create_debt_tracker(orch)
-            if verification_passed and isinstance(results.get("tests"), Mapping) and results["tests"].get("status") == "ok":
+            _verifier_suite_passed = any(
+                isinstance(results.get(k), Mapping) and results[k].get("status") == "ok"
+                for k in ("tests", "js_tests", "cargo_test", "go_test")
+            ) or any(
+                k.startswith("custom_cmd_")
+                and isinstance(v, Mapping)
+                and v.get("status") == "ok"
+                for k, v in results.items()
+            )
+            if verification_passed and _verifier_suite_passed:
                 _debt.mark_debt_paid_by_verifier()
             elif verification_passed and _debt.unpaid_debt():
                 verification_passed = False
