@@ -500,7 +500,9 @@ class ContextBuilder(_ContextMemoryMixin, _ContextPromptSectionsMixin):
             build_model_constraints_block_fn=lambda mt, ts: self._build_model_constraints_block(
                 mt, ts
             ),
-            build_instruction_files_block_fn=self._build_instruction_files_block,
+            build_instruction_files_block_fn=lambda: self._build_instruction_files_block(
+                model_tier=model_tier
+            ),
             build_project_instructions_block_fn=self._build_project_instructions_block,
             render_tools_for_tier_fn=lambda ts, mt: self._render_tools_for_tier(ts, mt),
             build_thinking_guidance_block_fn=lambda mt, pc, mn: self._build_thinking_guidance_block(
@@ -514,7 +516,7 @@ class ContextBuilder(_ContextMemoryMixin, _ContextPromptSectionsMixin):
                 unt, ism, tier
             ),
             skill_catalog_text=self.get_skill_catalog_text(
-                compact_bundled=tier_str in ("nano", "compact")
+                compact_bundled=tier_str in ("nano", "compact", "small")
             ),
         )
         with _CACHE_LOCK:

@@ -38,6 +38,7 @@ def build_context_report(
     from src.core.context.context_builder import ContextBuilder
     from src.core.context.instruction_files import (
         discover_instruction_files,
+        get_instruction_budget_for_tier,
         render_instruction_files,
     )
     from src.core.orchestration.registry_builder import example_registry
@@ -46,6 +47,7 @@ def build_context_report(
         raise ValueError(f"Unknown tier {tier!r}; expected one of {', '.join(_VALID_TIERS)}")
 
     wd = Path(workdir).resolve() if workdir else Path.cwd().resolve()
+    model_tier = _TIER_TO_MODEL_TIER[tier]
 
     # 1. Base static system prompt (identity + operational role)
     builder = ContextBuilder(working_dir=str(wd))
@@ -56,9 +58,18 @@ def build_context_report(
     base_chars = len(base_prompt_text)
     base_tokens = estimate_tokens(base_prompt_text)
 
-    # 2. Project instruction files (AGENTS.md / CLAUDE.md hierarchy)
-    inst_files = discover_instruction_files(wd)
-    inst_rendered = render_instruction_files(inst_files) if inst_files else ""
+    # 2. Project instruction files (AGENTS.md / CLAUDE.md hierarchy), tier-scaled (OPT-03)
+    inst_budget_chars, inst_include_arch = get_instruction_budget_for_tier(model_tier)
+    inst_files = discover_instruction_files(
+        wd, include_architecture=inst_include_arch, model_tier=model_tier
+    )
+    inst_rendered = (
+        render_instruction_files(
+            inst_files, max_total_chars=inst_budget_chars, model_tier=model_tier
+        )
+        if inst_files
+        else ""
+    )
     inst_chars = len(inst_rendered)
     inst_tokens = estimate_tokens(inst_rendered)
 
@@ -66,8 +77,9 @@ def build_context_report(
     skills_map: Dict[str, str] = dict(getattr(builder, "skills", None) or {})
     skills_full_chars = sum(len(v or "") for v in skills_map.values())
     skills_full_tokens = estimate_tokens("".join(skills_map.values()))
+    compact_bundled = tier == "compact-flat"
     skills_catalog_text = (
-        builder.get_skill_catalog_text()
+        builder.get_skill_catalog_text(compact_bundled=compact_bundled)
         if hasattr(builder, "get_skill_catalog_text")
         else "\n".join(
             f"- {name}: {(body.strip().splitlines()[0] if body and body.strip() else name)[:100]}"
@@ -114,6 +126,8 @@ def build_context_report(
                 "paths": [str(f.path) for f in inst_files],
                 "chars": inst_chars,
                 "tokens": inst_tokens,
+                "budget_chars": inst_budget_chars,
+                "include_architecture": inst_include_arch,
             },
             "skills_catalog": {
                 "count": len(skills_map),

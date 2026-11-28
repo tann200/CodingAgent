@@ -190,15 +190,26 @@ def build_model_constraints_block(
 def build_instruction_files_block(
     *,
     workdir: Path,
-    discover_instruction_files: Optional[Callable[[Path], Sequence[Path]]],
-    render_instruction_files: Optional[Callable[[Sequence[Path]], str]],
+    discover_instruction_files: Optional[Callable[..., Sequence[Any]]],
+    render_instruction_files: Optional[Callable[..., str]],
+    model_tier: Optional[str] = None,
 ) -> str:
     try:
         if discover_instruction_files is None or render_instruction_files is None:
             raise ImportError("instruction_files unavailable")
-        instruction_files = discover_instruction_files(workdir)
+        try:
+            instruction_files = discover_instruction_files(
+                workdir, model_tier=model_tier
+            )
+        except TypeError:
+            instruction_files = discover_instruction_files(workdir)
         if instruction_files:
-            instruction_block = render_instruction_files(instruction_files)
+            try:
+                instruction_block = render_instruction_files(
+                    instruction_files, model_tier=model_tier
+                )
+            except TypeError:
+                instruction_block = render_instruction_files(instruction_files)
             if instruction_block:
                 if instruction_block.lstrip().startswith("<project_instructions"):
                     return instruction_block

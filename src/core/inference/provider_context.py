@@ -256,3 +256,61 @@ def get_context_budget(
     ctx_len = _load_active_context_length()
     budget = int(ctx_len * fraction)
     return max(min_tokens, min(budget, max_tokens))
+
+
+# OPT-03: Single-source response reserve and output-cap clamping (modeled on
+# localharness's context reserve contract, with a strictly monotonic curve).
+RESPONSE_RESERVE_TOKENS: int = 4096
+_MIN_PROMPT_FLOOR_TOKENS: int = 1024
+
+
+def response_reserve(
+    max_context_tokens: int,
+    max_response_tokens: int | None = None,
+) -> int:
+    """Return the output-token reserve held back from *max_context_tokens*.
+
+    This is the single canonical planning reserve so prompt builders,
+    compactors, and request builders never double-subtract output headroom:
+
+    * Non-positive windows reserve ``0``.
+    * Small windows scale monotonically at ``max_context_tokens // 4`` (floored
+      at ``256``), capped so at least ``1,024`` tokens survive for the prompt
+      when ``max_context_tokens > 1,024``.
+    * Windows ``>= 16,384`` reserve at least ``RESPONSE_RESERVE_TOKENS``
+      (4,096) and grow to accommodate an explicit ``max_response_tokens`` cap,
+      bounded at ``max_context_tokens // 2`` so history always retains at least
+      half the window.
+    """
+    if max_context_tokens <= 0:
+        return 0
+    prompt_cap = max(0, max_context_tokens - _MIN_PROMPT_FLOOR_TOKENS)
+    if prompt_cap == 0:
+        return min(max_context_tokens // 4, max_context_tokens)
+    base_reserve = min(RESPONSE_RESERVE_TOKENS, max(256, max_context_tokens // 4))
+    if max_context_tokens >= 16_384 and max_response_tokens and max_response_tokens > 0:
+        wanted = max(base_reserve, int(max_response_tokens))
+        return min(wanted, max_context_tokens // 2, prompt_cap)
+    return min(base_reserve, prompt_cap)
+
+
+def clamp_response_tokens(
+    max_context_tokens: int,
+    configured_max_tokens: int | None,
+) -> int | None:
+    """Clamp a configured per-request ``max_tokens`` so ``prompt + max_tokens`` fits.
+
+    * ``None`` in -> ``None`` out (uncapped requests remain uncapped).
+    * Unknown/non-positive windows or non-positive caps are returned unchanged.
+    * Otherwise caps *configured_max_tokens* to ``response_reserve(...)`` so
+      strict servers (vLLM, Ollama, LM Studio) never reject requests with 400
+      when ``max_tokens`` exceeds the reserved output headroom.
+    """
+    if configured_max_tokens is None or configured_max_tokens <= 0:
+        return configured_max_tokens
+    if max_context_tokens <= 0:
+        return configured_max_tokens
+    reserve = response_reserve(max_context_tokens, configured_max_tokens)
+    if reserve <= 0:
+        return configured_max_tokens
+    return min(int(configured_max_tokens), reserve)

@@ -270,12 +270,13 @@ class _ContextPromptSectionsMixin:
             get_context_budget=_get_context_budget,
         )
 
-    def _build_instruction_files_block(self) -> str:
+    def _build_instruction_files_block(self, model_tier: Optional[str] = None) -> str:
         """Return <project_instructions> block from ancestor .md files, or ''."""
         return _build_instruction_files_block_helper(
             workdir=self._agent_context_dir.parent,
             discover_instruction_files=_discover_instruction_files,  # type: ignore[arg-type]
             render_instruction_files=_render_instruction_files,  # type: ignore[arg-type]
+            model_tier=model_tier,
         )
 
     def _build_project_instructions_block(self) -> str:

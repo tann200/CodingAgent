@@ -38,6 +38,30 @@ MAX_INSTRUCTION_FILE_CHARS: int = 4_000
 MAX_ARCHITECTURE_FILE_CHARS: int = 3_000
 MAX_TOTAL_INSTRUCTION_CHARS: int = 12_000
 
+# OPT-03: Tier-scaled instruction budgets: (max_total_chars, include_architecture).
+# Compact/small local tiers keep AGENTS.md concise and omit ARCHITECTURE.md to
+# preserve working context on 16K-32K windows while standard/frontier keep both.
+TIER_INSTRUCTION_BUDGETS: dict[str, tuple[int, bool]] = {
+    "nano": (1_600, False),
+    "compact": (3_200, False),
+    "compact-flat": (3_200, False),
+    "small": (3_200, False),
+    "standard": (8_000, True),
+    "standard-flat": (8_000, True),
+    "medium": (8_000, True),
+    "frontier": (MAX_TOTAL_INSTRUCTION_CHARS, True),
+    "frontier-flat": (MAX_TOTAL_INSTRUCTION_CHARS, True),
+    "large": (MAX_TOTAL_INSTRUCTION_CHARS, True),
+}
+
+
+def get_instruction_budget_for_tier(model_tier: Optional[str] = None) -> tuple[int, bool]:
+    """Return ``(max_total_chars, include_architecture)`` for *model_tier*."""
+    if not model_tier:
+        return (MAX_TOTAL_INSTRUCTION_CHARS, True)
+    tier_key = str(getattr(model_tier, "value", model_tier)).strip().lower()
+    return TIER_INSTRUCTION_BUDGETS.get(tier_key, (MAX_TOTAL_INSTRUCTION_CHARS, True))
+
 # File names to probe in each ancestor directory (in order, within each dir).
 # TASK-1: extended to cover Claude Code / claw-code CLAUDE.md convention in
 # addition to the original AGENTS.md convention.  SHA-256 dedup handles the
@@ -156,6 +180,9 @@ def _describe_file(file: InstructionFile, all_files: list[InstructionFile]) -> s
 
 def discover_instruction_files(
     workdir: Optional[str | Path] = None,
+    *,
+    include_architecture: Optional[bool] = None,
+    model_tier: Optional[str] = None,
 ) -> list[InstructionFile]:
     """Discover instruction files from *workdir* up to the filesystem root.
 
@@ -163,9 +190,13 @@ def discover_instruction_files(
     working directory last) — the same ordering as claw-code so that more
     specific (closer) instructions take precedence when rendered last.
 
-    Mirrors ``discover_instruction_files`` in prompt.rs.
+    When *include_architecture* is ``None`` (the default), whether root-level
+    ``ARCHITECTURE.md`` is included is determined by ``get_instruction_budget_for_tier(model_tier)``
+    (omitted on ``nano``/``compact``/``small`` tiers to save upfront prompt tokens).
     """
     cwd = Path(workdir).resolve() if workdir else Path.cwd().resolve()
+    if include_architecture is None:
+        _, include_architecture = get_instruction_budget_for_tier(model_tier)
 
     ancestors: list[Path] = []
     cursor: Optional[Path] = cwd
@@ -199,26 +230,28 @@ def discover_instruction_files(
                     "discover_instruction_files: could not read %s: %s", candidate, exc
                 )
 
-    # TASK-32: Root-only ARCHITECTURE.md discovery (capped at 3,000 chars)
-    for parts, cap in _ROOT_ONLY_CANDIDATES:
-        candidate = cwd.joinpath(*parts)
-        try:
-            content = candidate.read_text(encoding="utf-8")
-            if content.strip():
-                try:
-                    from src.core.security.redaction import redact_secrets
-                    content = redact_secrets(content)
-                except Exception:
-                    pass
-                files.append(
-                    InstructionFile(path=candidate, content=content, max_chars=cap)
+    # TASK-32 / OPT-03: Root-only ARCHITECTURE.md discovery (capped at 3,000 chars,
+    # omitted on nano/compact/small tiers unless explicitly requested).
+    if include_architecture:
+        for parts, cap in _ROOT_ONLY_CANDIDATES:
+            candidate = cwd.joinpath(*parts)
+            try:
+                content = candidate.read_text(encoding="utf-8")
+                if content.strip():
+                    try:
+                        from src.core.security.redaction import redact_secrets
+                        content = redact_secrets(content)
+                    except Exception:
+                        pass
+                    files.append(
+                        InstructionFile(path=candidate, content=content, max_chars=cap)
+                    )
+            except FileNotFoundError:
+                pass
+            except Exception as exc:
+                logger.debug(
+                    "discover_instruction_files: could not read %s: %s", candidate, exc
                 )
-        except FileNotFoundError:
-            pass
-        except Exception as exc:
-            logger.debug(
-                "discover_instruction_files: could not read %s: %s", candidate, exc
-            )
 
     return _dedupe(files)
 
@@ -342,18 +375,29 @@ def _dedupe(files: list[InstructionFile]) -> list[InstructionFile]:
 # ---------------------------------------------------------------------------
 
 
-def render_instruction_files(files: list[InstructionFile]) -> str:
+def render_instruction_files(
+    files: list[InstructionFile],
+    *,
+    max_total_chars: Optional[int] = None,
+    model_tier: Optional[str] = None,
+) -> str:
     """Render instruction files into a system-prompt section string.
 
-    Mirrors ``render_instruction_files`` in prompt.rs.
+    Mirrors ``render_instruction_files`` in prompt.rs, with OPT-03 tier-scaled
+    total character budgets when *max_total_chars* or *model_tier* is provided.
 
     Returns an empty string when *files* is empty.
     """
     if not files:
         return ""
 
+    if max_total_chars is None:
+        budget_chars, _ = get_instruction_budget_for_tier(model_tier)
+    else:
+        budget_chars = max(0, int(max_total_chars))
+
     sections = ["# Project instructions"]
-    remaining = MAX_TOTAL_INSTRUCTION_CHARS
+    remaining = budget_chars
 
     for f in files:
         if remaining == 0:
