@@ -65,7 +65,7 @@ class BashBlock(Vertical):
         if self._command:
             children.append(Label(f"$ {self._command}", classes="bash-cmd", markup=False))
         children.append(Static("", classes="bash-output", markup=False))
-        yield Collapsible(*children, title=self._title_text(), collapsed=False, classes="bash-collapsible")
+        yield Collapsible(*children, title=Text(self._title_text()), collapsed=False, classes="bash-collapsible")  # type: ignore[arg-type]
 
     def on_mount(self) -> None:
         self._refresh_output()

@@ -101,7 +101,14 @@ class StreamView(Vertical):
             self._schedule_flush()
 
     async def stop_stream(self, final_content: Optional[str] = None) -> str:
-        """Flush any remaining content (or replace with *final_content*) and stop the stream cleanly."""
+        """Flush any remaining content (or replace with *final_content*) and stop the stream cleanly.
+
+        REM-05: Never hold ``self._flush_lock`` across ``await`` points — doing so
+        can deadlock the Textual event loop when another coroutine or thread
+        calls ``append_chunk`` / ``_flush_async``.
+        """
+        full_replace_content: Optional[str] = None
+        md_stream_to_stop: Any = None
         if final_content is not None:
             clean_final = strip_terminal_controls(final_content)
             with self._flush_lock:
@@ -111,27 +118,34 @@ class StreamView(Vertical):
                     else:
                         self._raw = clean_final
                         self._flushed_len = len(clean_final)
-                        # Full replacement needed
-                        if self._md_stream is not None:
-                            try:
-                                await self._md_stream.stop()
-                            except Exception:
-                                pass
-                            self._md_stream = None
-                        if self.is_mounted:
-                            try:
-                                await self.query_one(".stream_markdown", Markdown).update(clean_final)
-                            except Exception:
-                                pass
-                        self._finalized = True
-                        return self._raw
+                        full_replace_content = clean_final
+                        md_stream_to_stop = self._md_stream
+                        self._md_stream = None
+
+        if full_replace_content is not None:
+            if md_stream_to_stop is not None:
+                try:
+                    await md_stream_to_stop.stop()
+                except Exception:
+                    pass
+            if self.is_mounted:
+                try:
+                    await self.query_one(".stream_markdown", Markdown).update(full_replace_content)
+                except Exception:
+                    pass
+            self._finalized = True
+            with self._flush_lock:
+                return self._raw
+
         await self._flush_async()
-        if self._md_stream is not None:
+        with self._flush_lock:
+            md_stream_to_stop = self._md_stream
+            self._md_stream = None
+        if md_stream_to_stop is not None:
             try:
-                await self._md_stream.stop()
+                await md_stream_to_stop.stop()
             except Exception:
                 pass
-            self._md_stream = None
         self._finalized = True
         with self._flush_lock:
             return self._raw

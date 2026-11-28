@@ -309,13 +309,15 @@ class BridgeContextMixin(AgentBridgeProtocol):
         orch = self._orchestrator
         if not orch:
             return False
-        for method in ("compact_context", "compact", "flush_execution_trace"):
+        for method in ("compact_context", "compact"):
             fn = getattr(orch, method, None)
             if callable(fn):
                 try:
-                    fn()
-                    logger.info(f"compact_context: called orchestrator.{method}()")
-                    return True
+                    res = fn()
+                    ok = True if res is None else bool(res)
+                    logger.info(f"compact_context: orchestrator.{method}() -> {ok}")
+                    return ok
                 except Exception as exc:
                     logger.warning(f"compact_context: {method}() failed: {exc}")
+                    return False
         return False

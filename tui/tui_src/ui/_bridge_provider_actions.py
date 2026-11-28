@@ -101,6 +101,11 @@ def update_role_model_impl(
     bridge: Any, model_id: str, provider_id: str | None = None
 ) -> None:
     """Switch provider (if needed) and update the active adapter's model."""
+    _SENTINELS = {"none", "null", "unset"}
+    if isinstance(provider_id, str) and provider_id.strip().lower() in _SENTINELS:
+        provider_id = None
+    if isinstance(model_id, str) and model_id.strip().lower() in _SENTINELS:
+        return
     if provider_id:
         try:
             from src.core.inference.llm_manager import canonical_provider

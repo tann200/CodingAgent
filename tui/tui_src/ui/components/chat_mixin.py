@@ -145,6 +145,11 @@ class ChatDisplayMixin(AgentAppProtocol):
         """Tear down the current stream widget and update the status bar."""
         if self._current_stream is not None:
             stream_view = self._current_stream
+            if hasattr(stream_view, "finalize"):
+                try:
+                    stream_view.finalize()
+                except Exception:
+                    pass
             if detach:
                 stream_view._detached = True
                 try:

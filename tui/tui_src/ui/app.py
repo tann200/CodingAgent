@@ -288,11 +288,16 @@ class AgentApp(
             self._queued_messages.clear()
             logger.info("Discarded %d queued message(s) on shutdown", dropped)
         self._save_session_snapshot()
-        try:
-            if hasattr(self, "_bridge") and self._bridge is not None and hasattr(self._bridge, "cleanup"):
-                self._bridge.cleanup()
-        except Exception:
-            pass
+        bridge = getattr(self, "_bridge", None)
+        if bridge is not None:
+            try:
+                bridge.interrupt()
+            except Exception:
+                pass
+            try:
+                bridge.save_history()
+            except Exception:
+                pass
         if hasattr(self, "_worktree_mgr") and self._worktree_mgr is not None:
             try:
                 import subprocess
@@ -307,9 +312,11 @@ class AgentApp(
                         pass
             except Exception:
                 pass
-        self._bridge.interrupt()
-        self._bridge.save_history()
-        self._bridge.cleanup()
+        if bridge is not None and hasattr(bridge, "cleanup"):
+            try:
+                bridge.cleanup()
+            except Exception:
+                pass
         logger.info("TUI unmounted — bridge cleaned up")
 
     def action_quit_app(self) -> None:
@@ -648,6 +655,11 @@ class AgentApp(
         self._plan_mode_active = not cur
         mode_name = "planning" if self._plan_mode_active else "execution"
         self.active_role = "strategic" if self._plan_mode_active else "operational"
+        if getattr(self, "_bridge", None) is not None and hasattr(self._bridge, "set_active_role"):
+            try:
+                self._bridge.set_active_role(self.active_role)
+            except Exception:
+                pass
         self._update_role_display(self.active_role)
         self._update_status_bar()
         self.notify(f"Mode: {mode_name}")

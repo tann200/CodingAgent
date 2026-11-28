@@ -15,6 +15,8 @@ Improvements over the original:
 
 from __future__ import annotations
 
+import re
+
 from textual.screen import ModalScreen
 from textual.widgets import Input, Label, Button, Select, Static
 from textual.containers import Vertical, Horizontal, VerticalScroll
@@ -49,6 +51,12 @@ def _dot(has_key: bool) -> str:
     return "[bold #22c55e]●[/]" if has_key else "[dim]○[/]"
 
 
+def _safe_dom_id(raw: str) -> str:
+    """Sanitize a provider identifier so it is always a valid Textual CSS/DOM ID."""
+    cleaned = re.sub(r"[^A-Za-z0-9_-]+", "_", str(raw or "")).strip("_")
+    return cleaned or "provider"
+
+
 class SettingsScreen(ModalScreen):
     BINDINGS = [("escape", "cancel", "Close")]
 
@@ -62,8 +70,15 @@ class SettingsScreen(ModalScreen):
             p for p in raw_providers if isinstance(p, dict) and p.get("name")
         ]
         self._prov_models: dict[str, list[str]] = {}
-        for p in self._providers:
+        self._pid_to_dom: dict[str, str] = {}
+        self._dom_to_pid: dict[str, str] = {}
+        for idx, p in enumerate(self._providers):
             pid = SettingsStore._normalize_provider_id(p)
+            dom_id = _safe_dom_id(pid)
+            if dom_id in self._dom_to_pid and self._dom_to_pid[dom_id] != pid:
+                dom_id = f"{dom_id}_{idx}"
+            self._pid_to_dom[pid] = dom_id
+            self._dom_to_pid[dom_id] = pid
             models = p.get("models") or []
             if not isinstance(models, list):
                 models = []
@@ -199,13 +214,14 @@ class SettingsScreen(ModalScreen):
                     yield Label("API Keys / Provider Auth", classes="section_title")
                     for p in self._providers:
                         pid = SettingsStore._normalize_provider_id(p)
+                        dom_id = self._pid_to_dom.get(pid, _safe_dom_id(pid))
                         if pid == _GITHUB_COPILOT_PID:
                             # GitHub Copilot uses OAuth device flow, not an API key
                             authenticated = self._copilot_authenticated
                             with Horizontal(classes="apikey_row"):
                                 yield Static(
                                     _dot(authenticated),
-                                    id=f"dot_{pid}",
+                                    id=f"dot_{dom_id}",
                                     classes="apikey_dot",
                                     markup=True,
                                 )
@@ -239,7 +255,7 @@ class SettingsScreen(ModalScreen):
                             with Horizontal(classes="apikey_row"):
                                 yield Static(
                                     "[bold #22c55e]●[/]",
-                                    id=f"dot_{pid}",
+                                    id=f"dot_{dom_id}",
                                     classes="apikey_dot",
                                     markup=True,
                                 )
@@ -249,7 +265,7 @@ class SettingsScreen(ModalScreen):
                                 yield Input(
                                     value=current_url,
                                     placeholder="http://localhost:1234/v1",
-                                    id=f"baseurl_{pid}",
+                                    id=f"baseurl_{dom_id}",
                                     classes="apikey_input",
                                 )
                         else:
@@ -257,7 +273,7 @@ class SettingsScreen(ModalScreen):
                             with Horizontal(classes="apikey_row"):
                                 yield Static(
                                     _dot(has_key),
-                                    id=f"dot_{pid}",
+                                    id=f"dot_{dom_id}",
                                     classes="apikey_dot",
                                     markup=True,
                                 )
@@ -267,12 +283,12 @@ class SettingsScreen(ModalScreen):
                                 yield Input(
                                     password=True,
                                     placeholder="sk-… (leave blank to keep current)",
-                                    id=f"apikey_{pid}",
+                                    id=f"apikey_{dom_id}",
                                     classes="apikey_input",
                                 )
                                 yield Button(
                                     "Test",
-                                    id=f"test_{pid}",
+                                    id=f"test_{dom_id}",
                                     classes="apikey_test_btn",
                                 )
 
@@ -411,14 +427,16 @@ class SettingsScreen(ModalScreen):
             return
 
         if btn_id.startswith("test_"):
-            pid = btn_id[len("test_") :]
+            dom_id = btn_id[len("test_") :]
+            pid = self._dom_to_pid.get(dom_id, dom_id)
             self._do_test(pid)
             return
 
     def _do_test(self, provider_id: str) -> None:
         """Quick connectivity test — saves the key first, then pings."""
+        dom_id = self._pid_to_dom.get(provider_id, _safe_dom_id(provider_id))
         try:
-            inp = self.query_one(f"#apikey_{provider_id}", Input)
+            inp = self.query_one(f"#apikey_{dom_id}", Input)
             key = inp.value.strip()
         except Exception:
             key = ""
@@ -432,7 +450,7 @@ class SettingsScreen(ModalScreen):
             )
             # Update the dot to connected
             try:
-                dot = self.query_one(f"#dot_{provider_id}", Static)
+                dot = self.query_one(f"#dot_{dom_id}", Static)
                 dot.update(_dot(True))
             except Exception:
                 pass
@@ -485,18 +503,26 @@ class SettingsScreen(ModalScreen):
         # Agent providers / models
         for agent in AGENTS:
             aid = agent["id"]
+            selected_provider = ""
             try:
                 ps = self.query_one(f"#field_{aid}_provider", Select)
-                if ps.value and ps.value != Select.BLANK:
-                    updates[f"{aid}_provider"] = str(ps.value)
+                if ps.value and ps.value != Select.BLANK and str(ps.value) != _NO_PROVIDER:
+                    selected_provider = str(ps.value)
+                    updates[f"{aid}_provider"] = selected_provider
             except Exception:
                 pass
             try:
                 ms = self.query_one(f"#field_{aid}_model", Select)
-                if ms.value and ms.value != Select.BLANK:
+                if ms.value and ms.value != Select.BLANK and str(ms.value) != _NO_PROVIDER:
                     mv = str(ms.value)
                     updates[f"{aid}_model"] = mv
-                    self.post_message(UpdateRoleModel(role=aid, model_id=mv))
+                    self.post_message(
+                        UpdateRoleModel(
+                            role=aid,
+                            model_id=mv,
+                            provider_id=selected_provider,
+                        )
+                    )
             except Exception:
                 pass
 
@@ -536,10 +562,11 @@ class SettingsScreen(ModalScreen):
         # API keys for cloud providers + base URLs for local providers
         for p in self._providers:
             pid = SettingsStore._normalize_provider_id(p)
+            dom_id = self._pid_to_dom.get(pid, _safe_dom_id(pid))
             if _is_local_provider(p):
                 # Local providers: save an updated base URL if the user changed it
                 try:
-                    inp = self.query_one(f"#baseurl_{pid}", Input)
+                    inp = self.query_one(f"#baseurl_{dom_id}", Input)
                     url = inp.value.strip()
                     if url and url != p.get("base_url", ""):
                         self.post_message(
@@ -558,7 +585,7 @@ class SettingsScreen(ModalScreen):
                     continue
                 # Cloud providers: save API key if the user typed one
                 try:
-                    inp = self.query_one(f"#apikey_{pid}", Input)
+                    inp = self.query_one(f"#apikey_{dom_id}", Input)
                     key = inp.value.strip()
                     if key:
                         self.post_message(
@@ -568,7 +595,7 @@ class SettingsScreen(ModalScreen):
                             )
                         )
                         try:
-                            self.query_one(f"#dot_{pid}", Static).update(_dot(True))
+                            self.query_one(f"#dot_{dom_id}", Static).update(_dot(True))
                         except Exception:
                             pass
                 except Exception:

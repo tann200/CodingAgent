@@ -21,8 +21,11 @@ logger = get_logger("bridge")
 # AUTO-03: Map TUI role names to CodingAgent system prompt names.
 TUI_ROLE_TO_PROMPT: dict[str, str] = {
     "lead_architect": "strategic",  # planning, design
+    "strategic": "strategic",  # Shift+Tab Plan Mode direct mapping
     "full_stack_engineer": "operational",  # execution, coding
+    "operational": "operational",
     "qa_lead": "reviewer",  # review, testing
+    "reviewer": "reviewer",
 }
 
 
@@ -72,8 +75,7 @@ class BridgeAgentMixin(AgentBridgeProtocol):
                 # from start_new_session() (triggered by /new).
                 # AUTO-02: apply per-role autonomy settings before each run
                 try:
-                    from src.core.config_loader import (  # type: ignore[import, attr-defined]
-                        get_role_config,
+                    from src.core.config_loader import (  # type: ignore[import]
                         load_merged_config,
                     )
                     from src.tools.tools_config import (  # type: ignore[import]
@@ -82,15 +84,21 @@ class BridgeAgentMixin(AgentBridgeProtocol):
                     )
 
                     _wdir = Path(self._working_dir) if self._working_dir else None
-                    role_cfg = get_role_config(self._active_role, working_dir=_wdir)
-                    set_autonomous(bool(role_cfg.get("autonomous", False)))
-                    # PREV-1: Apply preview_confirmation flag from workspace config
                     _merged_cfg = load_merged_config(_wdir)
+                    _roles_cfg = _merged_cfg.get("roles") if isinstance(_merged_cfg, dict) else None
+                    role_cfg = (
+                        _roles_cfg.get(self._active_role, {})
+                        if isinstance(_roles_cfg, dict)
+                        and isinstance(_roles_cfg.get(self._active_role), dict)
+                        else {}
+                    )
+                    set_autonomous(bool(role_cfg.get("autonomous", _merged_cfg.get("autonomous", False))))
+                    # PREV-1: Apply preview_confirmation flag from workspace config
                     set_require_preview_confirmation(
                         bool(_merged_cfg.get("preview_confirmation", False))
                     )
                     # Apply max_turns to the graph state (best-effort)
-                    _max_turns = role_cfg.get("max_turns", 50)
+                    _max_turns = role_cfg.get("max_turns", _merged_cfg.get("max_turns", 50))
                 except Exception as _rc_err:
                     _logger.debug(f"AUTO-02: role config apply failed: {_rc_err}")
                     _max_turns = 50

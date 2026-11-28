@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import List, Tuple, Any, Dict
 
 from textual.app import ComposeResult
+from textual.binding import Binding
 from textual.containers import Container
 from textual.screen import ModalScreen
 from textual.widgets import Input, Label, Static
@@ -29,6 +30,8 @@ class SessionListScreen(ModalScreen[None]):
 
     BINDINGS = [
         ("escape", "close_sessions", "Close"),
+        Binding("ctrl+n", "new_session", "New", priority=True),
+        Binding("ctrl+d", "delete_session", "Delete", priority=True),
         ("n", "new_session", "New"),
     ]
 
@@ -113,15 +116,28 @@ class SessionListScreen(ModalScreen[None]):
             sessions_dir: Any = _get_sessions_dir()
             if not sessions_dir:
                 return []
-            files = sorted(Path(sessions_dir).glob("session_*.json"), reverse=True)
+            files = list(Path(sessions_dir).glob("session_*.json"))
             res: list[Tuple[Path, Dict[str, Any]]] = []
-            for f in files[:100]:
+            for f in files:
                 try:
                     payload: Dict[str, Any] = json.loads(f.read_text(encoding="utf-8"))
                     res.append((f, payload))
                 except Exception as _parse_err:
                     _log.warning("skipping corrupt session file %s: %s", f.name, _parse_err)
-            return res
+            # Sort by actual timestamp descending (fallback to file mtime) so
+            # forked sessions (`session_fork_<ts>.json`) sort chronologically.
+            def _sort_key(item: Tuple[Path, Dict[str, Any]]) -> float:
+                p, data = item
+                ts = data.get("timestamp")
+                if isinstance(ts, (int, float)):
+                    return float(ts)
+                try:
+                    return p.stat().st_mtime
+                except OSError:
+                    return 0.0
+
+            res.sort(key=_sort_key, reverse=True)
+            return res[:100]
         except Exception:
             return []
 
@@ -205,9 +221,20 @@ class SessionListScreen(ModalScreen[None]):
     def on_input_changed(self, event: Input.Changed) -> None:
         self._filter(event.value)
 
+    def action_delete_session(self) -> None:
+        self._delete_selected()
+
     def on_key(self, event: Key) -> None:
         from textual.widgets import Input
 
+        if event.key == "ctrl+d":
+            self._delete_selected()
+            event.prevent_default()
+            return
+        if event.key == "ctrl+n":
+            self._start_new_session()
+            event.prevent_default()
+            return
         if isinstance(self.focused, Input) and event.key not in ("escape", "down", "up", "enter"):
             return
         if not self._filtered:

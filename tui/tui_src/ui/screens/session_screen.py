@@ -31,6 +31,7 @@ from pathlib import Path
 from typing import Optional
 
 from textual.app import ComposeResult
+from textual.binding import Binding
 from textual.containers import Container, Horizontal
 from textual.events import Key
 from textual.screen import ModalScreen
@@ -124,19 +125,42 @@ class SessionScreen(SessionListScreen):
 
     BINDINGS = [
         ("escape", "close_sessions", "Close"),
+        Binding("ctrl+f", "fork_session", "Fork", priority=True),
+        Binding("ctrl+r", "revert_session", "Revert", priority=True),
+        Binding("ctrl+d", "delete_session", "Delete", priority=True),
+        Binding("ctrl+n", "new_session", "New", priority=True),
         ("f", "fork_session", "Fork"),
         ("r", "revert_session", "Revert"),
     ]
 
     # Override hint text to show new keybindings
-    _HINT_TEXT = "↑/↓ navigate  Enter resume  f fork  r revert  d delete  Esc close"
+    _HINT_TEXT = "↑/↓ navigate  Enter resume  Ctrl+F fork  Ctrl+R revert  Ctrl+D delete  Ctrl+N new  Esc close"
 
     def compose(self) -> ComposeResult:
         with Container(id="sessions_dialog"):
             yield Label("Sessions", id="sessions_title")
             yield Input(placeholder="Search sessions...", id="sessions_search")
             yield Static("", id="sessions_list")
+            with Horizontal(id="sessions_actions"):
+                yield Button("Resume", id="btn_session_resume", variant="primary")
+                yield Button("Fork", id="btn_session_fork")
+                yield Button("Revert", id="btn_session_revert", variant="warning")
+                yield Button("Delete", id="btn_session_delete", variant="error")
+                yield Button("New", id="btn_session_new")
             yield Static(self._HINT_TEXT, id="sessions_hint")
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        bid = event.button.id or ""
+        if bid == "btn_session_resume":
+            self._open_selected()
+        elif bid == "btn_session_fork":
+            self.action_fork_session()
+        elif bid == "btn_session_revert":
+            self.action_revert_session()
+        elif bid == "btn_session_delete":
+            self._delete_selected()
+        elif bid == "btn_session_new":
+            self._start_new_session()
 
     # ------------------------------------------------------------------
     # Fork action
@@ -277,6 +301,14 @@ class SessionScreen(SessionListScreen):
         """Route fork/revert keys; delegate everything else to parent."""
         from textual.widgets import Input
 
+        if event.key == "ctrl+f":
+            self.action_fork_session()
+            event.prevent_default()
+            return
+        if event.key == "ctrl+r":
+            self.action_revert_session()
+            event.prevent_default()
+            return
         if isinstance(self.focused, Input) and event.key not in ("escape", "down", "up", "enter"):
             return
         if event.key == "f":

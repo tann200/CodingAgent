@@ -177,7 +177,7 @@ class AppStatusHandlersMixin(AgentAppProtocol):
             except Exception:
                 pass
         logger.info(f"Role transition: {event.from_role} → {event.to_role}")
-        from .status_bar import ROLE_COLORS, ROLE_LABELS
+        from .components.status_bar import ROLE_COLORS, ROLE_LABELS
 
         color = ROLE_COLORS.get(event.to_role, "#888888")
         label = ROLE_LABELS.get(event.to_role, event.to_role.upper().replace("_", " "))

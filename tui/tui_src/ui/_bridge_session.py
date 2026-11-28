@@ -131,7 +131,11 @@ class BridgeSessionMixin(AgentBridgeProtocol):
         """Remove the last user message from history (GAP-CMD-1).
 
         Returns True if a user message was removed, False if no user messages exist.
+        REM-05: Release ``_history_lock`` before calling ``_save_history()`` (which
+        also acquires ``_history_lock``) to avoid a non-reentrant lock deadlock, and
+        sync the undone turn with ``orch.msg_mgr.messages``.
         """
+        removed = None
         with self._history_lock:
             # Find the last user message (working backwards)
             for i in range(len(self.history) - 1, -1, -1):
@@ -142,10 +146,34 @@ class BridgeSessionMixin(AgentBridgeProtocol):
                     and hist_entry[0] == "user"
                 ):
                     removed = self.history.pop(i)
-                    self._save_history()
-                    logger.info(f"Undo: removed user message '{removed[1][:50]}...'")
-                    return True
+                    break
+        if removed is None:
             return False
+
+        # Sync with orchestrator's msg_mgr so the LLM sees the undo too
+        orch = getattr(self, "_orchestrator", None)
+        msg_mgr = getattr(orch, "msg_mgr", None) if orch is not None else None
+        if msg_mgr is not None and isinstance(getattr(msg_mgr, "messages", None), list):
+            lock = getattr(orch, "_msg_mgr_lock", None)
+            def _pop_last_user() -> None:
+                msgs = msg_mgr.messages
+                for idx in range(len(msgs) - 1, -1, -1):
+                    m = msgs[idx]
+                    if isinstance(m, dict) and m.get("role") == "user":
+                        del msgs[idx:]
+                        break
+            try:
+                if lock is not None:
+                    with lock:
+                        _pop_last_user()
+                else:
+                    _pop_last_user()
+            except Exception:
+                pass
+
+        self._save_history()
+        logger.info(f"Undo: removed user message '{str(removed[1])[:50]}...'")
+        return True
 
     # ── Frecency-scored prompt history (§H6) ─────────────────────────────
 

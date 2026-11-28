@@ -149,8 +149,11 @@ class _SlashModelCommandsMixin(AgentAppProtocol):
         try:
             self._theme_user_selected = True  # type: ignore[attr-defined]
             self.theme = arg  # type: ignore[misc]
-            if getattr(self, "_settings", None) is not None and hasattr(self._settings, "update"):
-                self._settings.update({"theme": arg})
+            if getattr(self, "_settings", None) is not None:
+                if hasattr(self._settings, "update"):
+                    self._settings.update({"theme": arg})
+                if hasattr(self._settings, "save"):
+                    self._settings.save()
             w = Static(f"[green]✓ Theme switched to[/] [bold]{escape(arg)}[/]", classes="system_msg", markup=True)
             await self._mount_chat_widget(w)
         except Exception as exc:
@@ -219,9 +222,15 @@ class _SlashModelCommandsMixin(AgentAppProtocol):
             if nano_model:
                 self._settings.set("default_model", nano_model)
                 self._settings.save()
+                _prov = self._settings.get("default_provider", "")
+                if hasattr(self._bridge, "update_role_model"):
+                    try:
+                        self._bridge.update_role_model(nano_model, provider_id=_prov or None)
+                    except Exception:
+                        pass
                 self._bridge.publish_typed(
                     ModelRouting(
-                        provider=self._settings.get("default_provider", ""),
+                        provider=_prov,
                         selected=nano_model,
                         available_models=[nano_model],
                     )
@@ -275,6 +284,11 @@ class _SlashModelCommandsMixin(AgentAppProtocol):
             self._settings.set(f"{role}_provider", pid)
             self._settings.set("default_provider", pid)
             self._settings.save()
+            if hasattr(self._bridge, "activate_provider"):
+                try:
+                    self._bridge.activate_provider(pid)
+                except Exception:
+                    pass
             model_list = target.get("models") or [""]
             first_model = model_list[0] if model_list else ""
             try:
@@ -335,6 +349,14 @@ class _SlashModelCommandsMixin(AgentAppProtocol):
                 self._settings.set(f"{role}_provider", target_provider)
                 self._settings.set("default_provider", target_provider)
             self._settings.save()
+            if hasattr(self._bridge, "update_role_model"):
+                try:
+                    self._bridge.update_role_model(
+                        target_model,
+                        provider_id=target_provider or None,
+                    )
+                except Exception:
+                    pass
             try:
                 self.query_one("#sb_model_info", Static).update(target_model)
                 if target_provider:
@@ -440,9 +462,11 @@ class _SlashModelCommandsMixin(AgentAppProtocol):
 
     async def _slash_queue(self: AgentAppProtocol, args: str) -> None:
         """Inspect, pop, clear, or enqueue follow-up prompts (/queue [ls|pop|clear|<prompt>])."""
+        from collections import deque
+
         q = getattr(self, "_queued_messages", None)
-        if not isinstance(q, list):
-            q = []
+        if not isinstance(q, deque):
+            q = deque(q) if isinstance(q, list) else deque()
             setattr(self, "_queued_messages", q)
 
         raw = args.strip()

@@ -361,15 +361,15 @@ async def test_tui_slash_advisor_btw_and_queue_commands() -> None:
         await app.handle_slash_command(SlashCommand("queue", "first follow-up"))
         await app.handle_slash_command(SlashCommand("queue", "second follow-up"))
         await pilot.pause(0.05)
-        assert app._queued_messages == ["first follow-up", "second follow-up"]
+        assert list(app._queued_messages) == ["first follow-up", "second follow-up"]
 
         await app.handle_slash_command(SlashCommand("queue", "pop"))
         await pilot.pause(0.05)
-        assert app._queued_messages == ["first follow-up"]
+        assert list(app._queued_messages) == ["first follow-up"]
 
         await app.handle_slash_command(SlashCommand("queue", "clear"))
         await pilot.pause(0.05)
-        assert app._queued_messages == []
+        assert list(app._queued_messages) == []
 
 
 def test_cli_flags_parse_output_private_and_parallel() -> None:
